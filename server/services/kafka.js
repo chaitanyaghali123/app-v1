@@ -2,13 +2,13 @@ import { Kafka } from "kafkajs";
 
 const broker = process.env.KAFKA_BROKER;
 
-let kafkaProducer = null;
-let kafkaConsumer = null;
+let kafkaProducer;
+let kafkaConsumer;
 
-if (broker) {
+if (broker && broker !== "stub") {
   const kafka = new Kafka({
     clientId: "invoice-app",
-    brokers: [broker],
+    brokers: [broker], // must be host:port
   });
 
   kafkaProducer = kafka.producer();
@@ -17,10 +17,20 @@ if (broker) {
   await kafkaProducer.connect();
   await kafkaConsumer.connect();
 } else {
-  console.log("Kafka disabled in this environment (no broker set)");
+  console.log("Kafka disabled in this environment (no broker set or stub)");
+
   // Provide safe stubs so your app doesn’t break
-  kafkaProducer = { send: async () => {}, connect: async () => {}, disconnect: async () => {} };
-  kafkaConsumer = { subscribe: async () => {}, run: async () => {}, connect: async () => {}, disconnect: async () => {} };
+  kafkaProducer = {
+    send: async () => console.log("[Kafka Stub] send skipped"),
+    connect: async () => {},
+    disconnect: async () => {},
+  };
+  kafkaConsumer = {
+    subscribe: async () => console.log("[Kafka Stub] subscribe skipped"),
+    run: async () => {},
+    connect: async () => {},
+    disconnect: async () => {},
+  };
 }
 
 export { kafkaProducer, kafkaConsumer };
