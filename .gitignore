@@ -1,0 +1,23 @@
+# Dependency directories
+node_modules
+dist
+
+# OS-specific files
+.DS_Store
+
+# Build/public assets
+server/public
+vite.config.ts.*
+
+# Archives and environment files
+*.tar.gz.env
+.env
+
+# Git internals (shouldn’t be tracked)
+.git
+
+# Logs
+*.log
+
+# Virtual environments
+venv310/

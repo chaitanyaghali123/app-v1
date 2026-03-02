@@ -1,0 +1,31 @@
+.answer-block {
+  background: #fff;
+  padding: 15px;
+  border-radius: 6px;
+  margin-top: 20px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+}
+
+.answer-block h3 {
+  color: #007bff;
+}
+
+.answer-block ul {
+  padding-left: 1.5rem;
+}
+
+.answer-block li {
+  margin-bottom: 0.5rem;
+}
+
+footer {
+  margin-top: 40px;
+  text-align: center;
+  font-size: 14px;
+  color: #555;
+}
+
+footer span {
+  color: red;
+}
+

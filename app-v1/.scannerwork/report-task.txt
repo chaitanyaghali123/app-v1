@@ -1,0 +1,6 @@
+projectKey=my-node-app
+serverUrl=http://sonarqube:9000
+serverVersion=25.12.0.117093
+dashboardUrl=http://sonarqube:9000/dashboard?id=my-node-app
+ceTaskId=587523e5-d4d8-4986-8508-ebf12b38c557
+ceTaskUrl=http://sonarqube:9000/api/ce/task?id=587523e5-d4d8-4986-8508-ebf12b38c557

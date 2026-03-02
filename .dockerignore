@@ -1,0 +1,74 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Environment and secrets
+.env
+*.env
+
+# OS and editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+
+# Virtual environments
+venv/
+.venv/
+
+# Node.js artifacts
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Notebooks and exports
+*.ipynb
+*.csv
+*.xlsx
+*.pdf
+*.docx
+*.json
+*.parquet
+
+# Local data and ingestion artifacts
+vector_server/data/
+vector_server/chroma/__pycache__/
+vector_server/chroma/*.log
+vector_server/chroma/*.tmp
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Wheel cache
+wheels/
+
+# Git
+.git/
+.gitignore
+
+node_modules/
+dist/
+build/
+*.db
+*.sqlite
+vector_server/data/
+# DO NOT ignore wheels/ because we need it
+
+

@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS invoices (
+  id UUID PRIMARY KEY,
+  email TEXT NOT NULL,
+  plan TEXT NOT NULL,
+  amount NUMERIC NOT NULL,
+  url TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);

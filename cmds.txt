@@ -1,0 +1,29 @@
+
+npm install --save-dev cross-env
+
+npm install dotenv
+
+download postgresql from
+https://www.postgresql.org/download/windows/ 
+https://www.enterprisedb.com/downloads/postgres-postgresql-downloads
+
+During installation, set the following parameters:
+Username: postgres (default)
+Password: choose one (you can keep Password123 if you like)
+Port: 5432 (default, keep it)
+
+run bellow cmd:
+"C:\Program Files\PostgreSQL\17\bin\psql.exe" -U postgres -h 127.0.0.1 -p 5432
+
+
+CREATE DATABASE aryabhata_db;
+
+Exit psql:
+\q
+
+To restore the database
+from the project root folder run:
+"C:\Program Files\PostgreSQL\17\bin\psql.exe" -U postgres -h 127.0.0.1 -p 5432 -d aryabhata_db -f backup.sql
+
+
+Password for user postgres: "Password123"
