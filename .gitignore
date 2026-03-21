@@ -21,3 +21,5 @@ vite.config.ts.*
 
 # Virtual environments
 venv310/
+
+models/*.gguf
