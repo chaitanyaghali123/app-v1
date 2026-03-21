@@ -1,8 +1,8 @@
-// server/controllers/learnMore.controller.js
-
 import * as db from "../services/db.service.js";
-import { chat } from "../services/chat-orchestrator.js";
+import axios from "axios";
 import { isPrimeUser } from "../config/user.config.js";
+import redis from "../config/redis.js"; // 🔹 new import
+import { LEARNMORE_TTL } from "../config/cache.js";
 
 export async function handleLearnMore(req, res) {
   try {
@@ -18,7 +18,7 @@ export async function handleLearnMore(req, res) {
       return res.status(404).json({ error: "Response not found" });
     }
 
-    // 🚫 Non-prime
+    // 🚫 Non-prime users
     if (!prime) {
       return res.json({
         revision_id: response_id,
@@ -27,29 +27,63 @@ export async function handleLearnMore(req, res) {
       });
     }
 
-    // ✅ Prime → routed LLM (OpenAI → Claude fallback)
-    const sessionId = `${result.user_id}:${result.subject_id}`;
+    // 🔹 Cache key
+    const cacheKey = `learnmore:${response_id}`;
 
-    const { answer } = await chat({
-      sessionId,
-      prompt: result.answer,     // expand previous answer
-      chunks: null,              // no chunks for learn-more
-      subject_id: result.subject_id,
-      user_id: result.user_id,
-      mode: "learn_more"
-    });
+    // 1️⃣ Check cache first
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      console.log("⚡ Cache hit:", cacheKey);
+      return res.json(JSON.parse(cached));
+    }
 
-    const expandedAnswer = answer || result.answer;
+    // ✅ Prime → Local llama-cpp call
+    try {
+      const response = await axios.post(
+        `${process.env.VLLM_API_URL}/v1/chat/completions`,
+        {
+          model: process.env.VLLM_MODEL || "local-model",
+          messages: [
+            {
+              role: "system",
+              content: `You are an expert UPSC educator.
+              Expand the previous answer into a detailed explanation.
+              Always respond in clean, semantic HTML with:
+              <h2> for section headings,
+              <ul>/<li> for lists,
+              <p> for paragraphs.
+              Keep everything in English only.`
+            },
+            {
+              role: "user",
+              content: `Please expand on and provide more depth for this previous answer:\n\n"${result.answer}"`
+            }
+          ],
+          max_tokens: 1024, // 🔹 increase from 14 to realistic expansion size
+          temperature: 0.4,
+        },
+        { timeout: 180000 }
+      );
 
-    await db.updateRevisionExpanded(response_id, expandedAnswer);
+      const expandedAnswer =
+        response.data?.choices?.[0]?.message?.content?.trim() || result.answer;
 
-    return res.json({
-      revision_id: response_id,
-      detailed: expandedAnswer.trim(),
-      citations: [],
-    });
+      await db.updateRevisionExpanded(response_id, expandedAnswer);
+
+      const finalResponse = {
+        revision_id: response_id,
+        detailed: expandedAnswer,
+        citations: [],
+      };
+
+      // 2️⃣ Save to cache (TTL 5 minutes)
+      await redis.set(cacheKey, JSON.stringify(detailed), "EX", LEARNMORE_TTL);
+    } catch (err) {
+      console.error("❌ GPU LearnMore error:", err.message);
+      return res.status(500).json({ error: "Local AI server is busy or unavailable." });
+    }
   } catch (err) {
     console.error("[handleLearnMore] error:", err.message);
-    res.status(500).json({ error: "Learn more failed" });
+    res.status(500).json({ error: "Learn more processing failed" });
   }
 }

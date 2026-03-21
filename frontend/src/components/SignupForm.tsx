@@ -8,6 +8,7 @@ const SignupForm: React.FC = () => {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [phone, setPhone] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -18,7 +19,7 @@ const SignupForm: React.FC = () => {
     setError(null);
 
     try {
-      await signupUser({ name, email, password });
+      await signupUser({ name, email, password, phone });
       alert("Signup successful! Check your email.");
       navigate("/"); // redirect to Ask page
     } catch (err: any) {
@@ -59,7 +60,15 @@ const SignupForm: React.FC = () => {
           onChange={(e) => setPassword(e.target.value)}
           required
         />
-
+        <input
+          id="phone"
+          type="tel"
+          placeholder="Phone Number"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          required
+/>
+     
         <button type="submit">
           {loading ? "Creating..." : "Sign Up"}
         </button>

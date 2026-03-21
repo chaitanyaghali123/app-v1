@@ -1,11 +1,13 @@
+// src/components/AskForm.tsx
 import React, { useState, useEffect, useRef } from "react";
 import {
-  fetchAnswer,
   fetchSubjects,
   getRevisionsBySubject,
+  fetchAnswer,
   learnMore
 } from "../api";
 import { AnswerResponse, RevisionItem } from "../types";
+import { getCached, setCached } from "../utils/cache"; // 🔹 new import
 import "./AskForm.css";
 
 const AskForm: React.FC = () => {
@@ -36,7 +38,7 @@ const AskForm: React.FC = () => {
     }
   }, [showRevision, subjectId, userId]);
 
-  // 🎤 Initialize Speech Recognition
+  // 🎤 Speech Recognition
   useEffect(() => {
     const SpeechRecognition =
       (window as any).SpeechRecognition ||
@@ -73,6 +75,7 @@ const AskForm: React.FC = () => {
     }
   };
 
+  // 🔹 Ask with UI cache
   const handleSubmit = async (q?: string) => {
     const prompt = q || query;
     if (!prompt.trim()) return;
@@ -80,9 +83,19 @@ const AskForm: React.FC = () => {
     setAnswerData(null);
     setDetailedAnswer(null);
 
+    const cacheKey = `answer:${subjectId}:${userId}:${prompt}`;
+    const cached = getCached(cacheKey);
+    if (cached) {
+      console.log("⚡ UI cache hit:", cacheKey);
+      setAnswerData(cached);
+      setLoading(false);
+      return;
+    }
+
     try {
       const res = await fetchAnswer(prompt, subjectId, userId);
       setAnswerData(res);
+      setCached(cacheKey, res); // uses ANSWER_TTL from .env
     } catch (err) {
       console.error("Error in handleSubmit:", err);
       setAnswerData({
@@ -98,15 +111,26 @@ const AskForm: React.FC = () => {
     }
   };
 
+  // 🔹 Learn More with UI cache
   const handleLearnMore = async () => {
     if (!answerData?.revision_id) return;
+    const cacheKey = `learnmore:${answerData.revision_id}`;
+    const cached = getCached(cacheKey);
+    if (cached) {
+      console.log("⚡ UI cache hit:", cacheKey);
+      setDetailedAnswer(cached);
+      return;
+    }
+
     try {
       const res = await learnMore({ response_id: String(answerData.revision_id) });
-      setDetailedAnswer({
-        answer: res.answer,
+      const detailed = {
+        detailed: res.detailed,
         revision_id: res.revision_id,
         citations: res.citations
-      });
+      };
+      setDetailedAnswer(detailed);
+      setCached(cacheKey, detailed); // uses LEARNMORE_TTL from .env
     } catch (err) {
       console.error("Learn more failed:", err);
     }

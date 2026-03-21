@@ -46,13 +46,15 @@ services:
       - RAZORPAY_WEBHOOK_SECRET=stub-webhook
       - FRONTEND_URL=http://localhost:4173
       - KAFKA_BROKER=kafka:9092 # ✅ point backend to Kafka
-  
+      - VLLM_API_URL=http://llama-cpp:8080
+      - VLLM_MODEL=Llama-3-8B-Instruct-Q4_K_M.gguf
     depends_on:
       - postgres
       - chromadb
       - chunker
       - n8n
       - kafka # ✅ ensure Kafka starts before backend
+      - llama-cpp  
     restart: always
     networks:
       - sambit-net
@@ -223,7 +225,49 @@ services:
       timeout: 5s
       retries: 5
 
-      
+ 
+  
+  llama-cpp:
+    build: .
+    container_name: llama-cpp
+    volumes:
+      # This maps your D drive folder to the /models folder inside the container
+      - "D:/app-v1/models:/models"
+    ports:
+      - "8080:8080"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: always
+    networks:
+      - sambit-net
+    command: [
+      "python3", "-m", "llama_cpp.server",
+      "--model", "/models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf", # Update this to your exact filename!
+      "--host", "0.0.0.0",
+      "--port", "8080",
+      "--n_gpu_layers", "35"
+    ]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: aryabhata-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - sambit-net
+    restart: always
 
 
 volumes:
@@ -231,7 +275,8 @@ volumes:
   pgadmin:
   chroma_cache:
   n8n_data:
-
+  llama-cpp:
+  redis_data:   # ✅ declare the named volume here
 networks:
   sambit-net:
     driver: bridge

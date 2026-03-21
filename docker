@@ -1,0 +1,7 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y build-essential cmake curl git
+RUN pip install --no-cache-dir llama-cpp-python[server]
+
+WORKDIR /app
+CMD ["python3", "-m", "llama_cpp.server", "--model", "/models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf", "--host", "0.0.0.0", "--port", "8080"]

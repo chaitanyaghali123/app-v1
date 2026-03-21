@@ -1,7 +1,9 @@
 import pg from "pg";
 import crypto from "crypto";
 
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL
+});
 
 // -----------------------------
 // Ensure tables exist
@@ -45,6 +47,7 @@ export async function ensureUsersTable() {
       name TEXT NOT NULL,
       email TEXT UNIQUE NOT NULL,
       password TEXT NOT NULL,
+      phone TEXT,
       created_at TIMESTAMP DEFAULT NOW()
     );
   `;
@@ -59,6 +62,19 @@ export async function ensureInvoicesTable() {
       plan TEXT NOT NULL,
       amount NUMERIC NOT NULL,
       url TEXT NOT NULL,
+      phone TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `;
+  await pool.query(sql);
+}
+
+export async function ensureRefreshTokensTable() {
+  const sql = `
+    CREATE TABLE IF NOT EXISTS refresh_tokens (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      token TEXT NOT NULL UNIQUE,
       created_at TIMESTAMP DEFAULT NOW()
     );
   `;
@@ -167,4 +183,27 @@ export async function listInvoices() {
   `;
   const { rows } = await pool.query(sql);
   return rows;
+}
+
+// -----------------------------
+// Refresh token operations
+// -----------------------------
+export async function saveRefreshToken(userId, token) {
+  const sql = `
+    INSERT INTO refresh_tokens (user_id, token)
+    VALUES ($1, $2)
+    ON CONFLICT (token) DO NOTHING;
+  `;
+  await pool.query(sql, [userId, token]);
+}
+
+export async function verifyRefreshToken(token) {
+  const sql = `SELECT * FROM refresh_tokens WHERE token = $1 LIMIT 1;`;
+  const { rows } = await pool.query(sql, [token]);
+  return rows[0] ? true : false;
+}
+
+export async function revokeRefreshToken(userId, token) {
+  const sql = `DELETE FROM refresh_tokens WHERE user_id = $1 AND token = $2;`;
+  await pool.query(sql, [userId, token]);
 }

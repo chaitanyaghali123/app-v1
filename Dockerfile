@@ -1,25 +1,19 @@
-# Use Debian-based Python image for full build support
-FROM python:3.10-bullseye
+# Use the same NVIDIA base
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
 
-# Set working directory
+# Install only the bare minimum for Python
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Point to the official PRE-BUILT wheels for CUDA 12.4
+# This avoids the "Building wheel" error entirely.
+RUN pip3 install llama-cpp-python[server] \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+
 WORKDIR /app
+EXPOSE 8080
+VOLUME ["/models"]
 
-# Install system dependencies for PostgreSQL and native builds
-RUN apt-get update && \
-    apt-get install -y build-essential libpq-dev curl && \
-    rm -rf /var/lib/apt/lists/*
-
-# Upgrade pip and install dependencies using wheel cache + PyPI fallback
-COPY wheels/ /wheels/
-COPY requirements.txt ./
-RUN pip install --upgrade pip && \
-    pip install --find-links=/wheels -r requirements.txt
-
-# Copy all project files
-COPY . .
-
-# Expose Gradio default port (if used)
-EXPOSE 7860
-
-# Run the assistant or ingestion script
-CMD ["python", "ingest_hybrid.py"]
+CMD ["python3", "-m", "llama_cpp.server", "--host", "0.0.0.0", "--port", "8080"]
