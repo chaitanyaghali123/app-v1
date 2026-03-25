@@ -113,28 +113,30 @@ const AskForm: React.FC = () => {
 
   // 🔹 Learn More with UI cache
   const handleLearnMore = async () => {
-    if (!answerData?.revision_id) return;
-    const cacheKey = `learnmore:${answerData.revision_id}`;
-    const cached = getCached(cacheKey);
-    if (cached) {
-      console.log("⚡ UI cache hit:", cacheKey);
-      setDetailedAnswer(cached);
-      return;
-    }
+  if (!answerData?.revision_id) return;
 
-    try {
-      const res = await learnMore({ response_id: String(answerData.revision_id) });
-      const detailed = {
-        detailed: res.detailed,
-        revision_id: res.revision_id,
-        citations: res.citations
-      };
-      setDetailedAnswer(detailed);
-      setCached(cacheKey, detailed); // uses LEARNMORE_TTL from .env
-    } catch (err) {
-      console.error("Learn more failed:", err);
-    }
-  };
+  const cacheKey = `learnmore:${answerData.revision_id}`;
+  const cached = getCached(cacheKey);
+  if (cached) {
+    console.log("⚡ UI cache hit:", cacheKey);
+    setDetailedAnswer(cached);
+    return;
+  }
+
+  try {
+    const res = await learnMore({ response_id: String(answerData.revision_id) });
+    const detailed = {
+      answer: res.detailed,   // ✅ FIX: rename to "answer"
+      revision_id: res.revision_id,
+      citations: res.citations
+    };
+    setDetailedAnswer(detailed);
+    setCached(cacheKey, detailed);
+  } catch (err) {
+    console.error("Learn more failed:", err);
+  }
+};
+
 
   const citations = answerData?.citations ?? [];
 

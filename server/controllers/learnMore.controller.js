@@ -7,6 +7,7 @@ import { LEARNMORE_TTL } from "../config/cache.js";
 export async function handleLearnMore(req, res) {
   try {
     const { response_id } = req.body;
+
     if (!response_id) {
       return res.status(400).json({ error: "response_id is required" });
     }
@@ -27,17 +28,15 @@ export async function handleLearnMore(req, res) {
       });
     }
 
-    // 🔹 Cache key
     const cacheKey = `learnmore:${response_id}`;
 
-    // 1️⃣ Check cache first
+    // ✅ 1. Check cache
     const cached = await redis.get(cacheKey);
     if (cached) {
       console.log("⚡ Cache hit:", cacheKey);
       return res.json(JSON.parse(cached));
     }
 
-    // ✅ Prime → Local llama-cpp call
     try {
       const response = await axios.post(
         `${process.env.VLLM_API_URL}/v1/chat/completions`,
@@ -47,19 +46,15 @@ export async function handleLearnMore(req, res) {
             {
               role: "system",
               content: `You are an expert UPSC educator.
-              Expand the previous answer into a detailed explanation.
-              Always respond in clean, semantic HTML with:
-              <h2> for section headings,
-              <ul>/<li> for lists,
-              <p> for paragraphs.
-              Keep everything in English only.`
+Expand the previous answer into a detailed explanation.
+Always respond in clean HTML using <h2>, <p>, <ul>, <li>.`
             },
             {
               role: "user",
-              content: `Please expand on and provide more depth for this previous answer:\n\n"${result.answer}"`
+              content: `Expand this answer:\n\n"${result.answer}"`
             }
           ],
-          max_tokens: 1024, // 🔹 increase from 14 to realistic expansion size
+          max_tokens: 1024,
           temperature: 0.4,
         },
         { timeout: 180000 }
@@ -76,14 +71,30 @@ export async function handleLearnMore(req, res) {
         citations: [],
       };
 
-      // 2️⃣ Save to cache (TTL 5 minutes)
-      await redis.set(cacheKey, JSON.stringify(detailed), "EX", LEARNMORE_TTL);
+      // ✅ FIXED: store correct object
+      await redis.set(
+        cacheKey,
+        JSON.stringify(finalResponse),
+        "EX",
+        LEARNMORE_TTL
+      );
+
+      // ✅ FIXED: return response
+      return res.json(finalResponse);
+
     } catch (err) {
       console.error("❌ GPU LearnMore error:", err.message);
-      return res.status(500).json({ error: "Local AI server is busy or unavailable." });
+
+      return res.status(500).json({
+        error: "Local AI server is busy or unavailable."
+      });
     }
+
   } catch (err) {
     console.error("[handleLearnMore] error:", err.message);
-    res.status(500).json({ error: "Learn more processing failed" });
+
+    return res.status(500).json({
+      error: "Learn more processing failed"
+    });
   }
 }

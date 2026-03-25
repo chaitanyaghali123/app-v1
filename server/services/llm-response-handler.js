@@ -2,9 +2,6 @@ import path from "path";
 import axios from "axios";
 import { isPrimeUser } from "../config/user.config.js";
 
-/**
- * Handles generating an answer using the local llama-cpp GPU server
- */
 export async function handleLLMAnswer({
   prompt,
   chunks = [],
@@ -23,7 +20,7 @@ export async function handleLLMAnswer({
     };
   }
 
-  // Limit context to 3 chunks to save VRAM on GTX 1650
+  // Limit context to 3 chunks (optional, adjust for GPU memory)
   const limitedChunks = chunks.slice(0, 3);
   const contextText =
     limitedChunks.length > 0
@@ -34,12 +31,12 @@ export async function handleLLMAnswer({
     const response = await axios.post(
       `${process.env.VLLM_API_URL}/v1/chat/completions`,
       {
-        model: process.env.VLLM_MODEL || "local-model",
+        model: process.env.VLLM_MODEL,
         messages: [
           {
             role: "system",
             content: `You are a UPSC expert. Use the CONTEXT.
-            IMPORTANT: Use <strong> for subheadings and <br/> for line breaks.
+            Respond in clean HTML (<strong>, <br/>, <p>).
             Avoid Markdown symbols like **.`
           },
           {
@@ -47,23 +44,19 @@ export async function handleLLMAnswer({
             content: `CONTEXT:\n${contextText}\n\nQUESTION:\n${prompt}`
           }
         ],
-        // 🔹 Adjusted for stability: 600 tokens is safer for 4GB VRAM to prevent Docker from sticking
-        max_tokens: mode === "learn_more" ? 600 : 400, 
-        temperature: 0.2, 
+        max_tokens: mode === "learn_more" ? 2800 : 1200,
+        temperature: 0.3,
       },
-      // 🔹 4-minute timeout to ensure the GPU has room to breathe
-      { timeout: 240000 } 
+      { timeout: 240000 }
     );
 
     let rawAnswer = response.data?.choices?.[0]?.message?.content?.trim() || "";
 
-    // 🔹 FORMATTING ENGINE: Converts AI output into structured HTML
     const formattedAnswer = rawAnswer
-      .replace(/\*\*\*(.*?)\*\*\*/g, '<strong>$1</strong>') // Triple star bold
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')    // Double star bold
-      .replace(/### (.*?)\n/g, '<strong>$1</strong><br/>') // Headers to bold
-      .replace(/\n\n/g, '<br/><br/>')                     // Double newline to paragraph
-      .replace(/\n/g, '<br/>');                           // Single newline to break
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/### (.*?)\n/g, '<strong>$1</strong><br/>')
+      .replace(/\n\n/g, '<br/><br/>')
+      .replace(/\n/g, '<br/>');
 
     return {
       answer: formattedAnswer,
@@ -71,14 +64,14 @@ export async function handleLLMAnswer({
       context_source: limitedChunks.length ? "chunks_plus_llm" : "llm_only",
     };
   } catch (err) {
-    console.error("❌ LLM Connection Error:", err.message);
-    
+    console.error("❌ Phi3 vLLM Connection Error:", err.message);
+
     const isTimeout = err.code === 'ECONNABORTED' || err.message.includes('timeout');
-    
+
     return {
-      answer: isTimeout 
-        ? "The GPU is currently overloaded. Please wait 10 seconds and try again."
-        : "Local AI server is busy (Docker/WSL2 issue). Restarting the service is recommended.",
+      answer: isTimeout
+        ? "The GPU is currently overloaded. Please wait and try again."
+        : "Local AI server is busy. Restarting the service may help.",
       citations: [],
       context_source: "llm_error",
     };

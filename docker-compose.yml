@@ -187,7 +187,6 @@ services:
 
 
 
-
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
@@ -269,7 +268,6 @@ services:
       - sambit-net
     restart: always
 
-
 volumes:
   postgres:
   pgadmin:
@@ -280,3 +278,4 @@ volumes:
 networks:
   sambit-net:
     driver: bridge
+

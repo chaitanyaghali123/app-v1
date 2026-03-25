@@ -5,7 +5,6 @@ import { saveRevision } from "../services/db.service.js";
 import redis from "../config/redis.js"; // 🔹 new import
 import { ANSWER_TTL } from "../config/cache.js";
 
-
 export const handleAnswer = async (req, res) => {
   const { prompt, subject_id = "General", user_id = "guest" } = req.body;
 
