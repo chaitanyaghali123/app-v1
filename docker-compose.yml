@@ -244,9 +244,11 @@ services:
       "--port", "8080",
       "--n_gpu_layers", "0",   # CPU only
       
-      "--n_threads", "6",
-      "--n_ctx", "2048", 
-      "--n_batch", "256"               
+      "--n_threads", "12",
+      "--n_ctx", "1024", 
+      "--n_batch", "64"      
+      
+               
     ]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/v1/models"]
