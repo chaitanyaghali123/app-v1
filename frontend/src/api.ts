@@ -1,88 +1,77 @@
-import { AnswerResponse, RevisionItem, Invoice } from "./types";
+import { RevisionItem, Invoice, SubjectsResponse } from "./types";
 
-const BASE = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
+// ✅ SINGLE SOURCE OF TRUTH (IMPORTANT FIX)
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
 
-// === Answer Generation ===
-export async function fetchAnswer(
-  prompt: string,
+// =============================
+// 🔥 CHAT TYPES
+// =============================
+export type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  citations?: any[];
+};
+
+export type ChatResponse = {
+  chatId: string;
+  messages: ChatMessage[];
+  citations?: any[];
+  context_source?: string;
+  tokensUsed?: number;
+};
+
+// =============================
+// 🚀 Revisions (CURSOR PAGINATION)
+// =============================
+export async function getRevisionsCursor(
   subject_id: string,
-  user_id: string
-): Promise<AnswerResponse> {
-  const r = await fetch(`${BASE}/api/answer`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, subject_id, user_id })
-  });
-  if (!r.ok) throw new Error(`Answer request failed: ${r.status}`);
-  return r.json();
-}
+  user_id: string,
+  cursor: string | null
+): Promise<{
+  items: RevisionItem[];
+  next_cursor: string | null;
+  has_more: boolean;
+}> {
+  const params = new URLSearchParams({ subject_id, user_id });
+  if (cursor) params.append("cursor", cursor);
 
-// === Learn More Expansion ===
-export async function learnMore(body: { response_id: string }) {
-  const controller = new AbortController();
-  // Set a 3-minute timeout to account for local GPU inference speed
-  const timeoutId = setTimeout(() => controller.abort(), 250000); 
+  const r = await fetch(`${API_BASE}/revisions?${params.toString()}`);
 
-  try {
-    const r = await fetch(`${BASE}/api/learn-more`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-
-    if (!r.ok) {
-      const errorData = await r.json();
-      throw new Error(errorData.error || `Expansion failed: ${r.status}`);
-    }
-
-    const data = await r.json();
-    clearTimeout(timeoutId);
-
-    return {
-      response_id: body.response_id,
-      revision_id: data.revision_id,
-      // Map backend 'detailed' field to 'answer' for frontend state consistency
-      detailed: data.detailed || "No expansion generated.",
-      citations: data.citations || []
-    };
-  } catch (err: any) {
-    if (err.name === 'AbortError') {
-      throw new Error("The AI is taking a long time to think. Please try again in a moment.");
-    }
-    throw err;
-  }
-}
-
-// === Revisions ===
-export async function getRevisionsBySubject(
-  subject_id: string,
-  user_id: string
-): Promise<RevisionItem[]> {
-  const r = await fetch(
-    `${BASE}/api/revisions?subject_id=${encodeURIComponent(subject_id)}&user_id=${encodeURIComponent(user_id)}`
-  );
   if (!r.ok) throw new Error(`Get revisions failed: ${r.status}`);
+  if (r.status === 204) return { items: [], next_cursor: null, has_more: false };
+
   const data = await r.json();
-  return data.items || [];
+
+  return {
+    items: (data.items || []) as RevisionItem[],
+    next_cursor: data.next_cursor || null,
+    has_more: data.has_more || false
+  };
 }
 
-// === Subjects ===
+// =============================
+// Subjects
+// =============================
 export async function fetchSubjects(): Promise<string[]> {
-  const r = await fetch(`${BASE}/api/subjects`);
+  const r = await fetch(`${API_BASE}/subjects`);
+
   if (!r.ok) throw new Error(`Subjects fetch failed: ${r.status}`);
-  const data = await r.json();
+  if (r.status === 204) return ["General"];
+
+  const data = (await r.json()) as SubjectsResponse;
   return data.subjects || ["General"];
 }
 
-// === Signup ===
+// =============================
+// Signup
+// =============================
 export async function signupUser(body: {
   name: string;
   email: string;
   password: string;
   phone: string;
-}) {
-  const r = await fetch(`${BASE}/api/auth/signup`, {
+}): Promise<{ success: boolean; message?: string }> {
+  const r = await fetch(`${API_BASE}/auth/signup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
@@ -96,84 +85,176 @@ export async function signupUser(body: {
   return r.json();
 }
 
-// === Subscription / Payment (Stubbed locally) ===
-export async function subscribeOrder(body: { name: string; email: string; plan: string }) {
-  const r = await fetch(`${BASE}/api/payment/order`, {
+// =============================
+// Subscription / Payment
+// =============================
+export async function subscribeOrder(body: {
+  name: string;
+  email: string;
+  plan: string;
+}): Promise<{ orderId: string; status: string }> {
+  const r = await fetch(`${API_BASE}/payment/order`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body)
   });
+
   if (!r.ok) throw new Error(`Order failed: ${r.status}`);
   return r.json();
 }
 
-// === Invoice History ===
+// =============================
+// Invoice History
+// =============================
 export async function fetchInvoices(): Promise<Invoice[]> {
-  const r = await fetch(`${BASE}/api/invoices`);
+  const r = await fetch(`${API_BASE}/invoices`);
+
   if (!r.ok) throw new Error(`Failed to fetch invoices: ${r.status}`);
-  return r.json();
+  if (r.status === 204) return [];
+
+  return r.json() as Promise<Invoice[]>;
 }
 
-// === Login ===
-export async function loginUser(body: { email: string; password: string }) {
-  const r = await fetch(`${BASE}/api/auth/login`, {
+// =============================
+// Login
+// =============================
+export async function loginUser(body: {
+  email: string;
+  password: string;
+}): Promise<{ accessToken: string; refreshToken: string }> {
+  const r = await fetch(`${API_BASE}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body)
   });
+
   if (!r.ok) {
     const data = await r.json();
     throw new Error(data.error || "Login failed");
   }
-  return r.json(); // { accessToken, refreshToken }
+
+  return r.json();
 }
 
-// === Refresh Token ===
-export async function refreshToken(refreshToken: string) {
-  const r = await fetch(`${BASE}/api/auth/refresh`, {
+// =============================
+// Refresh Token
+// =============================
+export async function refreshToken(
+  refreshToken: string
+): Promise<{ accessToken: string }> {
+  const r = await fetch(`${API_BASE}/auth/refresh`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refreshToken }),
+    body: JSON.stringify({ refreshToken })
   });
+
   if (!r.ok) {
     const data = await r.json();
     throw new Error(data.error || "Refresh failed");
   }
-  return r.json(); // { accessToken }
+
+  return r.json();
 }
 
-
-// -----------------------------
-// Token-aware fetch wrapper
-// -----------------------------
-async function refreshTokenCall(refreshToken: string) {
-  const r = await fetch(`${BASE}/api/auth/refresh`, {
+// =============================
+// 🔐 Token-aware fetch wrapper
+// =============================
+async function refreshTokenCall(refreshToken: string): Promise<{ accessToken: string }> {
+  const r = await fetch(`${API_BASE}/auth/refresh`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refreshToken }),
+    body: JSON.stringify({ refreshToken })
   });
+
   if (!r.ok) throw new Error("Refresh failed");
-  return r.json(); // { accessToken }
+  return r.json();
 }
 
-export async function authFetch(url: string, options: any = {}) {
+export async function authFetch(url: string, options: any = {}): Promise<Response> {
   let accessToken = localStorage.getItem("accessToken");
-  options.headers = { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` };
+
+  options.headers = {
+    ...(options.headers || {}),
+    Authorization: `Bearer ${accessToken}`
+  };
 
   let res = await fetch(url, options);
 
   if (res.status === 401) {
     const refreshToken = localStorage.getItem("refreshToken");
+
     if (refreshToken) {
       try {
         const { accessToken: newToken } = await refreshTokenCall(refreshToken);
+
         localStorage.setItem("accessToken", newToken);
         options.headers.Authorization = `Bearer ${newToken}`;
-        res = await fetch(url, options); // retry original request
+
+        res = await fetch(url, options);
       } catch {
         throw new Error("Session expired. Please log in again.");
       }
     }
   }
+
   return res;
+}
+
+// =============================
+// 🔥 CHAT SYSTEM APIs
+// =============================
+
+// ✅ Create Chat
+export async function createChat(body: {
+  userId: string;
+  subjectId: string;
+}): Promise<{ chatId: string }> {
+  const r = await fetch(`${API_BASE}/chat/create`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  if (!r.ok) throw new Error(`Create chat failed: ${r.status}`);
+  return r.json();
+}
+
+// ✅ Send Message
+export async function sendMessage(body: {
+  chatId: string;
+  message: string;
+  subjectId: string;
+}): Promise<ChatResponse> {
+  const r = await fetch(`${API_BASE}/chat/message`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  if (!r.ok) throw new Error(`Send message failed: ${r.status}`);
+  if (r.status === 204) throw new Error("Empty response from server");
+
+  return r.json();
+}
+
+// ✅ Get Chat List
+export async function getChats(userId: string) {
+  const r = await fetch(`${API_BASE}/chat/list?userId=${userId}`);
+
+  if (!r.ok) throw new Error(`Get chats failed: ${r.status}`);
+  if (r.status === 204) return [];
+
+  return r.json();
+}
+
+// ✅ Get Messages of Chat
+export async function getChatMessages(
+  chatId: string
+): Promise<{ messages: ChatMessage[] }> {
+  const r = await fetch(`${API_BASE}/chat/${chatId}`);
+
+  if (!r.ok) throw new Error(`Get messages failed: ${r.status}`);
+  if (r.status === 204) return { messages: [] };
+
+  return r.json();
 }

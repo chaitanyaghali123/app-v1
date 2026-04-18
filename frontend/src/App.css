@@ -1,23 +1,65 @@
-.answer-block {
-  background: #fff;
-  padding: 15px;
-  border-radius: 6px;
+/* === Conversation Feed (ChatGPT-style) === */
+.conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   margin-top: 20px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
 }
 
-.answer-block h3 {
-  color: #007bff;
+/* User message bubble */
+.message.user {
+  align-self: flex-end;
+  background: #1e40af;
+  color: #fff;
+  padding: 12px 16px;
+  border-radius: 16px 16px 0 16px;
+  max-width: 70%;
+  font-size: 15px;
+  line-height: 1.5;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 
-.answer-block ul {
-  padding-left: 1.5rem;
+/* Assistant message bubble */
+.message.assistant {
+  align-self: flex-start;
+  background: #f3f4f6;
+  color: #111;
+  padding: 12px 16px;
+  border-radius: 16px 16px 16px 0;
+  max-width: 70%;
+  font-size: 15px;
+  line-height: 1.6;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 
-.answer-block li {
-  margin-bottom: 0.5rem;
+/* Expanded Learn More section inside assistant bubble */
+.message.assistant .expanded {
+  margin-top: 12px;
+  padding: 12px;
+  background-color: #f9fafb;
+  border-left: 4px solid #1e40af;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
+/* Buttons inside chat */
+button {
+  margin-top: 8px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  background: #1e40af;
+  color: #fff;
+  font-weight: 600;
+}
+
+button:hover {
+  background: #1e3a8a;
+}
+
+/* Footer */
 footer {
   margin-top: 40px;
   text-align: center;
@@ -28,4 +70,3 @@ footer {
 footer span {
   color: red;
 }
-

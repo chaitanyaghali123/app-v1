@@ -1,8 +1,12 @@
 // controllers/revision.controller.js
+
 import path from "path";
 import * as db from "../services/db.service.js";
+import redis from "../config/redis.js"; 
 
-// Parse citations from DB (JSONB may arrive as string or object)
+// -----------------------------
+// Parse citations from DB
+// -----------------------------
 function parseCitations(raw) {
   if (!raw) return [];
   if (typeof raw === "string") {
@@ -13,7 +17,9 @@ function parseCitations(raw) {
   return [];
 }
 
-// Normalize + deduplicate citations by filename
+// -----------------------------
+// Normalize + deduplicate citations
+// -----------------------------
 function normalizeCitations(rawCitations = []) {
   const seen = new Set();
   const out = [];
@@ -21,7 +27,7 @@ function normalizeCitations(rawCitations = []) {
   for (const c of rawCitations) {
     if (!c) continue;
 
-    // Allow simple string citations
+    // String citation
     if (typeof c === "string") {
       const filename = path.basename(c);
       if (seen.has(filename)) continue;
@@ -30,7 +36,7 @@ function normalizeCitations(rawCitations = []) {
       continue;
     }
 
-    // Object citations
+    // Object citation
     const filename = c.source ? path.basename(c.source) : "";
     if (!filename) continue;
     if (seen.has(filename)) continue;
@@ -45,7 +51,9 @@ function normalizeCitations(rawCitations = []) {
   return out;
 }
 
-// Unified revision shape (returns values exactly as saved)
+// -----------------------------
+// Normalize revision
+// -----------------------------
 function normalizeRevision(row) {
   const citations = normalizeCitations(parseCitations(row.citations));
 
@@ -55,48 +63,95 @@ function normalizeRevision(row) {
     subject_id: row.subject_id,
     created_at: row.created_at,
     answer: row.answer ?? "",
-    expanded_answer: row.expanded_answer ?? null, // keep null if not expanded yet
     citations,
   };
 }
 
+// -----------------------------
 // GET /api/revisions/:responseId
+// -----------------------------
 export async function getRevisionsByResponseId(req, res) {
   try {
     const { responseId } = req.params;
+
     const result = await db.getRevision(responseId);
+
     if (!result) {
       return res.status(404).json({ error: "Revision not found" });
     }
-    return res.json({ items: [normalizeRevision(result)] });
+
+    return res.json({
+      items: [normalizeRevision(result)],
+    });
+
   } catch (err) {
     console.error("Get revisions by responseId failed:", err);
     return res.status(500).json({ error: "Failed to fetch revisions" });
   }
 }
 
-// GET /api/revisions?subject_id=&user_id=
+// -----------------------------
+// 🚀 CURSOR PAGINATION + REDIS
+// GET /api/revisions?subject_id=&user_id=&cursor=
+// -----------------------------
 export async function getRevisionsBySubject(req, res) {
   try {
-    const { subject_id, user_id } = req.query;
+    const { subject_id, user_id, cursor } = req.query;
+
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+
     if (!subject_id || !user_id) {
-      return res.status(400).json({ error: "subject_id and user_id are required" });
+      return res.status(400).json({
+        error: "subject_id and user_id are required"
+      });
     }
 
-    const rows = await db.listRevisions(user_id, subject_id);
+    // ✅ CACHE KEY (important for performance)
+    const cacheKey = `history:${user_id}:${subject_id}:${cursor || "start"}`;
 
-    // Deduplicate by id and normalize
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      return res.json(JSON.parse(cached));
+    }
+
+    // ✅ USE CURSOR FUNCTION (NOT OFFSET)
+    const rows = await db.listRevisionsCursor(
+      user_id,
+      subject_id,
+      cursor || null,
+      limit
+    );
+
     const seen = new Set();
     const items = [];
+
     for (const r of rows) {
       if (seen.has(r.id)) continue;
       seen.add(r.id);
       items.push(normalizeRevision(r));
     }
 
-    return res.json({ items });
+    // ✅ NEXT CURSOR
+    const next_cursor =
+      items.length > 0
+        ? items[items.length - 1].created_at
+        : null;
+
+    const response = {
+      items,
+      next_cursor,
+      has_more: items.length === limit
+    };
+
+    // ✅ SAVE CACHE (TTL = 60s)
+    await redis.setex(cacheKey, 60, JSON.stringify(response));
+
+    return res.json(response);
+
   } catch (err) {
     console.error("Get revisions by subject failed:", err);
-    return res.status(500).json({ error: "Failed to fetch revisions" });
+    return res.status(500).json({
+      error: "Failed to fetch revisions"
+    });
   }
 }

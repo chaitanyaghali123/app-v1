@@ -1,110 +1,177 @@
-// server/server.js
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { Kafka } from "kafkajs";
+import { Queue } from "bullmq";
 
-// Load environment variables immediately
+// 🔥 NEW: request logger
+import { requestLogger } from "./middleware/logger.js";
+
+// Load env FIRST
 dotenv.config();
 
-// Initialize Kafka
+// ===============================
+// Kafka
+// ===============================
 const kafka = new Kafka({
   clientId: "invoice-app",
-  brokers: [process.env.KAFKA_BROKER || "kafka:9092"] // Updated to use docker service name
+  brokers: [process.env.KAFKA_BROKER || "kafka:9092"]
 });
 
-import answerRoutes from "./routes/answer.route.js";
+// ===============================
+// Routes
+// ===============================
+
 import chunkRoutes from "./routes/chunk.route.js";
 import ingestRoutes from "./routes/ingest.route.js";
 import llmRoutes from "./routes/llm.route.js";
 import revisionRoutes from "./routes/revision.route.js";
-import learnMoreRoutes from "./routes/learnMore.route.js";
-import subjectsRoutes from "./routes/subjects.route.js";
-import authRoutes from "./routes/auth.route.js"; 
 
-// Subscription + Invoice workflow
+import subjectsRoutes from "./routes/subjects.route.js";
+import authRoutes from "./routes/auth.route.js";
+
 import subscriptionRoutes from "./routes/subscription.route.js";
 import invoiceRoutes from "./routes/invoice.route.js";
 import paymentRoutes from "./routes/payment.route.js";
 import webhookRoutes from "./routes/webhook.route.js";
 
+// 🆕 NEW CHAT ROUTES
+import chatRoutes from "./routes/chat.routes.js";
+
+// ===============================
+// DB
+// ===============================
 import {
   ensureRevisionsTable,
   ensureResultsTable,
   ensureUsersTable,
   ensureInvoicesTable,
-  ensureRefreshTokensTable   // ✅ import new function
+  ensureRefreshTokensTable,
+  ensureApiLogsTable,
+
+  // 🆕 NEW
+  ensureChatsTable,
+  ensureMessagesTable
+
 } from "./services/db.service.js";
 
 const app = express();
 
 // ===============================
-// 🛡️ Enhanced CORS Configuration
+// 🛡️ CORS
 // ===============================
-// This fixes the "OPTIONS 204" hanging issue by explicitly 
-// allowing your Vite frontend port.
 app.use(
   cors({
-    origin: ["http://localhost:4173", "http://127.0.0.1:4173"], 
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    optionsSuccessStatus: 200 // Explicitly return 200 for legacy browser support
+    origin: process.env.CORS_ORIGIN?.split(",") || [
+      "http://localhost:4173",
+      "http://127.0.0.1:4173"
+    ],
+    credentials: true
   })
 );
 
-// Manual handling for preflight on all routes
-app.options("*", cors());
-
 app.use(express.json({ limit: "2mb" }));
+
+// ===============================
+// 🔥 REQUEST LOGGING
+// ===============================
+app.use(requestLogger);
+
+// ===============================
+// 🔥 QUEUE (BullMQ)
+// ===============================
+const queue = new Queue("llm-queue", {
+  connection: {
+    host: process.env.REDIS_HOST || "localhost",
+    port: 6379,
+    maxRetriesPerRequest: null
+  }
+});
 
 // ===============================
 // Health Check
 // ===============================
 app.get("/health", (_req, res) => {
-  res.json({ 
-    status: "ok", 
-    llm_connected: process.env.VLLM_API_URL || "not configured" 
+  res.json({
+    status: "ok",
+    llm_connected: process.env.LLM_API_URL || "not configured"
   });
+});
+
+// ===============================
+// 🚀 LLM RESULT POLLING
+// ===============================
+app.get("/api/llm/result/:id", async (req, res) => {
+  try {
+    const job = await queue.getJob(req.params.id);
+
+    if (!job) {
+      return res.json({ status: "not_found" });
+    }
+
+    const state = await job.getState();
+
+    if (state === "completed") {
+      return res.json({
+        status: "done",
+        data: job.returnvalue
+      });
+    }
+
+    return res.json({ status: state });
+
+  } catch (err) {
+    console.error("❌ Result fetch error:", err);
+    res.status(500).json({ error: "Failed to fetch result" });
+  }
 });
 
 // ===============================
 // Routes
 // ===============================
 app.use("/api/auth", authRoutes);
-app.use("/api/answer", answerRoutes);
+
 app.use("/api/chunk", chunkRoutes);
 app.use("/api/ingest", ingestRoutes);
 app.use("/api/llm", llmRoutes);
 app.use("/api/revisions", revisionRoutes);
-app.use("/api/learn-more", learnMoreRoutes);
+
 app.use("/api/subjects", subjectsRoutes);
 
-// Subscription + Invoice workflow
 app.use("/api/subscribe", subscriptionRoutes);
 app.use("/api/invoices", invoiceRoutes);
 app.use("/api/payment", paymentRoutes);
 app.use("/api/webhook", webhookRoutes);
 
+// 🆕 NEW CHAT ROUTES
+app.use("/api/chat", chatRoutes);
+
 // ===============================
-// Initialize Tables
+// Init DB + Server
 // ===============================
 async function initialize() {
   try {
+    // ✅ STEP 1: Independent tables (parallel OK)
     await Promise.all([
       ensureRevisionsTable(),
       ensureResultsTable(),
       ensureUsersTable(),
       ensureInvoicesTable(),
-      ensureRefreshTokensTable()   // ✅ ensure refresh token table
+      ensureRefreshTokensTable(),
+      ensureApiLogsTable()
     ]);
 
-    console.log("✅ Database: All tables ensured");
+    // ✅ STEP 2: Dependent tables (SEQUENTIAL 🔥)
+    await ensureChatsTable();     // must come first
+    await ensureMessagesTable();  // depends on chats
+
+    console.log("✅ Database initialized (with chat system)");
 
     const PORT = Number(process.env.PORT || 3000);
-    app.listen(PORT, "0.0.0.0", () => { // Bind to 0.0.0.0 for Docker stability
-      console.log(`🚀 Node server running on port ${PORT}`);
-      console.log(`🔗 Connected to LLM at: ${process.env.VLLM_API_URL}`);
+
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`🔗 LLM: ${process.env.LLM_API_URL}`);
     });
 
   } catch (err) {

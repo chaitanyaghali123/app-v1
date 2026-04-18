@@ -1,3 +1,5 @@
+// server/services/vector.service.js
+
 import axios from "axios";
 
 const BASE = process.env.FASTAPI_URL || process.env.VECTOR_API;

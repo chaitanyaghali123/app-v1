@@ -1,241 +1,252 @@
-// src/components/AskForm.tsx
 import React, { useState, useEffect, useRef } from "react";
-import {
-  fetchSubjects,
-  getRevisionsBySubject,
-  fetchAnswer,
-  learnMore
-} from "../api";
-import { AnswerResponse, RevisionItem } from "../types";
-import { getCached, setCached } from "../utils/cache"; // 🔹 new import
+import { fetchSubjects } from "../api";
 import "./AskForm.css";
 
-const AskForm: React.FC = () => {
-  const [subjects, setSubjects] = useState<string[]>([]);
-  const [subjectId, setSubjectId] = useState(
-    import.meta.env.VITE_DEFAULT_SUBJECT || "General"
-  );
-  const [query, setQuery] = useState("");
-  const [answerData, setAnswerData] = useState<AnswerResponse | null>(null);
-  const [detailedAnswer, setDetailedAnswer] = useState<any>(null);
-  const [revisionItems, setRevisionItems] = useState<RevisionItem[]>([]);
-  const [showRevision, setShowRevision] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [listening, setListening] = useState(false);
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
 
+const TypingIndicator: React.FC = () => (
+  <div className="typing-indicator">
+    <span></span><span></span><span></span>
+  </div>
+);
+
+const AskForm: React.FC = () => {
   const userId = import.meta.env.VITE_DEFAULT_USER_ID || "anon";
-  const recognitionRef = useRef<any>(null);
+
+  const [chatId, setChatId] = useState<string | null>(null);
+  const [chats, setChats] = useState<any[]>([]);
+  const [conversation, setConversation] = useState<any[]>([]);
+  const [query, setQuery] = useState("");
+  const [subjects, setSubjects] = useState<string[]>([]);
+  const [subjectId, setSubjectId] = useState("General");
+  const [loading, setLoading] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  // 🔥 FIXED NORMALIZER (handles broken JSON)
+  const normalizeMessages = (msgs: any[]) => {
+    return msgs.map((m) => {
+      let content = m.content;
+
+      if (typeof content === "string") {
+        // Try valid JSON
+        try {
+          if (content.trim().startsWith("{")) {
+            const parsed = JSON.parse(content);
+            content = parsed.answer || content;
+          }
+        } catch (e) {}
+
+        // Handle broken JSON string
+        if (content.includes('"answer"')) {
+          const match = content.match(/"answer"\s*:\s*"([\s\S]*?)"/);
+          if (match && match[1]) {
+            content = match[1]
+              .replace(/\\"/g, '"')
+              .replace(/\\n/g, "\n");
+          }
+        }
+
+        // Clean leftover junk
+        content = content
+          .replace(/^\s*\{.*?"answer"\s*:\s*"?/, "")
+          .replace(/",?\s*"citations".*$/, "")
+          .trim();
+      }
+
+      if (typeof content === "object") {
+        content = content?.answer || JSON.stringify(content);
+      }
+
+      return { ...m, content };
+    });
+  };
 
   useEffect(() => {
     fetchSubjects().then(setSubjects).catch(() => setSubjects(["General"]));
   }, []);
 
-  useEffect(() => {
-    if (showRevision) {
-      getRevisionsBySubject(subjectId, userId)
-        .then(setRevisionItems)
-        .catch((err) => console.error("Fetching revisions failed:", err));
+  const loadChats = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/chat/list?userId=${userId}`);
+      const data = await res.json();
+      setChats(data);
+    } catch (err) {
+      console.error("❌ loadChats error:", err);
     }
-  }, [showRevision, subjectId, userId]);
+  };
 
-  // 🎤 Speech Recognition
   useEffect(() => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition ||
-      (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognition) return;
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = "en-US";
-    recognition.interimResults = false;
-    recognition.continuous = false;
-
-    recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      setQuery((prev) => (prev ? prev + " " : "") + transcript);
-    };
-
-    recognition.onend = () => setListening(false);
-
-    recognitionRef.current = recognition;
+    loadChats();
   }, []);
 
-  const handleMicClick = () => {
-    if (!recognitionRef.current) {
-      alert("Speech recognition not supported in this browser.");
-      return;
-    }
-    if (!listening) {
-      setListening(true);
-      recognitionRef.current.start();
-    } else {
-      recognitionRef.current.stop();
-      setListening(false);
+  const createChat = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/chat/create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, subjectId })
+      });
+
+      const data = await res.json();
+      setChatId(data.chatId);
+      setConversation([]);
+      loadChats();
+      setSidebarOpen(false);
+    } catch (err) {
+      console.error("❌ createChat error:", err);
     }
   };
 
-  // 🔹 Ask with UI cache
-  const handleSubmit = async (q?: string) => {
-    const prompt = q || query;
-    if (!prompt.trim()) return;
-    setLoading(true);
-    setAnswerData(null);
-    setDetailedAnswer(null);
+  const loadMessages = async (id: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/chat/${id}`);
+      const data = await res.json();
 
-    const cacheKey = `answer:${subjectId}:${userId}:${prompt}`;
-    const cached = getCached(cacheKey);
-    if (cached) {
-      console.log("⚡ UI cache hit:", cacheKey);
-      setAnswerData(cached);
-      setLoading(false);
-      return;
+      setChatId(id);
+      setConversation(normalizeMessages(data.messages || []));
+      setSidebarOpen(false);
+    } catch (err) {
+      console.error("❌ loadMessages error:", err);
     }
+  };
+
+  const handleSubmit = async () => {
+    if (!query.trim() || loading) return;
+
+    let currentChatId = chatId;
 
     try {
-      const res = await fetchAnswer(prompt, subjectId, userId);
-      setAnswerData(res);
-      setCached(cacheKey, res); // uses ANSWER_TTL from .env
-    } catch (err) {
-      console.error("Error in handleSubmit:", err);
-      setAnswerData({
-        answer: "Error fetching answer.",
-        expanded_answer: null,
-        citations: [],
-        prompt,
-        subject_id: subjectId,
-        revision_id: null
+      if (!currentChatId) {
+        const res = await fetch(`${API_BASE}/chat/create`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, subjectId })
+        });
+
+        const data = await res.json();
+        currentChatId = data.chatId;
+        setChatId(currentChatId);
+      }
+
+      const userMessage = { role: "user", content: query };
+
+      setConversation((prev) => [
+        ...prev,
+        userMessage,
+        { role: "assistant", content: "typing…" }
+      ]);
+
+      setLoading(true);
+      setQuery("");
+
+      const res = await fetch(`${API_BASE}/chat/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chatId: currentChatId,
+          message: query,
+          subjectId
+        })
       });
-    } finally {
-      setLoading(false);
+
+      const data = await res.json();
+
+      setConversation(normalizeMessages(data.messages || []));
+      loadChats();
+    } catch (err) {
+      console.error("❌ sendMessage error:", err);
     }
+
+    setLoading(false);
   };
 
-  // 🔹 Learn More with UI cache
-  const handleLearnMore = async () => {
-  if (!answerData?.revision_id) return;
-
-  const cacheKey = `learnmore:${answerData.revision_id}`;
-  const cached = getCached(cacheKey);
-  if (cached) {
-    console.log("⚡ UI cache hit:", cacheKey);
-    setDetailedAnswer(cached);
-    return;
-  }
-
-  try {
-    const res = await learnMore({ response_id: String(answerData.revision_id) });
-    const detailed = {
-      answer: res.detailed,   // ✅ FIX: rename to "answer"
-      revision_id: res.revision_id,
-      citations: res.citations
-    };
-    setDetailedAnswer(detailed);
-    setCached(cacheKey, detailed);
-  } catch (err) {
-    console.error("Learn more failed:", err);
-  }
-};
-
-
-  const citations = answerData?.citations ?? [];
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [conversation]);
 
   return (
-    <div className="ask-form-container">
-      <label>
-        Subject:
-        <select value={subjectId} onChange={(e) => setSubjectId(e.target.value)}>
+    <div className="app">
+      {/* Sidebar Toggle */}
+      <button
+        className="sidebar-toggle"
+        onClick={() => setSidebarOpen(!sidebarOpen)}
+      >
+        📒
+      </button>
+
+      {/* Overlay */}
+      <div
+        className={`overlay ${sidebarOpen ? "visible" : "hidden"}`}
+        onClick={() => setSidebarOpen(false)}
+      ></div>
+
+      {/* Sidebar */}
+      <div className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
+        <button onClick={createChat}>+ New Chat</button>
+
+        {chats.map((chat) => (
+          <div
+            key={chat.chatId}
+            onClick={() => loadMessages(chat.chatId)}
+            className="chat-item"
+          >
+            {chat.title || "Untitled"}
+          </div>
+        ))}
+      </div>
+
+      {/* Chat Area */}
+      <div className="chat-area">
+        <select
+          value={subjectId}
+          onChange={(e) => setSubjectId(e.target.value)}
+        >
           {subjects.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
+            <option key={s}>{s}</option>
           ))}
         </select>
-      </label>
 
-      {/* 🔹 Input + Mic */}
-      <div className="input-container mic-input">
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Type or speak your question..."
-        />
-        <button
-          type="button"
-          className={`mic-btn ${listening ? "active" : ""}`}
-          onClick={handleMicClick}
-          title="Speak"
-        >
-          🎙️
-        </button>
-      </div>
-
-      <div className="buttons">
-        <button onClick={() => handleSubmit()}>Ask</button>
-        <button onClick={() => setShowRevision(!showRevision)}>Revision</button>
-      </div>
-
-      {loading && (
-        <div className="loading">
-          <span className="spinner"></span>
-          Fetching answer…
-        </div>
-      )}
-
-      {!loading && answerData && (
-        <div className="answer-block">
-          <h3>Answer</h3>
-          <div dangerouslySetInnerHTML={{ __html: answerData.answer }} />
-          {answerData.expanded_answer && (
-            <div className="expanded-answer">
-              <h4>Learn More (auto)</h4>
-              <div dangerouslySetInnerHTML={{ __html: answerData.expanded_answer }} />
+        <div className="conversation">
+          {conversation.map((msg, i) => (
+            <div key={i} className={`message ${msg.role}`}>
+              {msg.content === "typing…" ? (
+                <TypingIndicator />
+              ) : msg.role === "assistant" ? (
+                <div
+                  dangerouslySetInnerHTML={{
+                    __html: String(msg.content)
+                  }}
+                />
+              ) : (
+                String(msg.content)
+              )}
             </div>
-          )}
-          {answerData.revision_id && (
-            <button onClick={handleLearnMore}>Learn More</button>
-          )}
-          {citations.length > 0 && (
-            <ul>
-              {citations.map((c, i) => (
-                <li key={i}>{c.source}</li>
-              ))}
-            </ul>
-          )}
+          ))}
+          <div ref={chatEndRef} />
         </div>
-      )}
 
-      {detailedAnswer && (
-        <div className="answer-block">
-          <h3>Expanded Answer</h3>
-          <div dangerouslySetInnerHTML={{ __html: detailedAnswer.answer }} />
-        </div>
-      )}
+        {/* Input */}
+        <div className="input-container">
+          <textarea
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Send a message..."
+            rows={1}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSubmit();
+              }
+            }}
+          />
 
-      {showRevision && (
-        <div className="answer-block revision-history">
-          <h3>Revision History</h3>
-          {revisionItems.length > 0 ? (
-            revisionItems.map((r, i) => (
-              <div key={i} className="revision-item">
-                <p>
-                  <strong>Q:</strong> {r.prompt}
-                </p>
-                <div dangerouslySetInnerHTML={{ __html: r.answer }} />
-                {r.expanded_answer && (
-                  <div className="expanded-answer">
-                    <h4>Learn More</h4>
-                    <div dangerouslySetInnerHTML={{ __html: r.expanded_answer }} />
-                  </div>
-                )}
-              </div>
-            ))
-          ) : (
-            <p>No revision history.</p>
-          )}
+          <button onClick={handleSubmit} disabled={loading}>
+            ➤
+          </button>
         </div>
-      )}
+      </div>
     </div>
   );
 };

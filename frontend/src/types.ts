@@ -1,4 +1,8 @@
+// frontend/src/types.ts
+
+// ===============================
 // === Citations ===
+// ===============================
 export interface Citation {
   chunk_id: string;        // unique chunk identifier
   source: string;          // file or origin
@@ -7,7 +11,9 @@ export interface Citation {
   subject_id?: string;
 }
 
+// ===============================
 // === Context Chunks ===
+// ===============================
 export interface ContextChunk {
   text: string;
   metadata: {
@@ -20,40 +26,48 @@ export interface ContextChunk {
   };
 }
 
+// ===============================
 // === Answer Response ===
+// ===============================
 export interface AnswerResponse {
-  revision_id?: string | number | null;
+  revision_id?: string | null;
   prompt: string;
   subject_id: string;
-  answer: string;                  // normal answer
-  expanded_answer?: string | null; // ✅ include expanded answer
-  citations?: Citation[];          // normalized citations
+  answer: string;
+  citations?: Citation[];
 }
 
+// ===============================
 // === Revision Item ===
+// ===============================
 export interface RevisionItem {
-  id?: string;                     // revision identifier
+  id?: string;
   prompt: string;
   subject_id: string;
   created_at: string;
-  answer: string;                  // normal answer
-  expanded_answer?: string | null; // ✅ include expanded answer
-  citations?: Citation[];          // optional citations
+  answer: string;
+  citations?: Citation[];
 }
 
+// ===============================
 // === Chunk ===
+// ===============================
 export interface Chunk {
   id: string;
   text: string;
   source: string;
 }
 
+// ===============================
 // === Subjects Response ===
+// ===============================
 export interface SubjectsResponse {
   subjects: string[];
 }
 
-// === Invoice (for subscription workflow) ===
+// ===============================
+// === Invoice ===
+// ===============================
 export interface Invoice {
   id: string;
   email: string;
@@ -61,4 +75,59 @@ export interface Invoice {
   amount: number;
   url: string;
   created_at: string;
+}
+
+// ===============================
+// 🔥 CHAT SYSTEM TYPES (FINAL)
+// ===============================
+
+// ✅ Chat (sidebar list)
+export interface Chat {
+  chatId: string;        // ✅ matches backend
+  user_id: string;
+  subject_id: string;
+  title: string;
+  created_at: string;
+}
+
+// ✅ Chat message (conversation UI)
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  citations?: Citation[];   // ✅ important
+}
+
+// ✅ DB message (internal use)
+export interface ChatDBMessage {
+  id: string;
+  chat_id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+// ===============================
+// === API RESPONSES ===
+// ===============================
+
+// /chat/create
+export interface CreateChatResponse {
+  chatId: string;
+}
+
+// /chat/message
+export interface SendMessageResponse {
+  chatId: string;
+  messages: ChatMessage[];
+  citations?: Citation[];
+  context_source?: string;
+  tokensUsed?: number;
+}
+
+// /chat/list
+export type ChatListResponse = Chat[];
+
+// /chat/:chatId
+export interface ChatMessagesResponse {
+  messages: ChatMessage[];
 }

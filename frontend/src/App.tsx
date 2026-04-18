@@ -1,18 +1,22 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Link, useNavigate } from "react-router-dom";
 import AskForm from "./components/AskForm";
 import SignupForm from "./components/SignupForm";
 import SubscriptionForm from "./components/SubscriptionForm";
 import LoginForm from "./components/LoginForm";
 import { refreshToken } from "./api";
-import LogoutButton from "./components/LogoutButton"; // ✅ import
+import LogoutButton from "./components/LogoutButton";
+import "./App.css";
 
 const AutoLogin: React.FC = () => {
   const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const refresh = async () => {
       const storedRefresh = localStorage.getItem("refreshToken");
+      const currentPath = window.location.pathname;
+
       if (storedRefresh) {
         try {
           const { accessToken } = await refreshToken(storedRefresh);
@@ -20,29 +24,46 @@ const AutoLogin: React.FC = () => {
           console.log("Auto-login successful");
         } catch {
           console.log("Refresh failed, redirecting to login");
-          navigate("/login");
+          localStorage.removeItem("accessToken");
+          localStorage.removeItem("refreshToken");
+          // ✅ Only redirect if not on signup or subscribe
+          if (currentPath !== "/signup" && currentPath !== "/subscribe") {
+            navigate("/login");
+          }
         }
       } else {
-        navigate("/login");
+        // ✅ Allow signup/subscribe without forcing login
+        if (currentPath !== "/signup" && currentPath !== "/subscribe") {
+          navigate("/login");
+        }
       }
+      setLoading(false);
     };
     refresh();
   }, [navigate]);
 
-  return null; // invisible component that runs on app load
+  if (loading) {
+    return <div className="loading-screen">Loading...</div>;
+  }
+  return null;
 };
+
+const Navbar: React.FC = () => (
+  <nav className="navbar">
+    <div className="nav-links">
+      <Link to="/">Ask</Link>
+      <Link to="/signup">Signup</Link>
+      <Link to="/subscribe">Subscription</Link>
+      <LogoutButton />
+    </div>
+  </nav>
+);
 
 const App: React.FC = () => {
   return (
     <BrowserRouter>
       <AutoLogin />
-      <div style={{ textAlign: "right", padding: 20 }}>
-        <Link to="/" style={{ marginRight: 15 }}>Ask</Link>
-        <Link to="/signup" style={{ marginRight: 15 }}>Signup</Link>
-        <Link to="/login" style={{ marginRight: 15 }}>Login</Link>
-        <Link to="/subscribe" style={{ marginRight: 15 }}>Subscription</Link>
-        <LogoutButton /> {/* ✅ new logout button */}
-      </div>
+      <Navbar />
       <Routes>
         <Route path="/" element={<AskForm />} />
         <Route path="/signup" element={<SignupForm />} />

@@ -1,19 +1,23 @@
-# Use the same NVIDIA base
-FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
-
-# Install only the bare minimum for Python
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Point to the official PRE-BUILT wheels for CUDA 12.4
-# This avoids the "Building wheel" error entirely.
-RUN pip3 install llama-cpp-python[server] \
-    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+FROM python:3.10-slim
 
 WORKDIR /app
-EXPOSE 8080
-VOLUME ["/models"]
 
-CMD ["python3", "-m", "llama_cpp.server", "--host", "0.0.0.0", "--port", "8080"]
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install llama-cpp server (CPU only)
+RUN pip install --no-cache-dir "llama-cpp-python[server]"
+
+EXPOSE 8080
+
+# ✅ CMD must be a single JSON array, no line breaks that confuse parser
+CMD ["python3", "-m", "llama_cpp.server", \
+     "--model", "/models/phi-3-mini-4k-instruct-q4.gguf", \
+     "--host", "0.0.0.0", \
+     "--port", "8080", \
+     "--n_gpu_layers", "0", \
+     "--use-mmap", \
+     "--threads", "8"]
