@@ -24,6 +24,7 @@ export async function ingestHybridDocument(document) {
     }
     const vectorApi = process.env.VECTOR_API;
 
+    // Forward document only (no subjectId, no citations)
     const response = await axios.post(
       `${vectorApi}/ingest-hybrid`,
       { document },

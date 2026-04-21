@@ -5,13 +5,12 @@ import axios from "axios";
 const BASE = process.env.FASTAPI_URL || process.env.VECTOR_API;
 
 /**
- * Query ChromaDB for chunks given a prompt + subject.
+ * 🔍 Query ChromaDB
  */
-export async function queryChroma({ prompt, subject_id }) {
+export async function queryChroma({ prompt }) {
   try {
     const resp = await axios.post(`${BASE}/chunks`, {
-      query: prompt,
-      subjectId: subject_id
+      query: prompt
     });
     return resp.data.chunks || [];
   } catch (err) {
@@ -21,14 +20,18 @@ export async function queryChroma({ prompt, subject_id }) {
 }
 
 /**
- * Get details for a single chunk (Learn More).
+ * 📄 Store document in vector DB
  */
-export async function getChunkDetails(chunk_id) {
+export async function storeDocument({ text, doc_id }) {
   try {
-    const resp = await axios.get(`${BASE}/details/${chunk_id}`);
+    const resp = await axios.post(`${BASE}/store`, {
+      text,
+      docId: doc_id
+    });
+
     return resp.data;
   } catch (err) {
-    console.error("❌ getChunkDetails failed:", err.message);
+    console.error("❌ storeDocument failed:", err.message);
     return null;
   }
 }

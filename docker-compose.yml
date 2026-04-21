@@ -31,6 +31,8 @@ services:
     working_dir: /app
     volumes:
       - ./server:/app
+      - ./server/uploads:/app/uploads   # ✅ ADD THIS LINE
+
       
     ports:
       - "3000:3000"

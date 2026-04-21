@@ -1,3 +1,5 @@
+// db.service.js
+
 import pg from "pg";
 import crypto from "crypto";
 
@@ -5,9 +7,8 @@ const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL
 });
 
-
 // =====================================================
-// 🆕 CHAT TABLES (NEW - ChatGPT style)
+// 🆕 CHAT TABLES (ChatGPT style)
 // =====================================================
 
 // 🔥 Chats table
@@ -16,7 +17,6 @@ export async function ensureChatsTable() {
     CREATE TABLE IF NOT EXISTS chats (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
-      subject_id TEXT NOT NULL,
       title TEXT,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
@@ -47,21 +47,20 @@ export async function ensureMessagesTable() {
   `);
 }
 
-
 // =====================================================
 // 🆕 CHAT OPERATIONS
 // =====================================================
 
 // ✅ Create new chat
-export async function createChat(user_id, subject_id) {
+export async function createChat(user_id) {
   const chatId = crypto.randomUUID();
 
   await pool.query(
     `
-    INSERT INTO chats (id, user_id, subject_id, title)
-    VALUES ($1, $2, $3, $4)
+    INSERT INTO chats (id, user_id, title)
+    VALUES ($1, $2, $3)
     `,
-    [chatId, user_id, subject_id, "New Chat"]
+    [chatId, user_id, "New Chat"]
   );
 
   return { chatId };
@@ -131,48 +130,37 @@ export async function updateChatTitle(chat_id, title) {
   );
 }
 
-
 // =====================================================
-// 🟢 EXISTING CODE (UNCHANGED)
+// RESULTS OPERATIONS (simplified)
 // =====================================================
-
-// keep ALL your old tables + functions BELOW
-
-// -----------------------------
-// Results operations
-// -----------------------------
-export async function saveResult(userId, subjectId, prompt, answer, citations = []) {
+export async function saveResult(userId, prompt, answer) {
   const { rows } = await pool.query(
     `
-    INSERT INTO results (user_id, subject_id, prompt, answer, citations)
-    VALUES ($1, $2, $3, $4, $5::jsonb)
+    INSERT INTO results (user_id, prompt, answer)
+    VALUES ($1, $2, $3)
     RETURNING id;
     `,
-    [userId, subjectId, prompt, answer, JSON.stringify(citations)]
+    [userId, prompt, answer]
   );
   return rows[0].id;
 }
 
-// (rest of your file stays SAME — no deletion)
 // =====================================================
-// 🔹 BACKWARD COMPATIBILITY (Worker Support)
+// REVISIONS OPERATIONS (simplified)
 // =====================================================
-
 export async function saveRevision({
   user_id = "anon",
-  subject_id = "General",
   prompt,
-  answer,
-  citations = []
+  answer
 }) {
   try {
     const { rows } = await pool.query(
       `
-      INSERT INTO revisions (user_id, subject_id, prompt, answer, citations)
-      VALUES ($1, $2, $3, $4, $5::jsonb)
+      INSERT INTO revisions (user_id, prompt, answer)
+      VALUES ($1, $2, $3)
       RETURNING id;
       `,
-      [user_id, subject_id, prompt, answer, JSON.stringify(citations)]
+      [user_id, prompt, answer]
     );
 
     return rows[0]?.id;
@@ -181,10 +169,10 @@ export async function saveRevision({
     return null;
   }
 }
-// =====================================================
-// 🔹 API LOGGING (Middleware Support)
-// =====================================================
 
+// =====================================================
+// API LOGGING (Middleware Support)
+// =====================================================
 export async function saveApiLog({
   endpoint,
   method,
@@ -204,10 +192,10 @@ export async function saveApiLog({
     console.error("❌ saveApiLog error:", err.message);
   }
 }
-// =====================================================
-// 🔹 AUTH TOKEN MANAGEMENT
-// =====================================================
 
+// =====================================================
+// TOKEN MANAGEMENT
+// =====================================================
 export async function deleteAllUserTokens(user_id) {
   try {
     await pool.query(
@@ -222,10 +210,6 @@ export async function deleteAllUserTokens(user_id) {
   }
 }
 
-// =====================================================
-// 🔹 REFRESH TOKEN MANAGEMENT
-// =====================================================
-
 export async function deleteRefreshToken(token) {
   try {
     await pool.query(
@@ -239,10 +223,6 @@ export async function deleteRefreshToken(token) {
     console.error("❌ deleteRefreshToken error:", err.message);
   }
 }
-
-// =====================================================
-// 🔹 FIND REFRESH TOKEN
-// =====================================================
 
 export async function findRefreshToken(token) {
   try {
@@ -261,10 +241,6 @@ export async function findRefreshToken(token) {
   }
 }
 
-// =====================================================
-// 🔹 SAVE REFRESH TOKEN
-// =====================================================
-
 export async function saveRefreshToken(user_id, token) {
   try {
     await pool.query(
@@ -280,10 +256,8 @@ export async function saveRefreshToken(user_id, token) {
 }
 
 // =====================================================
-// 🔹 INVOICE MANAGEMENT
+// INVOICE MANAGEMENT
 // =====================================================
-
-// ✅ Save invoice
 export async function saveInvoice({ email, plan, amount, url }) {
   try {
     const { rows } = await pool.query(
@@ -302,7 +276,6 @@ export async function saveInvoice({ email, plan, amount, url }) {
   }
 }
 
-// ✅ List invoices
 export async function listInvoices(email) {
   try {
     const { rows } = await pool.query(
@@ -323,9 +296,8 @@ export async function listInvoices(email) {
 }
 
 // =====================================================
-// 🔹 API LOGS TABLE
+// TABLE ENSURE FUNCTIONS
 // =====================================================
-
 export async function ensureApiLogsTable() {
   try {
     await pool.query(`
@@ -344,20 +316,14 @@ export async function ensureApiLogsTable() {
   }
 }
 
-// =====================================================
-// 🔹 REVISIONS TABLE
-// =====================================================
-
 export async function ensureRevisionsTable() {
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS revisions (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id TEXT,
-        subject_id TEXT,
         prompt TEXT,
         answer TEXT,
-        citations JSONB,
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);
@@ -365,10 +331,6 @@ export async function ensureRevisionsTable() {
     console.error("❌ ensureRevisionsTable error:", err.message);
   }
 }
-
-// =====================================================
-// 🔹 INVOICES TABLE
-// =====================================================
 
 export async function ensureInvoicesTable() {
   try {
@@ -387,20 +349,14 @@ export async function ensureInvoicesTable() {
   }
 }
 
-// =====================================================
-// 🔹 RESULTS TABLE
-// =====================================================
-
 export async function ensureResultsTable() {
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS results (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id TEXT,
-        subject_id TEXT,
         prompt TEXT,
         answer TEXT,
-        citations JSONB,
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);
@@ -408,10 +364,6 @@ export async function ensureResultsTable() {
     console.error("❌ ensureResultsTable error:", err.message);
   }
 }
-
-// =====================================================
-// 🔹 USERS TABLE
-// =====================================================
 
 export async function ensureUsersTable() {
   try {
@@ -427,10 +379,6 @@ export async function ensureUsersTable() {
     console.error("❌ ensureUsersTable error:", err.message);
   }
 }
-
-// =====================================================
-// 🔹 REFRESH TOKENS TABLE
-// =====================================================
 
 export async function ensureRefreshTokensTable() {
   try {

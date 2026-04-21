@@ -1,3 +1,5 @@
+// chat.routes.js
+
 import express from "express";
 import {
   createChatHandler,
@@ -6,13 +8,16 @@ import {
   getChatMessagesHandler
 } from "../controllers/chat.controller.js";
 
+// ✅ IMPORT THIS
+import { upload } from "../middleware/upload.middleware.js";
+
 const router = express.Router();
 
 // ✅ Create new chat
 router.post("/create", createChatHandler);
 
-// ✅ Send message
-router.post("/message", sendMessageHandler);
+// 🔥 ✅ UPDATED: add upload middleware here
+router.post("/message", upload.array("files"), sendMessageHandler);
 
 // ✅ List chats
 router.get("/list", listChatsHandler);

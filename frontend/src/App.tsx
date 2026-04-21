@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { BrowserRouter, Routes, Route, Link, useNavigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, useNavigate } from "react-router-dom";
 import AskForm from "./components/AskForm";
 import SignupForm from "./components/SignupForm";
 import SubscriptionForm from "./components/SubscriptionForm";
 import LoginForm from "./components/LoginForm";
+import ProfileSettings from "./components/ProfileSettings"; // ✅ new import
 import { refreshToken } from "./api";
-import LogoutButton from "./components/LogoutButton";
 import "./App.css";
 
 const AutoLogin: React.FC = () => {
@@ -26,14 +26,23 @@ const AutoLogin: React.FC = () => {
           console.log("Refresh failed, redirecting to login");
           localStorage.removeItem("accessToken");
           localStorage.removeItem("refreshToken");
-          // ✅ Only redirect if not on signup or subscribe
-          if (currentPath !== "/signup" && currentPath !== "/subscribe") {
+          localStorage.removeItem("userEmail");
+          // ✅ Allow signup, subscribe, and profile without redirect
+          if (
+            currentPath !== "/signup" &&
+            currentPath !== "/subscribe" &&
+            currentPath !== "/profile"
+          ) {
             navigate("/login");
           }
         }
       } else {
-        // ✅ Allow signup/subscribe without forcing login
-        if (currentPath !== "/signup" && currentPath !== "/subscribe") {
+        // ✅ Allow signup, subscribe, and profile without forcing login
+        if (
+          currentPath !== "/signup" &&
+          currentPath !== "/subscribe" &&
+          currentPath !== "/profile"
+        ) {
           navigate("/login");
         }
       }
@@ -48,27 +57,16 @@ const AutoLogin: React.FC = () => {
   return null;
 };
 
-const Navbar: React.FC = () => (
-  <nav className="navbar">
-    <div className="nav-links">
-      <Link to="/">Ask</Link>
-      <Link to="/signup">Signup</Link>
-      <Link to="/subscribe">Subscription</Link>
-      <LogoutButton />
-    </div>
-  </nav>
-);
-
 const App: React.FC = () => {
   return (
     <BrowserRouter>
       <AutoLogin />
-      <Navbar />
       <Routes>
         <Route path="/" element={<AskForm />} />
         <Route path="/signup" element={<SignupForm />} />
         <Route path="/login" element={<LoginForm />} />
         <Route path="/subscribe" element={<SubscriptionForm />} />
+        <Route path="/profile" element={<ProfileSettings />} /> {/* ✅ new route */}
       </Routes>
     </BrowserRouter>
   );

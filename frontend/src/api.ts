@@ -1,6 +1,6 @@
-import { RevisionItem, Invoice, SubjectsResponse } from "./types";
+import { RevisionItem, Invoice } from "./types";
 
-// ✅ SINGLE SOURCE OF TRUTH (IMPORTANT FIX)
+// ✅ SINGLE SOURCE OF TRUTH
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
 
 // =============================
@@ -9,22 +9,20 @@ const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
 export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
-  citations?: any[];
 };
 
 export type ChatResponse = {
   chatId: string;
   messages: ChatMessage[];
-  citations?: any[];
   context_source?: string;
   tokensUsed?: number;
+  filesReceived?: number; // ✅ NEW
 };
 
 // =============================
 // 🚀 Revisions (CURSOR PAGINATION)
 // =============================
 export async function getRevisionsCursor(
-  subject_id: string,
   user_id: string,
   cursor: string | null
 ): Promise<{
@@ -32,7 +30,7 @@ export async function getRevisionsCursor(
   next_cursor: string | null;
   has_more: boolean;
 }> {
-  const params = new URLSearchParams({ subject_id, user_id });
+  const params = new URLSearchParams({ user_id });
   if (cursor) params.append("cursor", cursor);
 
   const r = await fetch(`${API_BASE}/revisions?${params.toString()}`);
@@ -47,19 +45,6 @@ export async function getRevisionsCursor(
     next_cursor: data.next_cursor || null,
     has_more: data.has_more || false
   };
-}
-
-// =============================
-// Subjects
-// =============================
-export async function fetchSubjects(): Promise<string[]> {
-  const r = await fetch(`${API_BASE}/subjects`);
-
-  if (!r.ok) throw new Error(`Subjects fetch failed: ${r.status}`);
-  if (r.status === 204) return ["General"];
-
-  const data = (await r.json()) as SubjectsResponse;
-  return data.subjects || ["General"];
 }
 
 // =============================
@@ -139,26 +124,6 @@ export async function loginUser(body: {
 // =============================
 // Refresh Token
 // =============================
-export async function refreshToken(
-  refreshToken: string
-): Promise<{ accessToken: string }> {
-  const r = await fetch(`${API_BASE}/auth/refresh`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refreshToken })
-  });
-
-  if (!r.ok) {
-    const data = await r.json();
-    throw new Error(data.error || "Refresh failed");
-  }
-
-  return r.json();
-}
-
-// =============================
-// 🔐 Token-aware fetch wrapper
-// =============================
 async function refreshTokenCall(refreshToken: string): Promise<{ accessToken: string }> {
   const r = await fetch(`${API_BASE}/auth/refresh`, {
     method: "POST",
@@ -184,16 +149,12 @@ export async function authFetch(url: string, options: any = {}): Promise<Respons
     const refreshToken = localStorage.getItem("refreshToken");
 
     if (refreshToken) {
-      try {
-        const { accessToken: newToken } = await refreshTokenCall(refreshToken);
+      const { accessToken: newToken } = await refreshTokenCall(refreshToken);
 
-        localStorage.setItem("accessToken", newToken);
-        options.headers.Authorization = `Bearer ${newToken}`;
+      localStorage.setItem("accessToken", newToken);
+      options.headers.Authorization = `Bearer ${newToken}`;
 
-        res = await fetch(url, options);
-      } catch {
-        throw new Error("Session expired. Please log in again.");
-      }
+      res = await fetch(url, options);
     }
   }
 
@@ -207,7 +168,6 @@ export async function authFetch(url: string, options: any = {}): Promise<Respons
 // ✅ Create Chat
 export async function createChat(body: {
   userId: string;
-  subjectId: string;
 }): Promise<{ chatId: string }> {
   const r = await fetch(`${API_BASE}/chat/create`, {
     method: "POST",
@@ -219,16 +179,26 @@ export async function createChat(body: {
   return r.json();
 }
 
-// ✅ Send Message
+// 🔥 ✅ UPDATED: Send Message (TEXT + FILES)
 export async function sendMessage(body: {
   chatId: string;
   message: string;
-  subjectId: string;
+  files?: File[];
 }): Promise<ChatResponse> {
+  const formData = new FormData();
+
+  formData.append("chatId", body.chatId);
+  formData.append("message", body.message || "");
+
+  if (body.files && body.files.length > 0) {
+    body.files.forEach((file) => {
+      formData.append("files", file); // ✅ MUST match backend
+    });
+  }
+
   const r = await fetch(`${API_BASE}/chat/message`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
+    body: formData // ❗ NO headers (important)
   });
 
   if (!r.ok) throw new Error(`Send message failed: ${r.status}`);
@@ -257,4 +227,22 @@ export async function getChatMessages(
   if (r.status === 204) return { messages: [] };
 
   return r.json();
+}
+
+export async function refreshToken(refreshToken: string): Promise<{ accessToken: string }> {
+  const res = await fetch(`${API_BASE}/auth/refresh`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      refreshToken
+    })
+  });
+
+  if (!res.ok) {
+    throw new Error("Refresh failed");
+  }
+
+  return res.json();
 }

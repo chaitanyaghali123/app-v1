@@ -1,8 +1,8 @@
-// revision.route.js
+// routes/revision.route.js
 
 import express from "express";
 import {
-  getRevisionsBySubject,
+  getRevisionsByUser,
   getRevisionsByResponseId
 } from "../controllers/revision.controller.js";
 import { createRateLimiter } from "../middleware/rateLimiter.js";
@@ -12,15 +12,20 @@ const router = express.Router();
 // -----------------------------
 // 🔥 Rate limiter (light, since it's read-heavy)
 // -----------------------------
-const historyLimiter = createRateLimiter(60, 60); // 60 req/min
+const historyLimiter = createRateLimiter(
+  process.env.NODE_ENV === "development" ? 1000 : 60,
+  60
+);
 
 // -----------------------------
 // Routes
 // -----------------------------
 
-// GET /api/revisions?subject_id=&user_id=&cursor=
-router.get("/", historyLimiter, getRevisionsBySubject);
+// ✅ Cursor-based revisions by user
+// GET /api/revisions?user_id=&cursor=
+router.get("/", historyLimiter, getRevisionsByUser);
 
+// ✅ Single revision by responseId
 // GET /api/revisions/:responseId
 router.get("/:responseId", historyLimiter, getRevisionsByResponseId);
 

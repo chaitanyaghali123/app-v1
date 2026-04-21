@@ -1,3 +1,4 @@
+//chat.controller.js
 import {
   createChat,
   getChats,
@@ -6,23 +7,26 @@ import {
   updateChatTitle
 } from "../services/db.service.js";
 
-import { queryChroma } from "../services/vector.service.js";
+import { queryChroma, storeDocument } from "../services/vector.service.js";
+import { extractTextFromPDF } from "../services/pdf.service.js";
 import { handleLLMAnswer } from "../services/llm-response-handler.js";
+
+import fs from "fs/promises";
 
 // =====================================
 // ✅ Create Chat
 // =====================================
 export const createChatHandler = async (req, res) => {
   try {
-    const { userId, subjectId } = req.body;
+    const { userId } = req.body;
 
-    if (!userId || !subjectId) {
-      return res.status(400).json({ error: "Missing userId or subjectId" });
+    if (!userId) {
+      return res.status(400).json({ error: "Missing userId" });
     }
 
-    const result = await createChat(userId, subjectId);
-
+    const result = await createChat(userId);
     res.json(result);
+
   } catch (err) {
     console.error("❌ createChat error:", err);
     res.status(500).json({ error: "Failed to create chat" });
@@ -41,8 +45,8 @@ export const listChatsHandler = async (req, res) => {
     }
 
     const chats = await getChats(userId);
-
     res.json(chats);
+
   } catch (err) {
     console.error("❌ listChats error:", err);
     res.status(500).json({ error: "Failed to fetch chats" });
@@ -50,15 +54,15 @@ export const listChatsHandler = async (req, res) => {
 };
 
 // =====================================
-// ✅ Get Chat Messages
+// ✅ Get Messages
 // =====================================
 export const getChatMessagesHandler = async (req, res) => {
   try {
     const { chatId } = req.params;
 
     const messages = await getChatMessages(chatId);
-
     res.json({ messages });
+
   } catch (err) {
     console.error("❌ getChatMessages error:", err);
     res.status(500).json({ error: "Failed to fetch messages" });
@@ -66,58 +70,100 @@ export const getChatMessagesHandler = async (req, res) => {
 };
 
 // =====================================
-// ✅ Send Message (CORE LOGIC)
+// 🚀 Send Message (Simplified)
 // =====================================
 export const sendMessageHandler = async (req, res) => {
-  try {
-    const { chatId, message, subjectId } = req.body;
+  let filePaths = [];
 
-    if (!chatId || !message) {
-      return res.status(400).json({ error: "Missing chatId or message" });
+  try {
+    const { chatId, message } = req.body;
+    const files = req.files || [];
+
+    if (!chatId || (!message && files.length === 0)) {
+      return res.status(400).json({ error: "Message or files required" });
     }
 
-    // 1️⃣ Save user message
-    await addMessage(chatId, "user", message);
+    let fileContents = [];
+    let fileDescriptions = [];
 
-    // 2️⃣ Get full chat history
+    for (const file of files) {
+      filePaths.push(file.path);
+
+      try {
+        if (file.mimetype === "application/pdf") {
+          const text = await extractTextFromPDF(file.path);
+
+          if (text?.trim()) {
+            fileContents.push(`PDF:\n${text.substring(0, 5000)}`);
+
+            await storeDocument({
+              text,
+              doc_id: file.filename
+            });
+
+            fileDescriptions.push(`📄 ${file.originalname}`);
+          }
+        } else if (file.mimetype.startsWith("image")) {
+          const buffer = await fs.readFile(file.path);
+          const base64 = buffer.toString("base64");
+
+          fileContents.push(`Image base64:\n${base64.substring(0, 1000)}`);
+          fileDescriptions.push(`🖼 ${file.originalname}`);
+        } else {
+          const buffer = await fs.readFile(file.path);
+          fileContents.push(buffer.toString("utf-8").substring(0, 3000));
+          fileDescriptions.push(`📁 ${file.originalname}`);
+        }
+      } catch (err) {
+        console.error("❌ File error:", err);
+      }
+    }
+
+    const finalPrompt = `
+USER QUESTION:
+${message || "Explain the uploaded file"}
+
+FILES:
+${fileDescriptions.join(", ")}
+
+CONTENT:
+${fileContents.join("\n\n")}
+`;
+
+    await addMessage(chatId, "user", message || "📎 File uploaded");
+
     const history = await getChatMessages(chatId);
 
-    // 3️⃣ Retrieve context from vector DB
-    const chunks = await queryChroma({
-      prompt: message,
-      subject_id: subjectId || "General"
-    });
-
-    // 4️⃣ Generate answer (LLM)
-    const llmResult = await handleLLMAnswer({
-      prompt: message,
-      chunks,
-      subject_id: subjectId || "General",
-      user_id: "anon",
-      history // 🔥 THIS ENABLES CHAT CONTEXT
-    });
-
-    // 5️⃣ Save assistant response (only the HTML string)
-    await addMessage(chatId, "assistant", llmResult.answer);
-
-    // 6️⃣ Update chat title (first message only)
-    if (history.length === 1) {
-      await updateChatTitle(chatId, message);
+    let chunks = [];
+    if (message) {
+      chunks = await queryChroma({
+        prompt: message
+      });
     }
 
-    // 7️⃣ Return full updated conversation
+    const llmResult = await handleLLMAnswer({
+      prompt: finalPrompt,
+      chunks,
+      user_id: "anon",
+      history
+    });
+
+    await addMessage(chatId, "assistant", llmResult.answer);
+
     const updatedMessages = await getChatMessages(chatId);
 
     res.json({
       chatId,
-      messages: updatedMessages,
-      citations: llmResult.citations, // optional: include citations separately
-      context_source: llmResult.context_source,
-      tokensUsed: llmResult.tokensUsed
+      messages: updatedMessages
     });
 
   } catch (err) {
     console.error("❌ sendMessage error:", err);
-    res.status(500).json({ error: "Failed to process message" });
+    res.status(500).json({ error: "Failed" });
+
+  } finally {
+    for (const p of filePaths) {
+      try { await fs.unlink(p); } catch {}
+    }
   }
 };

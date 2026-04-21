@@ -7,8 +7,22 @@ import { Queue } from "bullmq";
 // 🔥 NEW: request logger
 import { requestLogger } from "./middleware/logger.js";
 
+// ✅ NEW: file system fix
+import fs from "fs";
+import path from "path";
+
 // Load env FIRST
 dotenv.config();
+
+// ===============================
+// ✅ Ensure uploads folder exists
+// ===============================
+const uploadDir = path.resolve("uploads");
+
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+  console.log("📁 uploads folder created");
+}
 
 // ===============================
 // Kafka
@@ -21,15 +35,11 @@ const kafka = new Kafka({
 // ===============================
 // Routes
 // ===============================
-
 import chunkRoutes from "./routes/chunk.route.js";
 import ingestRoutes from "./routes/ingest.route.js";
 import llmRoutes from "./routes/llm.route.js";
 import revisionRoutes from "./routes/revision.route.js";
-
-import subjectsRoutes from "./routes/subjects.route.js";
 import authRoutes from "./routes/auth.route.js";
-
 import subscriptionRoutes from "./routes/subscription.route.js";
 import invoiceRoutes from "./routes/invoice.route.js";
 import paymentRoutes from "./routes/payment.route.js";
@@ -48,11 +58,8 @@ import {
   ensureInvoicesTable,
   ensureRefreshTokensTable,
   ensureApiLogsTable,
-
-  // 🆕 NEW
   ensureChatsTable,
   ensureMessagesTable
-
 } from "./services/db.service.js";
 
 const app = express();
@@ -119,7 +126,6 @@ app.get("/api/llm/result/:id", async (req, res) => {
     }
 
     return res.json({ status: state });
-
   } catch (err) {
     console.error("❌ Result fetch error:", err);
     res.status(500).json({ error: "Failed to fetch result" });
@@ -130,20 +136,14 @@ app.get("/api/llm/result/:id", async (req, res) => {
 // Routes
 // ===============================
 app.use("/api/auth", authRoutes);
-
 app.use("/api/chunk", chunkRoutes);
 app.use("/api/ingest", ingestRoutes);
 app.use("/api/llm", llmRoutes);
 app.use("/api/revisions", revisionRoutes);
-
-app.use("/api/subjects", subjectsRoutes);
-
 app.use("/api/subscribe", subscriptionRoutes);
 app.use("/api/invoices", invoiceRoutes);
 app.use("/api/payment", paymentRoutes);
 app.use("/api/webhook", webhookRoutes);
-
-// 🆕 NEW CHAT ROUTES
 app.use("/api/chat", chatRoutes);
 
 // ===============================
@@ -151,19 +151,16 @@ app.use("/api/chat", chatRoutes);
 // ===============================
 async function initialize() {
   try {
-    // ✅ STEP 1: Independent tables (parallel OK)
     await Promise.all([
       ensureRevisionsTable(),
       ensureResultsTable(),
       ensureUsersTable(),
       ensureInvoicesTable(),
       ensureRefreshTokensTable(),
-      ensureApiLogsTable()
+      ensureApiLogsTable(),
+      ensureChatsTable(),
+      ensureMessagesTable()
     ]);
-
-    // ✅ STEP 2: Dependent tables (SEQUENTIAL 🔥)
-    await ensureChatsTable();     // must come first
-    await ensureMessagesTable();  // depends on chats
 
     console.log("✅ Database initialized (with chat system)");
 
@@ -173,7 +170,6 @@ async function initialize() {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`🔗 LLM: ${process.env.LLM_API_URL}`);
     });
-
   } catch (err) {
     console.error("❌ Failed to initialize:", err.message);
     process.exit(1);

@@ -1,6 +1,8 @@
+// src/components/SignupForm.tsx
+
 import React, { useState } from "react";
 import { signupUser } from "../api";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 
 const SignupForm: React.FC = () => {
   const navigate = useNavigate();
@@ -20,9 +22,14 @@ const SignupForm: React.FC = () => {
 
     try {
       await signupUser({ name, email, password, phone });
+
+      // ✅ Save user email for sidebar account settings
+      localStorage.setItem("userEmail", email);
+
       alert("Signup successful! Check your email.");
       navigate("/"); // redirect to Ask page
     } catch (err: any) {
+      localStorage.removeItem("userEmail");
       setError(err.message || "Signup failed");
     } finally {
       setLoading(false);
@@ -35,7 +42,6 @@ const SignupForm: React.FC = () => {
 
       <form onSubmit={handleSignup} className="buttons" style={{ flexDirection: "column" }}>
         <input
-
           id="name"
           type="text"
           placeholder="Full Name"
@@ -60,6 +66,7 @@ const SignupForm: React.FC = () => {
           onChange={(e) => setPassword(e.target.value)}
           required
         />
+
         <input
           id="phone"
           type="tel"
@@ -67,14 +74,22 @@ const SignupForm: React.FC = () => {
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
           required
-/>
-     
-        <button type="submit">
+        />
+
+        <button type="submit" disabled={loading}>
           {loading ? "Creating..." : "Sign Up"}
         </button>
 
-        {error && <p style={{ color: "red" }}>{error}</p>}
+        {error && <p style={{ color: "red", marginTop: "10px" }}>{error}</p>}
       </form>
+
+      {/* ✅ Optional: link to login */}
+      <div style={{ marginTop: "15px", fontSize: "14px" }}>
+        <span>Already have an account? </span>
+        <Link to="/login" style={{ color: "#2563eb", textDecoration: "none" }}>
+          Log in
+        </Link>
+      </div>
     </div>
   );
 };

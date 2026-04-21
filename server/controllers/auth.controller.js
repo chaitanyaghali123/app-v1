@@ -26,7 +26,7 @@ const REFRESH_TTL = "7d";
 // -----------------------------
 function generateAccessToken(user) {
   return jwt.sign(
-    { userId: user.id, email: user.email },
+    { userId: user.id, email: user.email || null },
     process.env.JWT_SECRET,
     { expiresIn: ACCESS_TTL }
   );
@@ -60,27 +60,32 @@ export const signup = async (req, res) => {
       phone
     });
 
+    // ✅ ALWAYS return response FIRST
     res.status(201).json({
       message: "Signup successful",
       user_id: user.id
     });
 
-    // 🔥 async webhook
-    axios.post(process.env.N8N_WEBHOOK_URL, {
-      name,
-      email,
-      phone,
-      user_id: user.id
-    }).catch(err => console.error("n8n webhook failed:", err.message));
+    // 🔥 async webhook (SAFE — won't break response)
+    if (process.env.N8N_WEBHOOK_URL) {
+      axios.post(process.env.N8N_WEBHOOK_URL, {
+        name,
+        email,
+        phone,
+        user_id: user.id
+      }).catch(err =>
+        console.error("n8n webhook failed:", err.message)
+      );
+    }
 
   } catch (err) {
-    console.error("Signup error:", err.message);
+    console.error("Signup error:", err);
 
     if (err.code === "23505") {
       return res.status(409).json({ error: "Email already registered" });
     }
 
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 };
 
@@ -91,23 +96,40 @@ export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email & password required" });
+    }
+
     const user = await findUserByEmail(email);
 
-    if (!user || !(await bcrypt.compare(password, user.password))) {
+    if (!user) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+
+    if (!isMatch) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
 
-    // ✅ store refresh token
     await saveRefreshToken(user.id, refreshToken);
 
-    res.json({ accessToken, refreshToken });
+    // ✅ IMPORTANT: always return
+    return res.status(200).json({
+      success: true,
+      accessToken,
+      refreshToken
+    });
 
   } catch (err) {
-    console.error("Login error:", err.message);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Login error:", err);
+
+    return res.status(500).json({
+      error: "Internal server error"
+    });
   }
 };
 
@@ -115,18 +137,16 @@ export const login = async (req, res) => {
 // 🔥 === REFRESH (ROTATION) ===
 // -----------------------------
 export const refresh = async (req, res) => {
-  const { refreshToken } = req.body;
-
-  if (!refreshToken) {
-    return res.status(401).json({ error: "Refresh token required" });
-  }
-
   try {
-    // 1. Check DB (IMPORTANT)
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(401).json({ error: "Refresh token required" });
+    }
+
     const existing = await findRefreshToken(refreshToken);
 
     if (!existing) {
-      // 🚨 TOKEN REUSE DETECTED
       console.warn("⚠️ Refresh token reuse detected!");
 
       try {
@@ -135,25 +155,21 @@ export const refresh = async (req, res) => {
           process.env.JWT_REFRESH_SECRET
         );
 
-        // 🔥 revoke all sessions
         await deleteAllUserTokens(decoded.userId);
       } catch {}
 
       return res.status(403).json({
-        error: "Invalid refresh token (possible reuse attack)"
+        error: "Invalid refresh token"
       });
     }
 
-    // 2. Verify token
     const decoded = jwt.verify(
       refreshToken,
       process.env.JWT_REFRESH_SECRET
     );
 
-    // 3. ROTATE → delete old token
     await deleteRefreshToken(refreshToken);
 
-    // 4. Issue new tokens
     const newAccessToken = generateAccessToken({
       id: decoded.userId
     });
@@ -162,16 +178,16 @@ export const refresh = async (req, res) => {
       id: decoded.userId
     });
 
-    // 5. Save new refresh token
     await saveRefreshToken(decoded.userId, newRefreshToken);
 
-    return res.json({
+    return res.status(200).json({
       accessToken: newAccessToken,
       refreshToken: newRefreshToken
     });
 
   } catch (err) {
-    console.error("Refresh error:", err.message);
+    console.error("Refresh error:", err);
+
     return res.status(403).json({
       error: "Invalid or expired refresh token"
     });
@@ -182,21 +198,26 @@ export const refresh = async (req, res) => {
 // === Logout ===
 // -----------------------------
 export const logout = async (req, res) => {
-  const { refreshToken } = req.body;
-
-  if (!refreshToken) {
-    return res.status(400).json({ error: "Refresh token required" });
-  }
-
   try {
-    // delete specific session
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        error: "Refresh token required"
+      });
+    }
+
     await deleteRefreshToken(refreshToken);
 
-    res.json({ message: "Logged out successfully" });
+    return res.status(200).json({
+      message: "Logged out successfully"
+    });
 
   } catch (err) {
-    console.error("Logout error:", err.message);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Logout error:", err);
+
+    return res.status(500).json({
+      error: "Internal server error"
+    });
   }
 };
-

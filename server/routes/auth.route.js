@@ -1,3 +1,5 @@
+// routes/auth.route.js
+
 import express from "express";
 import { signup, login, refresh, logout } from "../controllers/auth.controller.js";
 import { createRateLimiter } from "../middleware/rateLimiter.js";
@@ -7,9 +9,20 @@ const router = express.Router();
 // -----------------------------
 // 🔐 Rate limit configs
 // -----------------------------
-const signupLimiter = createRateLimiter(5, 60);     // 5 requests/min
-const loginLimiter = createRateLimiter(10, 60);     // 10 requests/min
-const refreshLimiter = createRateLimiter(20, 60);   // 20 requests/min
+const signupLimiter = createRateLimiter(
+  process.env.NODE_ENV === "development" ? 100 : 5,
+  60
+);
+
+const loginLimiter = createRateLimiter(
+  process.env.NODE_ENV === "development" ? 100 : 10,
+  60
+);
+
+const refreshLimiter = createRateLimiter(
+  process.env.NODE_ENV === "development" ? 200 : 20,
+  60
+);
 
 // -----------------------------
 // Routes

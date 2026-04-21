@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { loginUser } from "../api";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 
 const LoginForm: React.FC = () => {
   const navigate = useNavigate();
@@ -16,13 +16,20 @@ const LoginForm: React.FC = () => {
 
     try {
       const { accessToken, refreshToken } = await loginUser({ email, password });
+
+      // ✅ Save tokens
       localStorage.setItem("refreshToken", refreshToken);
       localStorage.setItem("accessToken", accessToken);
+
+      // ✅ Save user email for sidebar account settings
+      localStorage.setItem("userEmail", email);
+
       alert("Login successful!");
       navigate("/"); // redirect to Ask page
     } catch (err: any) {
       localStorage.removeItem("accessToken");
       localStorage.removeItem("refreshToken");
+      localStorage.removeItem("userEmail");
       setError(err.message || "Login failed");
     } finally {
       setLoading(false);
@@ -32,7 +39,7 @@ const LoginForm: React.FC = () => {
   return (
     <div className="ask-form-container">
       <h2>Login</h2>
-      <form onSubmit={handleLogin} className="buttons" style={{ flexDirection: "column" }}>
+      <form onSubmit={handleLogin}>
         <input
           type="email"
           placeholder="Email"
@@ -47,11 +54,24 @@ const LoginForm: React.FC = () => {
           onChange={(e) => setPassword(e.target.value)}
           required
         />
+
         <button type="submit" disabled={loading}>
           {loading ? "Logging in..." : "Login"}
         </button>
-        {error && <p style={{ color: "red", marginTop: "10px" }}>{error}</p>}
+
+        {/* ✅ Forgot password link */}
+        <div style={{ marginTop: "10px" }}>
+          <Link to="/forgot-password">Forgot password?</Link>
+        </div>
+
+        {error && <p className="error-message">{error}</p>}
       </form>
+
+      {/* ✅ Optional: link to signup */}
+      <div style={{ marginTop: "15px", fontSize: "14px" }}>
+        <span>Don't have an account? </span>
+        <Link to="/signup">Sign up</Link>
+      </div>
     </div>
   );
 };

@@ -1,8 +1,10 @@
+// server/worker.js
+
 import { Worker } from "bullmq";
 import IORedis from "ioredis";
 
 import { handleLLMAnswer } from "./services/llm-response-handler.js"; // ✅ use correct function
-import { saveRevision } from "./services/db.service.js"; // ✅ USE DB
+import { saveRevision } from "./services/db.service.js"; // ✅ real DB storage
 
 const connection = new IORedis({
   host: "redis",
@@ -13,24 +15,21 @@ const connection = new IORedis({
 const worker = new Worker(
   "llm-queue",
   async (job) => {
-    const { question, userId, subject_id } = job.data;
+    const { question, userId } = job.data;
 
     // ✅ Call the LLM handler
     const response = await handleLLMAnswer({
       prompt: question,
-      subject_id: subject_id || "General",
       user_id: userId || "anon",
-      chunks: [], // you can pass vector chunks if needed
-      history: [] // optional: pass chat history if available
+      chunks: [],   // optional: pass vector chunks if needed
+      history: []   // optional: pass chat history if available
     });
 
-    // ✅ Save to DB (REAL STORAGE)
+    // ✅ Save to DB (simplified: no subjectId, no citations)
     await saveRevision({
       user_id: userId || "anon",
-      subject_id: subject_id || "General",
       prompt: question,
       answer: response.answer,
-      citations: response.citations || [],
       tokens_used: response.tokensUsed || 0
     });
 

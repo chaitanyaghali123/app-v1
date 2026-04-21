@@ -1,4 +1,3 @@
-import path from "path";
 import axios from "axios";
 import { isPrimeUser } from "../config/user.config.js";
 
@@ -26,7 +25,7 @@ function toFloat(name) {
 }
 
 // ==========================
-// 🔧 CONFIG (GENERIC LLM)
+// 🔧 CONFIG
 // ==========================
 const CONFIG = {
   API_URL: requireEnv("LLM_API_URL"),
@@ -50,7 +49,7 @@ const CONFIG = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ==========================
-// 🔁 RETRY WRAPPER
+// 🔁 RETRY
 // ==========================
 async function callLLM(payload) {
   for (let i = 0; i <= CONFIG.RETRIES; i++) {
@@ -62,21 +61,18 @@ async function callLLM(payload) {
       );
     } catch (err) {
       console.warn(`⚠️ LLM attempt ${i + 1} failed: ${err.message}`);
-
       if (i === CONFIG.RETRIES) throw err;
-
       await sleep(CONFIG.RETRY_DELAY);
     }
   }
 }
 
 // ==========================
-// 🚀 MAIN FUNCTION
+// 🚀 MAIN
 // ==========================
 export async function handleLLMAnswer({
   prompt,
   chunks = [],
-  subject_id = "General",
   user_id = "anon",
   history = []
 }) {
@@ -84,27 +80,25 @@ export async function handleLLMAnswer({
 
   const prime = isPrimeUser();
 
-  // 🚫 Block non-prime users
   if (!prime) {
     return {
       answer: "Upgrade to Prime to access AI-powered answers.",
-      citations: [],
       context_source: "blocked_non_prime",
       tokensUsed: 0
     };
   }
 
   // ==========================
-  // 🔹 CONTEXT CONTROL
+  // 🔹 CONTEXT (RAG)
   // ==========================
   const limitedChunks = chunks.slice(0, CONFIG.MAX_CHUNKS);
 
   const contextText = limitedChunks.length
     ? limitedChunks.map((c) => c.text).join("\n\n").slice(0, CONFIG.MAX_CONTEXT)
-    : "No reference material available.";
+    : "";
 
   // ==========================
-  // 🔹 HISTORY CONTROL
+  // 🔹 HISTORY
   // ==========================
   const formattedHistory = history
     .slice(-CONFIG.MAX_HISTORY)
@@ -115,45 +109,59 @@ export async function handleLLMAnswer({
 
   try {
     // ==========================
-    // 🚀 LLM CALL
+    // 🚀 LLM CALL (IMPROVED PROMPT)
     // ==========================
     const response = await callLLM({
       model: CONFIG.MODEL,
       messages: [
         {
           role: "system",
-          content: `You are an expert UPSC mentor who explains concepts clearly like ChatGPT.
+          content: `You are a highly intelligent AI tutor and UPSC mentor.
 
-Guidelines:
+CRITICAL THINKING RULES:
+- Always understand context before answering
+- If a term has multiple meanings, choose the MOST RELEVANT one
+- Prefer UPSC / exam-related meaning over unrelated meanings
+- NEVER give random or unrelated definitions
+
+FILE HANDLING:
+- If file content is present, you MUST explain it
+- Do not ignore file content
+- Do not say "no context provided"
+
+ANSWER STYLE:
 - Start with a direct answer
-- Write in a natural, human-friendly way
-- Use clear headings, bullet points, and short paragraphs
-- Keep answers easy to read and well-structured
-- Maintain UPSC relevance (Prelims + Mains)
+- Then explain clearly
+- Use headings and bullet points
+- Keep it simple and structured
 
-When helpful include:
+INCLUDE:
 • definition
 • key points
-• examples
-• pros & cons
-• conclusion
+• examples (if useful)
+• comparison (if needed)
 
-Formatting:
-- Use simple HTML: <p>, <strong>, <ul>, <li>, <br/>
-- Avoid over-formatting
-- No markdown (** or ###)
+FORMAT:
+- Use HTML: <p>, <strong>, <ul>, <li>, <br/>
+- No markdown
 
-Goal:
-Make the answer feel like ChatGPT — clear, structured, and helpful.`
+GOAL:
+Give accurate, context-aware answers like ChatGPT.`
         },
 
-        // 🔥 CHAT HISTORY
         ...formattedHistory,
 
-        // 🔥 CURRENT QUESTION
         {
           role: "user",
-          content: `CONTEXT:\n${contextText}\n\nQUESTION:\n${prompt}`
+          content: `
+${prompt}
+
+${contextText ? `\n\nREFERENCE CONTEXT:\n${contextText}` : ""}
+
+IMPORTANT:
+- Use the above content carefully
+- Prefer relevant meaning based on context
+`
         }
       ],
       max_tokens: CONFIG.MAX_TOKENS,
@@ -161,7 +169,7 @@ Make the answer feel like ChatGPT — clear, structured, and helpful.`
     });
 
     // ==========================
-    // 🔹 RESPONSE PARSE
+    // 🔹 RESPONSE
     // ==========================
     let rawAnswer =
       response.data?.choices?.[0]?.message?.content?.trim() || "";
@@ -169,18 +177,16 @@ Make the answer feel like ChatGPT — clear, structured, and helpful.`
     const tokensUsed = response.data?.usage?.total_tokens || 0;
 
     // ==========================
-    // 🔹 CLEAN FORMAT
+    // 🔹 FORMAT CLEAN (IMPROVED)
     // ==========================
     const formattedAnswer = rawAnswer
       .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+      .replace(/### (.*?)/g, "<strong>$1</strong><br/>")
       .replace(/\n\n/g, "<br/><br/>")
       .replace(/\n/g, "<br/>");
 
     return {
       answer: formattedAnswer,
-      citations: limitedChunks.length
-        ? normalizeChunkCitations(limitedChunks)
-        : [],
       context_source: limitedChunks.length
         ? "chunks_plus_llm"
         : "llm_only",
@@ -190,41 +196,10 @@ Make the answer feel like ChatGPT — clear, structured, and helpful.`
   } catch (err) {
     console.error("❌ LLM Error:", err.message);
 
-    const isTimeout =
-      err.code === "ECONNABORTED" ||
-      err.message.includes("timeout");
-
     return {
-      answer: isTimeout
-        ? "⏳ The AI is taking too long. Please try again."
-        : "⚠️ AI server is currently unavailable.",
-      citations: [],
+      answer: "⚠️ AI server error. Try again.",
       context_source: "llm_error",
       tokensUsed: 0
     };
   }
-}
-
-// ==========================
-// 📚 CITATIONS
-// ==========================
-function normalizeChunkCitations(chunks = []) {
-  const seen = new Set();
-
-  return chunks
-    .map((c) => {
-      const source = c.metadata?.source
-        ? path.basename(c.metadata.source)
-        : "";
-
-      return {
-        chunk_id: c.metadata?.id || c.id || "unknown",
-        source
-      };
-    })
-    .filter((c) => {
-      if (!c.source || seen.has(c.source)) return false;
-      seen.add(c.source);
-      return true;
-    });
 }
