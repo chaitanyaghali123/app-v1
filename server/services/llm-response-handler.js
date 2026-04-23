@@ -4,202 +4,165 @@ import { isPrimeUser } from "../config/user.config.js";
 // ==========================
 // 🔒 ENV VALIDATION
 // ==========================
-function requireEnv(name) {
+function requireEnv(name, optional = false) {
   const value = process.env[name];
-  if (!value) {
+  if (!value && !optional) {
     throw new Error(`❌ Missing env variable: ${name}`);
   }
   return value;
-}
-
-function toInt(name) {
-  const val = parseInt(requireEnv(name), 10);
-  if (isNaN(val)) throw new Error(`❌ Invalid number for ${name}`);
-  return val;
-}
-
-function toFloat(name) {
-  const val = parseFloat(requireEnv(name));
-  if (isNaN(val)) throw new Error(`❌ Invalid float for ${name}`);
-  return val;
 }
 
 // ==========================
 // 🔧 CONFIG
 // ==========================
 const CONFIG = {
-  API_URL: requireEnv("LLM_API_URL"),
-  MODEL: requireEnv("LLM_MODEL"),
-
-  TIMEOUT: toInt("LLM_TIMEOUT_MS"),
-  RETRIES: toInt("LLM_RETRIES"),
-  RETRY_DELAY: toInt("LLM_RETRY_DELAY_MS"),
-
-  MAX_TOKENS: toInt("MAX_TOKENS"),
-  MAX_CONTEXT: toInt("MAX_CONTEXT_CHARS"),
-  MAX_HISTORY: toInt("MAX_HISTORY_MESSAGES"),
-  MAX_CHUNKS: toInt("MAX_CHUNKS"),
-
-  TEMPERATURE: toFloat("LLM_TEMPERATURE")
+  MAX_TOKENS: parseInt(process.env.MAX_TOKENS || "1024", 10),
+  TEMPERATURE: parseFloat(process.env.LLM_TEMPERATURE || "0.7"),
+  MAX_CONTEXT: parseInt(process.env.MAX_CONTEXT_CHARS || "4000", 10),
+  MAX_HISTORY: parseInt(process.env.MAX_HISTORY_MESSAGES || "10", 10),
+  MAX_CHUNKS: parseInt(process.env.MAX_CHUNKS || "5", 10),
 };
 
 // ==========================
-// 🔁 UTIL
+// 🔁 PROVIDERS
 // ==========================
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const PROVIDERS = [
+  {
+    name: "Groq",
+    key: requireEnv("GROQ_API_KEY", true),
+    url: "https://api.groq.com/openai/v1/chat/completions",
+    model: "llama-3.3-70b-versatile", // ✅ updated model name
+    headers: (key) => ({ Authorization: `Bearer ${key}` }),
+  },
+  {
+    name: "Mistral",
+    key: requireEnv("MISTRAL_API_KEY", true),
+    url: "https://api.mistral.ai/v1/chat/completions",
+    model: "mistral-small",
+    headers: (key) => ({ Authorization: `Bearer ${key}` }),
+  },
+  {
+    name: "Cloudflare",
+    key: requireEnv("CLOUDFLARE_API_KEY", true),
+    url: `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/meta/llama-3-8b-instruct`,
+    model: "llama-3-8b-instruct",
+    headers: (key) => ({ Authorization: `Bearer ${key}` }),
+  },
+  {
+    name: "HuggingFace",
+    key: requireEnv("HUGGINGFACE_API_KEY", true),
+    url: "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
+    model: "mistral-7b",
+    headers: (key) => ({ Authorization: `Bearer ${key}` }),
+  },
+  {
+    name: "Google",
+    key: requireEnv("GOOGLE_API_KEY", true),
+    url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+    model: "gemini-2.0-flash",
+    headers: (key) => ({ Authorization: `Bearer ${key}` }),
+  },
+];
 
 // ==========================
-// 🔁 RETRY
+// 🚀 CALL PROVIDER
 // ==========================
-async function callLLM(payload) {
-  for (let i = 0; i <= CONFIG.RETRIES; i++) {
-    try {
-      return await axios.post(
-        `${CONFIG.API_URL}/v1/chat/completions`,
-        payload,
-        { timeout: CONFIG.TIMEOUT }
-      );
-    } catch (err) {
-      console.warn(`⚠️ LLM attempt ${i + 1} failed: ${err.message}`);
-      if (i === CONFIG.RETRIES) throw err;
-      await sleep(CONFIG.RETRY_DELAY);
+async function callProvider(provider, messages) {
+  if (!provider.key) return null;
+
+  try {
+    const payload =
+      provider.name === "Google"
+        ? { contents: [{ role: "user", parts: [{ text: messages.map(m => m.content).join("\n") }]}] }
+        : { model: provider.model, messages, max_tokens: CONFIG.MAX_TOKENS, temperature: CONFIG.TEMPERATURE };
+
+    const res = await axios.post(provider.url, payload, {
+      headers: {
+        "Content-Type": "application/json",
+        ...provider.headers(provider.key),
+      },
+      timeout: 30000,
+    });
+
+    if (provider.name === "Google") {
+      return res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
     }
+    if (provider.name === "HuggingFace") {
+      return res.data?.generated_text || "";
+    }
+    return res.data?.choices?.[0]?.message?.content || "";
+  } catch (err) {
+    console.warn(`⚠️ ${provider.name} failed: ${err.message}`);
+    return null;
   }
 }
 
 // ==========================
-// 🚀 MAIN
+// 🚀 MAIN HANDLER
 // ==========================
 export async function handleLLMAnswer({
   prompt,
   chunks = [],
   user_id = "anon",
-  history = []
+  history = [],
 }) {
   if (!prompt) throw new Error("Prompt required");
 
-  const prime = isPrimeUser();
-
-  if (!prime) {
+  if (!isPrimeUser()) {
     return {
       answer: "Upgrade to Prime to access AI-powered answers.",
       context_source: "blocked_non_prime",
-      tokensUsed: 0
+      tokensUsed: 0,
     };
   }
 
-  // ==========================
-  // 🔹 CONTEXT (RAG)
-  // ==========================
+  // Context
   const limitedChunks = chunks.slice(0, CONFIG.MAX_CHUNKS);
-
   const contextText = limitedChunks.length
     ? limitedChunks.map((c) => c.text).join("\n\n").slice(0, CONFIG.MAX_CONTEXT)
     : "";
 
-  // ==========================
-  // 🔹 HISTORY
-  // ==========================
-  const formattedHistory = history
-    .slice(-CONFIG.MAX_HISTORY)
-    .map((m) => ({
-      role: m.role,
-      content: m.content
-    }));
+  // History
+  const formattedHistory = history.slice(-CONFIG.MAX_HISTORY).map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
 
-  try {
-    // ==========================
-    // 🚀 LLM CALL (IMPROVED PROMPT)
-    // ==========================
-    const response = await callLLM({
-      model: CONFIG.MODEL,
-      messages: [
-        {
-          role: "system",
-          content: `You are a highly intelligent AI tutor and UPSC mentor.
+  const messages = [
+    {
+      role: "system",
+      content: `You are a highly intelligent AI tutor and UPSC mentor. Answer clearly, structured, with HTML formatting.`,
+    },
+    ...formattedHistory,
+    {
+      role: "user",
+      content: `${prompt}\n\n${contextText ? `REFERENCE CONTEXT:\n${contextText}` : ""}`,
+    },
+  ];
 
-CRITICAL THINKING RULES:
-- Always understand context before answering
-- If a term has multiple meanings, choose the MOST RELEVANT one
-- Prefer UPSC / exam-related meaning over unrelated meanings
-- NEVER give random or unrelated definitions
-
-FILE HANDLING:
-- If file content is present, you MUST explain it
-- Do not ignore file content
-- Do not say "no context provided"
-
-ANSWER STYLE:
-- Start with a direct answer
-- Then explain clearly
-- Use headings and bullet points
-- Keep it simple and structured
-
-INCLUDE:
-• definition
-• key points
-• examples (if useful)
-• comparison (if needed)
-
-FORMAT:
-- Use HTML: <p>, <strong>, <ul>, <li>, <br/>
-- No markdown
-
-GOAL:
-Give accurate, context-aware answers like ChatGPT.`
-        },
-
-        ...formattedHistory,
-
-        {
-          role: "user",
-          content: `
-${prompt}
-
-${contextText ? `\n\nREFERENCE CONTEXT:\n${contextText}` : ""}
-
-IMPORTANT:
-- Use the above content carefully
-- Prefer relevant meaning based on context
-`
-        }
-      ],
-      max_tokens: CONFIG.MAX_TOKENS,
-      temperature: CONFIG.TEMPERATURE
-    });
-
-    // ==========================
-    // 🔹 RESPONSE
-    // ==========================
-    let rawAnswer =
-      response.data?.choices?.[0]?.message?.content?.trim() || "";
-
-    const tokensUsed = response.data?.usage?.total_tokens || 0;
-
-    // ==========================
-    // 🔹 FORMAT CLEAN (IMPROVED)
-    // ==========================
-    const formattedAnswer = rawAnswer
-      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-      .replace(/### (.*?)/g, "<strong>$1</strong><br/>")
-      .replace(/\n\n/g, "<br/><br/>")
-      .replace(/\n/g, "<br/>");
-
-    return {
-      answer: formattedAnswer,
-      context_source: limitedChunks.length
-        ? "chunks_plus_llm"
-        : "llm_only",
-      tokensUsed
-    };
-
-  } catch (err) {
-    console.error("❌ LLM Error:", err.message);
-
-    return {
-      answer: "⚠️ AI server error. Try again.",
-      context_source: "llm_error",
-      tokensUsed: 0
-    };
+  // Try providers in order
+  for (const provider of PROVIDERS) {
+    const answer = await callProvider(provider, messages);
+    if (answer && answer.trim()) {
+      console.log(`✅ Provider used: ${provider.name}`);
+      return {
+        answer: answer
+          .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+          .replace(/### (.*?)/g, "<strong>$1</strong><br/>")
+          .replace(/\n\n/g, "<br/><br/>")
+          .replace(/\n/g, "<br/>"),
+        context_source: limitedChunks.length ? "chunks_plus_llm" : "llm_only",
+        tokensUsed: 0,
+        provider: provider.name,   // ✅ include provider in response
+      };
+    } else {
+      console.warn(`⚠️ ${provider.name} failed or returned empty`);
+    }
   }
+
+  return {
+    answer: "⚠️ All providers failed. Try again later.",
+    context_source: "llm_error",
+    tokensUsed: 0,
+  };
 }

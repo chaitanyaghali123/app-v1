@@ -3,10 +3,13 @@
 import pg from "pg";
 import crypto from "crypto";
 
-const pool = new pg.Pool({
+export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL
 });
-
+// ✅ Convenience wrapper
+export async function query(text, params) {
+  return pool.query(text, params);
+}
 // =====================================================
 // 🆕 CHAT TABLES (ChatGPT style)
 // =====================================================
@@ -51,7 +54,6 @@ export async function ensureMessagesTable() {
 // 🆕 CHAT OPERATIONS
 // =====================================================
 
-// ✅ Create new chat
 export async function createChat(user_id) {
   const chatId = crypto.randomUUID();
 
@@ -66,7 +68,6 @@ export async function createChat(user_id) {
   return { chatId };
 }
 
-// ✅ Get chats list
 export async function getChats(user_id) {
   const { rows } = await pool.query(
     `
@@ -82,7 +83,6 @@ export async function getChats(user_id) {
   return rows;
 }
 
-// ✅ Get messages of a chat
 export async function getChatMessages(chat_id) {
   const { rows } = await pool.query(
     `
@@ -97,7 +97,6 @@ export async function getChatMessages(chat_id) {
   return rows;
 }
 
-// ✅ Add message
 export async function addMessage(chat_id, role, content) {
   await pool.query(
     `
@@ -107,7 +106,6 @@ export async function addMessage(chat_id, role, content) {
     [chat_id, role, content]
   );
 
-  // update chat timestamp
   await pool.query(
     `
     UPDATE chats
@@ -118,7 +116,6 @@ export async function addMessage(chat_id, role, content) {
   );
 }
 
-// ✅ Set chat title (first message)
 export async function updateChatTitle(chat_id, title) {
   await pool.query(
     `
@@ -131,7 +128,7 @@ export async function updateChatTitle(chat_id, title) {
 }
 
 // =====================================================
-// RESULTS OPERATIONS (simplified)
+// RESULTS OPERATIONS
 // =====================================================
 export async function saveResult(userId, prompt, answer) {
   const { rows } = await pool.query(
@@ -146,13 +143,9 @@ export async function saveResult(userId, prompt, answer) {
 }
 
 // =====================================================
-// REVISIONS OPERATIONS (simplified)
+// REVISIONS OPERATIONS
 // =====================================================
-export async function saveRevision({
-  user_id = "anon",
-  prompt,
-  answer
-}) {
+export async function saveRevision({ user_id = "anon", prompt, answer }) {
   try {
     const { rows } = await pool.query(
       `
@@ -162,7 +155,6 @@ export async function saveRevision({
       `,
       [user_id, prompt, answer]
     );
-
     return rows[0]?.id;
   } catch (err) {
     console.error("❌ saveRevision error:", err.message);
@@ -171,7 +163,7 @@ export async function saveRevision({
 }
 
 // =====================================================
-// API LOGGING (Middleware Support)
+// API LOGGING
 // =====================================================
 export async function saveApiLog({
   endpoint,
@@ -198,13 +190,7 @@ export async function saveApiLog({
 // =====================================================
 export async function deleteAllUserTokens(user_id) {
   try {
-    await pool.query(
-      `
-      DELETE FROM user_tokens
-      WHERE user_id = $1;
-      `,
-      [user_id]
-    );
+    await pool.query(`DELETE FROM user_tokens WHERE user_id = $1;`, [user_id]);
   } catch (err) {
     console.error("❌ deleteAllUserTokens error:", err.message);
   }
@@ -212,13 +198,7 @@ export async function deleteAllUserTokens(user_id) {
 
 export async function deleteRefreshToken(token) {
   try {
-    await pool.query(
-      `
-      DELETE FROM user_tokens
-      WHERE token = $1;
-      `,
-      [token]
-    );
+    await pool.query(`DELETE FROM user_tokens WHERE token = $1;`, [token]);
   } catch (err) {
     console.error("❌ deleteRefreshToken error:", err.message);
   }
@@ -227,13 +207,9 @@ export async function deleteRefreshToken(token) {
 export async function findRefreshToken(token) {
   try {
     const { rows } = await pool.query(
-      `
-      SELECT * FROM user_tokens
-      WHERE token = $1;
-      `,
+      `SELECT * FROM user_tokens WHERE token = $1;`,
       [token]
     );
-
     return rows[0] || null;
   } catch (err) {
     console.error("❌ findRefreshToken error:", err.message);
@@ -244,10 +220,7 @@ export async function findRefreshToken(token) {
 export async function saveRefreshToken(user_id, token) {
   try {
     await pool.query(
-      `
-      INSERT INTO user_tokens (user_id, token)
-      VALUES ($1, $2);
-      `,
+      `INSERT INTO user_tokens (user_id, token) VALUES ($1, $2);`,
       [user_id, token]
     );
   } catch (err) {
@@ -268,7 +241,6 @@ export async function saveInvoice({ email, plan, amount, url }) {
       `,
       [email, plan, amount, url]
     );
-
     return rows[0]?.id;
   } catch (err) {
     console.error("❌ saveInvoice error:", err.message);
@@ -287,11 +259,36 @@ export async function listInvoices(email) {
       `,
       [email]
     );
-
     return rows;
   } catch (err) {
     console.error("❌ listInvoices error:", err.message);
     return [];
+  }
+}
+
+// =====================================================
+// SUBSCRIPTION MANAGEMENT (NEW)
+// =====================================================
+export async function setUserSubscribed(userId) {
+  try {
+    await pool.query(`UPDATE users SET is_subscribed = true WHERE id = $1;`, [userId]);
+    return true;
+  } catch (err) {
+    console.error("❌ setUserSubscribed error:", err.message);
+    return false;
+  }
+}
+
+export async function getUserSubscriptionStatus(userId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT is_subscribed FROM users WHERE id = $1;`,
+      [userId]
+    );
+    return rows[0]?.is_subscribed || false;
+  } catch (err) {
+    console.error("❌ getUserSubscriptionStatus error:", err.message);
+    return false;
   }
 }
 
@@ -372,6 +369,7 @@ export async function ensureUsersTable() {
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         email TEXT UNIQUE,
         password TEXT,
+        is_subscribed BOOLEAN DEFAULT false,  -- ✅ NEW COLUMN
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);

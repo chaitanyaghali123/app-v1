@@ -1,10 +1,11 @@
+// App.tsx
 import React, { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, useNavigate } from "react-router-dom";
 import AskForm from "./components/AskForm";
 import SignupForm from "./components/SignupForm";
 import SubscriptionForm from "./components/SubscriptionForm";
 import LoginForm from "./components/LoginForm";
-import ProfileSettings from "./components/ProfileSettings"; // ✅ new import
+import ProfileSettings from "./components/ProfileSettings"; // ✅ profile page
 import { refreshToken } from "./api";
 import "./App.css";
 
@@ -65,8 +66,8 @@ const App: React.FC = () => {
         <Route path="/" element={<AskForm />} />
         <Route path="/signup" element={<SignupForm />} />
         <Route path="/login" element={<LoginForm />} />
-        <Route path="/subscribe" element={<SubscriptionForm />} />
-        <Route path="/profile" element={<ProfileSettings />} /> {/* ✅ new route */}
+        <Route path="/subscribe" element={<SubscriptionForm />} /> {/* ✅ subscription */}
+        <Route path="/profile" element={<ProfileSettings />} />   {/* ✅ profile */}
       </Routes>
     </BrowserRouter>
   );

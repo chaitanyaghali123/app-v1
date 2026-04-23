@@ -73,11 +73,13 @@ export async function signupUser(body: {
 // =============================
 // Subscription / Payment
 // =============================
+// ✅ Updated: require userId
 export async function subscribeOrder(body: {
+  userId: string;
   name: string;
   email: string;
   plan: string;
-}): Promise<{ orderId: string; status: string }> {
+}): Promise<{ orderId: string; key: string; amount: number; currency: string }> {
   const r = await fetch(`${API_BASE}/payment/order`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -85,6 +87,13 @@ export async function subscribeOrder(body: {
   });
 
   if (!r.ok) throw new Error(`Order failed: ${r.status}`);
+  return r.json();
+}
+
+// ✅ NEW: Fetch Profile (email + subscription status)
+export async function fetchProfile(): Promise<{ email: string; is_subscribed: boolean }> {
+  const r = await authFetch(`${API_BASE}/profile`);
+  if (!r.ok) throw new Error(`Failed to fetch profile: ${r.status}`);
   return r.json();
 }
 

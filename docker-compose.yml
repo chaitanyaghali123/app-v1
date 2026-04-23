@@ -50,6 +50,7 @@ services:
       - KAFKA_BROKER=kafka:9092 # ✅ point backend to Kafka
       - LLM_API_URL=http://llama-cpp:8080
       - LLM_MODEL=phi-3-mini-4k-instruct-q4.gguf
+      
     depends_on:
       - postgres
       - chromadb

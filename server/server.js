@@ -44,6 +44,7 @@ import subscriptionRoutes from "./routes/subscription.route.js";
 import invoiceRoutes from "./routes/invoice.route.js";
 import paymentRoutes from "./routes/payment.route.js";
 import webhookRoutes from "./routes/webhook.route.js";
+import profileRoutes from "./routes/profile.route.js";
 
 // 🆕 NEW CHAT ROUTES
 import chatRoutes from "./routes/chat.routes.js";
@@ -145,6 +146,7 @@ app.use("/api/invoices", invoiceRoutes);
 app.use("/api/payment", paymentRoutes);
 app.use("/api/webhook", webhookRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api/profile", profileRoutes);
 
 // ===============================
 // Init DB + Server

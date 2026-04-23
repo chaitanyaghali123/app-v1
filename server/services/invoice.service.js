@@ -1,9 +1,11 @@
-import db from "./db.service.js";
+// invoice.service.js
+
+import { pool } from "./db.service.js";  // ✅ import pool directly
 
 // Save invoice using your actual table columns
 export async function saveInvoice({ email, plan, amount, url }) {
   try {
-    await db.query(
+    await pool.query(
       `INSERT INTO invoices (id, email, plan, amount, url, created_at)
        VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW())`,
       [email, plan, amount, url]
@@ -17,6 +19,13 @@ export async function saveInvoice({ email, plan, amount, url }) {
 
 // Fetch invoices for history
 export async function getInvoices() {
-  const result = await db.query(`SELECT * FROM invoices ORDER BY created_at DESC`);
-  return result.rows;
+  try {
+    const result = await pool.query(
+      `SELECT * FROM invoices ORDER BY created_at DESC`
+    );
+    return result.rows;
+  } catch (err) {
+    console.error("❌ Failed to fetch invoices:", err.message);
+    return [];
+  }
 }

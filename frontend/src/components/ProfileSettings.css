@@ -56,6 +56,30 @@
   margin-bottom: 8px;
 }
 
+/* Subscription Badge */
+.subscription-badge {
+  display: inline-block;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: bold;
+}
+
+.subscription-badge.subscribed {
+  background: #22c55e; /* green */
+  color: #fff;
+}
+
+.subscription-badge.upgrade {
+  background: #2563eb; /* blue */
+  color: #fff;
+  cursor: pointer;
+}
+
+.subscription-badge.upgrade:hover {
+  background: #1e40af;
+}
+
 /* Section Buttons */
 .section button {
   display: block;
@@ -75,27 +99,12 @@
   background: #e5e7eb;
 }
 
-/* Navigation Buttons (Back + Logout) */
+/* Navigation Buttons (Logout) */
 .profile-actions {
   margin-top: 30px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.back-btn {
-  width: 100%;
-  padding: 12px;
-  border: none;
-  border-radius: 6px;
-  background: #2563eb; /* blue */
-  color: #fff;
-  font-weight: bold;
-  cursor: pointer;
-}
-
-.back-btn:hover {
-  background: #1e40af;
 }
 
 .logout-btn {
@@ -112,6 +121,7 @@
 .logout-btn:hover {
   background: #b91c1c;
 }
+
 .section label {
   display: block;
   margin-bottom: 6px;
