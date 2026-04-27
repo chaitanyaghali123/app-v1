@@ -93,17 +93,30 @@ session.mount("http://", HTTPAdapter(max_retries=Retry(
 def ensure_collection(name: str):
     resp = session.get(f"{CHROMA_BASE}/collections")
     if resp.status_code == 200:
-        names = [c["name"] for c in resp.json()]
+        data = resp.json()
+        # Handle both list and dict formats
+        if isinstance(data, list):
+            collections = data
+        else:
+            collections = data.get("collections", [])
+        names = [c["name"] for c in collections]
         if name not in names:
             session.post(f"{CHROMA_BASE}/collections", json={"name": name})
 
 def get_collection_id(name: str):
     resp = session.get(f"{CHROMA_BASE}/collections")
     if resp.status_code == 200:
-        for c in resp.json():
+        data = resp.json()
+        if isinstance(data, list):
+            collections = data
+        else:
+            collections = data.get("collections", [])
+        for c in collections:
             if c["name"] == name:
                 return c["id"]
     return None
+
+
 
 def query_chunks(collection_id: str, query_embedding, n_results=5):
     payload = {

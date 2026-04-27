@@ -1,3 +1,4 @@
+// server/server.js
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -10,6 +11,10 @@ import { requestLogger } from "./middleware/logger.js";
 // ✅ NEW: file system fix
 import fs from "fs";
 import path from "path";
+
+// 🔧 Polyfill for File (fixes cheerio/undici issue in Node 18)
+import { File } from "node:buffer";
+global.File = File;
 
 // Load env FIRST
 dotenv.config();
