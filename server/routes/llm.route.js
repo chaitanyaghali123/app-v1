@@ -1,3 +1,4 @@
+// server/routes/llm.route.js
 import express from "express";
 import { llmQueue } from "../queue.js";
 
@@ -19,15 +20,12 @@ router.post("/answer", async (req, res) => {
     }
 
     // Add job to queue
-    const job = await llmQueue.add("llm-job", {
-      question
-    });
+    const job = await llmQueue.add("llm-job", { question });
 
     return res.json({
       status: "queued",
       jobId: job.id
     });
-
   } catch (err) {
     console.error("❌ Queue error:", err);
     return res.status(500).json({
@@ -37,3 +35,4 @@ router.post("/answer", async (req, res) => {
 });
 
 export default router;
+

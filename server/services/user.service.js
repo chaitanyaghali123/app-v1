@@ -45,3 +45,4 @@ export async function revokeRefreshToken(userId, token) {
   const sql = `DELETE FROM refresh_tokens WHERE user_id = $1 AND token = $2;`;
   await pool.query(sql, [userId, token]);
 }
+

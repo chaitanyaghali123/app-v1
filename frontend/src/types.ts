@@ -131,3 +131,4 @@ export type ChatListResponse = Chat[];
 export interface ChatMessagesResponse {
   messages: ChatMessage[];
 }
+

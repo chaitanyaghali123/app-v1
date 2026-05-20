@@ -56,7 +56,6 @@ useEffect(() => {
   }
 }, []);
 
-
   const startListening = () => {
     recognitionRef.current?.start();
   };
@@ -262,7 +261,6 @@ useEffect(() => {
 </div>
 
 
-
     {showAttachMenu && (
       <div
         className="attachment-options"
@@ -315,7 +313,6 @@ useEffect(() => {
     onChange={handleFileSelect}
   />
 </div>
-
 
         {/* ✅ FIXED SECTION */}
         {selectedFiles.length > 0 && (

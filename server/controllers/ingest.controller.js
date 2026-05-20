@@ -1,3 +1,5 @@
+// ingest.controller.js
+
 import path from "path";
 import axios from "axios";
 import FormData from "form-data";
@@ -75,3 +77,4 @@ export const handleIngestFile = async (req, res) => {
     res.status(500).json({ error: "Ingestion failed" });
   }
 };
+

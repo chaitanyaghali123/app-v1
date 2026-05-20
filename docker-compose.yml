@@ -32,13 +32,14 @@ services:
     volumes:
       - ./server:/app
       - ./server/uploads:/app/uploads   # ✅ ADD THIS LINE
-
+      
       
     ports:
       - "3000:3000"
     env_file:
       - ./server/.env
-    environment:             # ✅ Stubbed values injected here
+    environment:            
+     
       - AWS_REGION=local
       - S3_BUCKET=local-invoices
       - SENDGRID_API_KEY=dev-placeholder
@@ -48,8 +49,6 @@ services:
       - RAZORPAY_WEBHOOK_SECRET=stub-webhook
       - FRONTEND_URL=http://localhost:4173
       - KAFKA_BROKER=kafka:9092 # ✅ point backend to Kafka
-      - LLM_API_URL=http://llama-cpp:8080
-      - LLM_MODEL=phi-3-mini-4k-instruct-q4.gguf
       
     depends_on:
       - postgres
@@ -57,7 +56,7 @@ services:
       - chunker
       - n8n
       - kafka # ✅ ensure Kafka starts before backend
-      - llama-cpp  
+     
     restart: always
     networks:
       - sambit-net
@@ -83,8 +82,6 @@ services:
       - "8001:8000"
     env_file:
       - ./vector_server/.env
-   
-
     depends_on:
       - postgres
       - chromadb
@@ -151,6 +148,9 @@ services:
       - ./vector_server/chroma:/chroma
     networks:
       - sambit-net
+          
+              
+
 
   pgadmin:
     image: dpage/pgadmin4
@@ -227,39 +227,6 @@ services:
       timeout: 5s
       retries: 5
 
- 
-  
-  llama-cpp:
-    build: .
-    container_name: llama-cpp
-    volumes:
-      # Mount your models folder from host to container
-      - "D:/app-v1/models:/models"
-    ports:
-      - "8080:8080"
-    restart: always
-    networks:
-      - sambit-net
-    command: [
-      "python3", "-m", "llama_cpp.server",
-      "--model", "/models/phi-3-mini-4k-instruct-q4.gguf",
-      "--host", "0.0.0.0",
-      "--port", "8080",
-      "--n_gpu_layers", "0",   # CPU only
-      
-      "--n_threads", "12",
-      "--n_ctx", "1024", 
-      "--n_batch", "64"      
-      
-               
-    ]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/models"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-
   redis:
     image: redis:7-alpine
     container_name: aryabhata-redis
@@ -279,26 +246,47 @@ services:
     working_dir: /app
     volumes:
       - ./server:/app
+     
     command: ["node", "worker.js"]
     env_file:
       - ./server/.env
     environment:
-      - VLLM_API_URL=http://llama-cpp:8080
+  
       - BATCH_SIZE=5
       - BATCH_TIME=200
     depends_on:
       - redis
-      - llama-cpp
+     
     restart: always
     networks:
       - sambit-net
+
+
+
+  llama-server:
+    build:
+      context: ./llama
+      dockerfile: Dockerfile
+    container_name: llama-server
+    volumes:
+       - ./models:/models 
+    ports:
+      - "8080:8080"
+    networks:
+      - sambit-net
+    restart: unless-stopped
+
+      
+
+
+
 
 volumes:
   postgres:
   pgadmin:
   chroma_cache:
   n8n_data:
-  llama-cpp:
+
   redis_data:   # ✅ declare the named volume here
 networks:
   sambit-net:

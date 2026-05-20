@@ -1,42 +1,43 @@
-import { kafkaProducer } from "../services/kafka.js";
-import { saveInvoice } from "../services/db.service.js";
-import { pool } from "../services/db.service.js"; // reuse pg pool
+// controllers/subscription.controller.js
 
-export async function handleSubscription(req, res) {
+import { saveInvoice, listInvoices } from "../services/db.service.js";
+
+// ✅ Create a new subscription invoice
+export const createSubscription = async (req, res) => {
   try {
-    const { userId, name, email, plan } = req.body;
-    if (!userId || !name || !email || !plan) {
-      return res.status(400).json({ error: "userId, name, email, and plan are required" });
+    const { email, plan, amount, url } = req.body;
+
+    if (!email || !plan || !amount || !url) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // ✅ Calculate amount
-    const amount = plan === "Prime" ? 999 : 499;
+    const invoiceId = await saveInvoice({ email, plan, amount, url });
 
-    // ✅ Update user subscription status
-    await pool.query(
-      `UPDATE users SET is_subscribed = true WHERE id = $1`,
-      [userId]
-    );
-
-    // ✅ Save invoice in DB
-    const invoiceId = await saveInvoice({ email, plan, amount, url: "" });
-
-    // ✅ Push invoice job to Kafka (for async processing / n8n)
-    await kafkaProducer.send({
-      topic: "invoice-jobs",
-      messages: [
-        { value: JSON.stringify({ userId, name, email, plan, amount, invoiceId }) }
-      ]
-    });
-
-    res.status(202).json({
-      message: "Subscription activated. Invoice will be emailed shortly.",
-      plan,
-      amount,
-      invoiceId
+    return res.json({
+      success: true,
+      invoiceId,
+      message: "Subscription created successfully"
     });
   } catch (err) {
-    console.error("❌ Subscription error:", err);
-    res.status(500).json({ error: "Failed to activate subscription" });
+    console.error("❌ createSubscription error:", err.message);
+    return res.status(500).json({ error: "Failed to create subscription" });
   }
-}
+};
+
+// ✅ List all invoices for a user
+export const listUserInvoices = async (req, res) => {
+  try {
+    const { email } = req.query;
+
+    if (!email) {
+      return res.status(400).json({ error: "Email is required" });
+    }
+
+    const invoices = await listInvoices(email);
+
+    return res.json({ invoices });
+  } catch (err) {
+    console.error("❌ listUserInvoices error:", err.message);
+    return res.status(500).json({ error: "Failed to fetch invoices" });
+  }
+};

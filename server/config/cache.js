@@ -1,3 +1,8 @@
 // config/cache.js
-export const ANSWER_TTL = process.env.ANSWER_TTL || 120;   // 2 minutes
 
+/**
+ * Answer TTL (cache duration)
+ * Read from .env, fallback to 120 seconds
+ * ⚠️ Note: frontend uses milliseconds, backend uses seconds
+ */
+export const ANSWER_TTL = parseInt(process.env.ANSWER_TTL, 10) || 120;

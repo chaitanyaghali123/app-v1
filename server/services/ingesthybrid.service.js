@@ -1,3 +1,5 @@
+// ingesthybrid.service.js
+
 import axios from "axios";
 import dotenv from "dotenv";
 import { log, err } from "../utils/logger.js";
@@ -39,3 +41,4 @@ export async function ingestHybridDocument(document) {
     return { error: errorMsg };
   }
 }
+

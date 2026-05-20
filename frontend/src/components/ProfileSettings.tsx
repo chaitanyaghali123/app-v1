@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { useNavigate } from "react-router-dom";
 import "./ProfileSettings.css";
 
@@ -6,9 +6,6 @@ const translations: Record<string, Record<string, string>> = {
   English: {
     account: "Account",
     email: "Email",
-    subscription: "Subscription",
-    subscribed: "✅ Subscribed",
-    upgrade: "Upgrade to Plus",
     security: "Security",
     data: "Data Controls",
     bug: "Report Bug",
@@ -20,9 +17,6 @@ const translations: Record<string, Record<string, string>> = {
   Hindi: {
     account: "खाता",
     email: "ईमेल",
-    subscription: "सदस्यता",
-    subscribed: "✅ सदस्यता सक्रिय",
-    upgrade: "प्लस में अपग्रेड करें",
     security: "सुरक्षा",
     data: "डेटा नियंत्रण",
     bug: "बग रिपोर्ट करें",
@@ -35,27 +29,10 @@ const translations: Record<string, Record<string, string>> = {
 
 const ProfileSettings: React.FC = () => {
   const navigate = useNavigate();
-  const [profile, setProfile] = useState<{ email: string; is_subscribed: boolean } | null>(null);
+  const email = localStorage.getItem("userEmail") || "Unknown";
 
   // Default language (English)
   const t = translations["English"];
-
-  useEffect(() => {
-    async function fetchProfile() {
-      try {
-        const res = await fetch("/api/profile", {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem("accessToken")}`,
-          },
-        });
-        const data = await res.json();
-        setProfile(data);
-      } catch (err) {
-        console.error("❌ Failed to fetch profile:", err);
-      }
-    }
-    fetchProfile();
-  }, []);
 
   const handleLogout = () => {
     localStorage.removeItem("accessToken");
@@ -75,15 +52,7 @@ const ProfileSettings: React.FC = () => {
       {/* Account Section */}
       <div className="section">
         <h4>{t.account}</h4>
-        <p>{t.email}: {profile?.email || "Unknown"}</p>
-      </div>
-
-      {/* Subscription Section */}
-      <div className="section">
-        <h4>{t.subscription}</h4>
-        <p>
-          {profile?.is_subscribed ? t.subscribed : t.upgrade}
-        </p>
+        <p>{t.email}: {email}</p>
       </div>
 
       {/* Security Section */}
@@ -111,3 +80,4 @@ const ProfileSettings: React.FC = () => {
 };
 
 export default ProfileSettings;
+

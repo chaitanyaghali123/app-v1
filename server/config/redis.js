@@ -1,3 +1,4 @@
+// config/redis.js
 import Redis from "ioredis";
 
 // -----------------------------
@@ -5,7 +6,7 @@ import Redis from "ioredis";
 // -----------------------------
 const redis = new Redis({
   host: process.env.REDIS_HOST || "aryabhata-redis", // ✅ docker service
-  port: parseInt(process.env.REDIS_PORT) || 6379,
+  port: parseInt(process.env.REDIS_PORT, 10) || 6379,
 
   // Optional (for cloud later)
   username: process.env.REDIS_USERNAME || undefined,
@@ -20,7 +21,7 @@ const redis = new Redis({
     const delay = Math.min(times * 100, 2000);
     console.log(`🔁 Redis retry ${times}, delay ${delay}ms`);
     return delay;
-  }
+  },
 });
 
 // -----------------------------
@@ -50,7 +51,7 @@ redis.on("reconnecting", () => {
 // Helper functions (clean usage)
 // -----------------------------
 
-// ✅ Set cache with TTL
+// ✅ Set cache with TTL (seconds)
 export async function setCache(key, value, ttl = 60) {
   try {
     await redis.set(key, JSON.stringify(value), "EX", ttl);

@@ -1,25 +1,42 @@
 # ingest_hybrid_api.py
-# FastAPI service for retrieval and health
-# Bulk ingestion is handled separately in ingest_hybrid.py
+# FastAPI retrieval service
+# ChromaDB v2 REST API compatible
 
-import os, logging, psycopg2, requests
+import os
+import logging
+import requests
+import psycopg2
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sentence_transformers import SentenceTransformer
+
 from requests.adapters import HTTPAdapter, Retry
+from sentence_transformers import SentenceTransformer
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 
-# -----------------------------
-# Config (aligned with .env)
-# -----------------------------
+# --------------------------------------------------
+# Config
+# --------------------------------------------------
+
 CHROMA_BASE = os.getenv(
     "CHROMA_HOST",
     "http://chromadb:8000/api/v2/tenants/default_tenant/databases/default_database"
 )
-COLLECTION_NAME = os.getenv("CHROMA_COLLECTION", "upsc_chunks_v2")
 
-EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+COLLECTION_NAME = os.getenv(
+    "CHROMA_COLLECTION",
+    "upsc_chunks_v2"
+)
+
+EMBED_MODEL = os.getenv(
+    "EMBEDDING_MODEL",
+    "all-MiniLM-L6-v2"
+)
+
 EMBED_DIM = int(os.getenv("EMBED_DIM", "384"))
 
 PG_DB = os.getenv("DB_NAME", "aryabhata_db")
@@ -28,32 +45,69 @@ PG_PASS = os.getenv("DB_PASSWORD", "Password123")
 PG_HOST = os.getenv("DB_HOST", "postgres")
 PG_PORT = os.getenv("DB_PORT", "5432")
 
+# --------------------------------------------------
+# Embedding model
+# --------------------------------------------------
+
+logging.info(f"Loading embedding model: {EMBED_MODEL}")
+
 embedder = SentenceTransformer(EMBED_MODEL)
 
-# -----------------------------
-# PostgreSQL connection
-# -----------------------------
+# --------------------------------------------------
+# PostgreSQL
+# --------------------------------------------------
+
 pg_ready = False
-conn = None
+
 try:
     conn = psycopg2.connect(
-        dbname=PG_DB, user=PG_USER, password=PG_PASS,
-        host=PG_HOST, port=PG_PORT
+        dbname=PG_DB,
+        user=PG_USER,
+        password=PG_PASS,
+        host=PG_HOST,
+        port=PG_PORT
     )
-    conn.autocommit = True
-    pg_ready = True
-    logging.info("✅ Connected to PostgreSQL")
-except Exception as e:
-    logging.error("❌ PostgreSQL connection failed: %s", e)
 
-# -----------------------------
+    conn.autocommit = True
+
+    pg_ready = True
+
+    logging.info("✅ Connected to PostgreSQL")
+
+except Exception as e:
+
+    logging.error(f"❌ PostgreSQL connection failed: {e}")
+
+# --------------------------------------------------
+# HTTP Session
+# --------------------------------------------------
+
+session = requests.Session()
+
+retries = Retry(
+    total=5,
+    backoff_factor=1,
+    status_forcelist=[500, 502, 503, 504]
+)
+
+adapter = HTTPAdapter(max_retries=retries)
+
+session.mount("http://", adapter)
+session.mount("https://", adapter)
+
+# --------------------------------------------------
 # Ensure tables
-# -----------------------------
+# --------------------------------------------------
+
 def ensure_tables():
+
     if not pg_ready:
         return
+
     with conn.cursor() as cur:
+
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+
         cur.execute(f"""
             CREATE TABLE IF NOT EXISTS upsc_chunks (
                 id TEXT PRIMARY KEY,
@@ -64,103 +118,194 @@ def ensure_tables():
                 file_hash TEXT
             );
         """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS chunk_keywords (
-                chunk_id TEXT,
-                keyword TEXT,
-                PRIMARY KEY(chunk_id, keyword)
-            );
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS chunk_links (
-                id SERIAL PRIMARY KEY,
-                chunk_id TEXT,
-                related_chunk_id TEXT,
-                relation_type TEXT,
-                score FLOAT
-            );
-        """)
+
     logging.info("✅ Tables ensured")
 
-# -----------------------------
-# ChromaDB helpers
-# -----------------------------
-session = requests.Session()
-session.mount("http://", HTTPAdapter(max_retries=Retry(
-    total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504]
-)))
+# --------------------------------------------------
+# Chroma Helpers
+# --------------------------------------------------
 
 def ensure_collection(name: str):
-    resp = session.get(f"{CHROMA_BASE}/collections")
-    if resp.status_code == 200:
-        data = resp.json()
-        # Handle both list and dict formats
-        if isinstance(data, list):
-            collections = data
-        else:
-            collections = data.get("collections", [])
-        names = [c["name"] for c in collections]
-        if name not in names:
-            session.post(f"{CHROMA_BASE}/collections", json={"name": name})
+
+    resp = session.get(
+        f"{CHROMA_BASE}/collections",
+        timeout=30
+    )
+
+    if resp.status_code != 200:
+        logging.error(f"❌ Failed fetching collections: {resp.text}")
+        return False
+
+    data = resp.json()
+
+    collections = (
+        data if isinstance(data, list)
+        else data.get("collections", [])
+    )
+
+    names = [c["name"] for c in collections]
+
+    if name in names:
+        return True
+
+    r = session.post(
+        f"{CHROMA_BASE}/collections",
+        json={"name": name},
+        timeout=30
+    )
+
+    if r.status_code in [200, 201]:
+        logging.info(f"✅ Created collection: {name}")
+        return True
+
+    logging.error(f"❌ Failed creating collection: {r.text}")
+
+    return False
 
 def get_collection_id(name: str):
-    resp = session.get(f"{CHROMA_BASE}/collections")
-    if resp.status_code == 200:
-        data = resp.json()
-        if isinstance(data, list):
-            collections = data
-        else:
-            collections = data.get("collections", [])
-        for c in collections:
-            if c["name"] == name:
-                return c["id"]
+
+    resp = session.get(
+        f"{CHROMA_BASE}/collections",
+        timeout=30
+    )
+
+    if resp.status_code != 200:
+        logging.error(f"❌ Failed reading collections: {resp.text}")
+        return None
+
+    data = resp.json()
+
+    collections = (
+        data if isinstance(data, list)
+        else data.get("collections", [])
+    )
+
+    for c in collections:
+
+        if c.get("name") == name:
+            return c.get("id")
+
     return None
 
+# --------------------------------------------------
+# FIXED QUERY FUNCTION
+# --------------------------------------------------
 
+def query_chunks(collection_id, query_embedding, n_results=5):
 
-def query_chunks(collection_id: str, query_embedding, n_results=5):
+    if hasattr(query_embedding, "tolist"):
+        query_embedding = query_embedding.tolist()
+
+    query_embedding = [float(x) for x in query_embedding]
+
     payload = {
         "query_embeddings": [query_embedding],
-        "n_results": n_results
+        "n_results": n_results,
+        "include": [
+            "documents",
+            "metadatas",
+            "distances"
+        ]
     }
+
+    # ✅ Correct Chroma v2 endpoint
     resp = session.post(
         f"{CHROMA_BASE}/collections/{collection_id}/query",
-        json=payload
+        json=payload,
+        timeout=60
     )
+
     if resp.status_code != 200:
+
+        logging.error(
+            f"❌ Chroma query failed: "
+            f"{resp.status_code} {resp.text}"
+        )
+
         return []
+
     data = resp.json()
+
     docs = data.get("documents", [[]])[0]
-    return [{"text": d} for d in docs]
+    metas = data.get("metadatas", [[]])[0]
+    distances = data.get("distances", [[]])[0]
 
-# -----------------------------
-# FastAPI setup
-# -----------------------------
+    logging.info(f"✅ Retrieved {len(docs)} chunks from Chroma")
+
+    results = []
+
+    for doc, meta, dist in zip(docs, metas, distances):
+
+        results.append({
+            "text": doc,
+            "metadata": meta,
+            "distance": dist
+        })
+
+    return results
+
+# --------------------------------------------------
+# FastAPI
+# --------------------------------------------------
+
 app = FastAPI(title="Hybrid Retrieval Service")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# -----------------------------
-# Retrieval: nearest chunks
-# -----------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
+# --------------------------------------------------
+# Retrieval Endpoint
+# --------------------------------------------------
+
 @app.post("/chunks")
 async def chunks_api(request: Request):
+
     data = await request.json()
-    query = data.get("query", "")
+
+    query = data.get("query", "").strip()
+
+    if not query:
+        return {"chunks": []}
 
     ensure_tables()
-    ensure_collection(COLLECTION_NAME)
-    col_id = get_collection_id(COLLECTION_NAME)
-    if not col_id:
-        return {"chunks": [], "error": "ChromaDB collection not found"}
 
-    q_emb = embedder.encode([query])[0].tolist()
-    results = query_chunks(col_id, q_emb, n_results=10)
+    if not ensure_collection(COLLECTION_NAME):
+        return {
+            "chunks": [],
+            "error": "Failed ensuring collection"
+        }
 
-    return {"chunks": results}
+    collection_id = get_collection_id(COLLECTION_NAME)
 
-# -----------------------------
+    if not collection_id:
+        return {
+            "chunks": [],
+            "error": "Collection ID not found"
+        }
+
+    q_emb = embedder.encode([query])[0]
+
+    results = query_chunks(
+        collection_id,
+        q_emb,
+        n_results=10
+    )
+
+    return {
+        "chunks": results
+    }
+
+# --------------------------------------------------
 # Health
-# -----------------------------
+# --------------------------------------------------
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+
+    return {
+        "status": "ok"
+    }

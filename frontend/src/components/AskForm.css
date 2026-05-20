@@ -141,7 +141,6 @@ body {
 }
 
 
-
 /* ===== TEXTAREA WRAPPER ===== */
 .textarea-wrapper {
   position: relative;
@@ -188,7 +187,6 @@ body {
   gap: 6px;
 }
 
-
 /* Mic is just the icon (transparent, no circle) */
 .input-actions .mic-button {
   background: transparent;
@@ -229,7 +227,6 @@ body {
   resize: none;
   box-sizing: border-box;
 }
-
 
 /* ===== Attachment Menu ===== */
 .attachment-options {
