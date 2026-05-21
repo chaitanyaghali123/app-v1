@@ -7,40 +7,37 @@ import { isPrimeUser } from "../config/user.config.js";
 // 🔧 CONFIG
 // ==========================
 const CONFIG = {
-  // ONLY LONG UPSC ANSWERS
   MAX_TOKENS_LONG: parseInt(
-    process.env.MAX_TOKENS_LONG || "1400",
+    process.env.MAX_TOKENS_LONG || "1800",
     10
   ),
 
   TEMPERATURE: parseFloat(
-    process.env.LLM_TEMPERATURE || "0.4"
+    process.env.LLM_TEMPERATURE || "0.5"
   ),
 
-  // Context control
   MAX_CONTEXT: parseInt(
-    process.env.MAX_CONTEXT_CHARS || "1800",
+    process.env.MAX_CONTEXT_CHARS || "2500",
     10
   ),
 
   MAX_HISTORY: parseInt(
-    process.env.MAX_HISTORY_MESSAGES || "3",
+    process.env.MAX_HISTORY_MESSAGES || "4",
     10
   ),
 
   MAX_CHUNKS: parseInt(
-    process.env.MAX_CHUNKS || "4",
+    process.env.MAX_CHUNKS || "6",
     10
   ),
 
   MAX_CHARS_PER_CHUNK: parseInt(
-    process.env.MAX_CHARS_PER_CHUNK || "900",
+    process.env.MAX_CHARS_PER_CHUNK || "1200",
     10
   ),
 
-  // Phi-3 safe zone
   MAX_TOTAL_CONTEXT_TOKENS: parseInt(
-    process.env.MAX_TOTAL_CONTEXT_TOKENS || "1400",
+    process.env.MAX_TOTAL_CONTEXT_TOKENS || "5000",
     10
   ),
 
@@ -51,15 +48,18 @@ const CONFIG = {
 };
 
 // ==========================
-// 🧠 LLAMA CONFIG
+// 🧠 LLAMA SERVER CONFIG
 // ==========================
 const BASE_URL =
   process.env.LLAMA_API_URL ||
   "http://llama-server:8080";
 
+// IMPORTANT:
+// llama.cpp automatically loads split files
+// if you point to PART 1
 const MODEL_PATH =
   process.env.LLAMA_MODEL ||
-  "/models/Phi-3-mini-4k-instruct-q4.gguf";
+  "/models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf";
 
 // ==========================
 // 🔢 TOKEN ESTIMATION
@@ -124,7 +124,7 @@ function buildContext(chunks = []) {
 }
 
 // ==========================
-// 🚀 CALL LLAMA
+// 🚀 CALL LLAMA SERVER
 // ==========================
 async function callLlama(messages, maxTokens) {
   try {
@@ -133,8 +133,12 @@ async function callLlama(messages, maxTokens) {
       messages,
       max_tokens: maxTokens,
       temperature: CONFIG.TEMPERATURE,
-      stream: true,
+      stream: false,
     };
+
+    console.log(
+      "🚀 Sending request to llama-server..."
+    );
 
     const response = await axios.post(
       `${BASE_URL}/v1/chat/completions`,
@@ -143,61 +147,16 @@ async function callLlama(messages, maxTokens) {
         headers: {
           "Content-Type": "application/json",
         },
+
         timeout: CONFIG.TIMEOUT,
-        responseType: "stream",
       }
     );
 
-    let output = "";
+    return (
+      response.data?.choices?.[0]?.message
+        ?.content || ""
+    );
 
-    const stream = response.data;
-
-    return new Promise((resolve, reject) => {
-      stream.on("data", (chunk) => {
-        try {
-          const lines = chunk
-            .toString()
-            .split("\n")
-            .filter(Boolean);
-
-          for (const line of lines) {
-            if (!line.startsWith("data: "))
-              continue;
-
-            const data = line.replace(
-              "data: ",
-              ""
-            );
-
-            if (data === "[DONE]") continue;
-
-            const parsed = JSON.parse(data);
-
-            const delta =
-              parsed?.choices?.[0]?.delta?.content;
-
-            if (delta) {
-              output += delta;
-
-              process.stdout.write(delta);
-            }
-          }
-        } catch (err) {
-          console.error(
-            "❌ Stream parse error:",
-            err.message
-          );
-        }
-      });
-
-      stream.on("end", () => {
-        resolve(output);
-      });
-
-      stream.on("error", (err) => {
-        reject(err);
-      });
-    });
   } catch (err) {
     console.error(
       "❌ llama-server error:",
@@ -216,13 +175,11 @@ function formatAnswer(text) {
 
   let formatted = text;
 
-  // Bold markdown
   formatted = formatted.replace(
     /\*\*(.*?)\*\*/g,
     "<strong>$1</strong>"
   );
 
-  // Headings
   formatted = formatted.replace(
     /^### (.*?)$/gm,
     "<br/><br/><strong>$1</strong><br/>"
@@ -238,7 +195,6 @@ function formatAnswer(text) {
     "<br/><br/><strong>$1</strong><br/>"
   );
 
-  // Bullet points
   formatted = formatted.replace(
     /^\d+\.\s/gm,
     "<br/>• "
@@ -249,7 +205,6 @@ function formatAnswer(text) {
     "<br/>• "
   );
 
-  // Paragraph spacing
   formatted = formatted.replace(
     /\n\n/g,
     "<br/><br/>"
@@ -283,7 +238,9 @@ export async function handleLLMAnswer({
     return {
       answer:
         "Upgrade to Prime to access AI-powered answers.",
+
       context_source: "blocked_non_prime",
+
       tokensUsed: 0,
     };
   }
@@ -306,81 +263,49 @@ export async function handleLLMAnswer({
     .slice(-CONFIG.MAX_HISTORY)
     .map((m) => ({
       role: m.role,
+
       content: cleanChunk(
         m.content || ""
-      ).slice(0, 250),
+      ).slice(0, 400),
     }));
 
   // ==========================
   // 💬 SYSTEM PROMPT
   // ==========================
   const systemPrompt = `
-You are Aryabhata, an elite UPSC Civil Services Examination mentor.
+You are Aryabhata, an elite UPSC mentor.
 
-Your job is to generate FULL-LENGTH UPSC MAINS ANSWERS exactly like top UPSC rankers.
+Generate highly analytical UPSC mains answers.
 
-STRICT INSTRUCTIONS:
+STRICT RULES:
 
-1. EVERY answer must contain:
+1. ALWAYS generate:
 - Introduction
 - Main Body
 - Conclusion
 
-2. Generate LONG analytical answers suitable for:
-- UPSC GS Papers
-- Essay-style analytical answers
-- 10 marker and 15 marker questions
-
-3. The answer MUST:
-- Be detailed
-- Be multidimensional
-- Be content-rich
-- Be exam-oriented
-- Be analytical rather than descriptive
-
-4. Include wherever relevant:
-- Constitutional provisions
-- Supreme Court judgments
-- Committees
-- Government schemes
-- Committees and commissions
-- Current affairs
-- Reports
-- Data and statistics
+2. Use:
+- Headings
+- Bullet points
 - Examples
+- Constitutional references
+- Committees
+- Reports
+- Current affairs
 - Case studies
 
-5. Use multidimensional analysis:
-- Political
-- Economic
-- Social
-- Historical
-- Ethical
-- Governance
-- Environmental
-- International Relations
-
-6. Writing Style:
-- Crisp
+3. Writing style:
 - Analytical
-- High-information density
 - Structured
-- Ranker-style presentation
+- UPSC ranker style
+- High information density
 
-7. IMPORTANT:
-- NEVER generate short answers
-- NEVER give one paragraph answers
-- NEVER stop abruptly
-- NEVER generate unrelated content
-- Prioritize context heavily
-- Avoid hallucinations
-- Keep answer complete and balanced
+4. NEVER:
+- Give short answers
+- Stop abruptly
+- Hallucinate facts
 
-FORMATTING RULES:
-- Use HTML formatting
-- Use <strong> for headings
-- Use bullet points
-- Maintain readable spacing
+5. Use HTML formatting.
 `;
 
   // ==========================
@@ -394,16 +319,18 @@ REFERENCE CONTEXT:
 ${contextText}
 
 TASK:
-Generate a FULL-LENGTH UPSC Mains answer.
+Generate a FULL UPSC MAINS answer.
 
-The answer must:
-- Be detailed and analytical
-- Follow Introduction, Body, Conclusion
-- Be suitable for 2-page UPSC answer writing
-- Include multidimensional analysis
-- Use headings and bullet points
-- Be rich in content
-- Be UPSC ranker-level quality
+Requirements:
+- Detailed
+- Analytical
+- Introduction
+- Body
+- Conclusion
+- Multi-dimensional analysis
+- Rich examples
+- Bullet points
+- Structured formatting
 `;
 
   // ==========================
@@ -427,23 +354,27 @@ The answer must:
   // 🔢 TOKEN SAFETY
   // ==========================
   const estimatedPromptTokens =
-    estimateTokens(JSON.stringify(messages));
+    estimateTokens(
+      JSON.stringify(messages)
+    );
 
   console.log(
     `🧠 Estimated prompt tokens: ${estimatedPromptTokens}`
   );
 
-  // Prevent Phi-3 overflow
-  if (estimatedPromptTokens > 1700) {
+  if (estimatedPromptTokens > 7000) {
     console.warn(
       "⚠️ Prompt too large, trimming history"
     );
 
-    messages.splice(1, formattedHistory.length);
+    messages.splice(
+      1,
+      formattedHistory.length
+    );
   }
 
   // ==========================
-  // 🚀 ALWAYS LONG ANSWERS
+  // 🚀 GENERATE ANSWER
   // ==========================
   const rawAnswer = await callLlama(
     messages,
@@ -465,7 +396,8 @@ The answer must:
         ? "chunks_plus_llm"
         : "llm_only",
 
-      tokensUsed: estimateTokens(rawAnswer),
+      tokensUsed:
+        estimateTokens(rawAnswer),
 
       provider: "llama-server",
     };

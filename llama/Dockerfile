@@ -20,4 +20,4 @@ EXPOSE 8080
 
 # Start llama.cpp OpenAI-compatible server
 
-CMD ["python3", "-m", "llama_cpp.server", "--model", "/models/Phi-3-mini-4k-instruct-q4.gguf", "--host", "0.0.0.0", "--port", "8080", "--n_gpu_layers", "0", "--use_mmap", "True", "--n_threads", "8"]
+CMD ["python3", "-m", "llama_cpp.server", "--model", "/models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf", "--host", "0.0.0.0", "--port", "8080", "--n_gpu_layers", "0", "--use_mmap", "True", "--n_threads", "8","--n_ctx","4096"]
