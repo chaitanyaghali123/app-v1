@@ -255,7 +255,7 @@ services:
       - BATCH_SIZE=5
       - BATCH_TIME=200
     depends_on:
-      - redis
+      - redis 
      
     restart: always
     networks:
@@ -263,18 +263,6 @@ services:
 
 
 
-  llama-server:
-    build:
-      context: ./llama
-      dockerfile: Dockerfile
-    container_name: llama-server
-    volumes:
-       - ./models:/models 
-    ports:
-      - "8080:8080"
-    networks:
-      - sambit-net
-    restart: unless-stopped
 
       
 

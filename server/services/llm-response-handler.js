@@ -7,37 +7,33 @@ import { isPrimeUser } from "../config/user.config.js";
 // 🔧 CONFIG
 // ==========================
 const CONFIG = {
+  // Faster + stable generation
   MAX_TOKENS_LONG: parseInt(
-    process.env.MAX_TOKENS_LONG || "1800",
+    process.env.MAX_TOKENS_LONG || "900",
     10
   ),
 
   TEMPERATURE: parseFloat(
-    process.env.LLM_TEMPERATURE || "0.5"
-  ),
-
-  MAX_CONTEXT: parseInt(
-    process.env.MAX_CONTEXT_CHARS || "2500",
-    10
+    process.env.LLM_TEMPERATURE || "0.4"
   ),
 
   MAX_HISTORY: parseInt(
-    process.env.MAX_HISTORY_MESSAGES || "4",
+    process.env.MAX_HISTORY_MESSAGES || "3",
     10
   ),
 
   MAX_CHUNKS: parseInt(
-    process.env.MAX_CHUNKS || "6",
+    process.env.MAX_CHUNKS || "4",
     10
   ),
 
   MAX_CHARS_PER_CHUNK: parseInt(
-    process.env.MAX_CHARS_PER_CHUNK || "1200",
+    process.env.MAX_CHARS_PER_CHUNK || "900",
     10
   ),
 
   MAX_TOTAL_CONTEXT_TOKENS: parseInt(
-    process.env.MAX_TOTAL_CONTEXT_TOKENS || "5000",
+    process.env.MAX_TOTAL_CONTEXT_TOKENS || "1800",
     10
   ),
 
@@ -45,21 +41,36 @@ const CONFIG = {
     process.env.LLM_TIMEOUT || "300000",
     10
   ),
+
+  RETRIES: parseInt(
+    process.env.LLM_RETRIES || "2",
+    10
+  ),
+
+  RETRY_DELAY: parseInt(
+    process.env.LLM_RETRY_DELAY_MS || "1000",
+    10
+  ),
 };
 
 // ==========================
-// 🧠 LLAMA SERVER CONFIG
+// 🧠 vLLM CONFIG
 // ==========================
+
+// .env should be:
+//
+// LLAMA_API_URL=https://xxxxx-8000.proxy.runpod.net
+//
+// DO NOT ADD /v1
+
 const BASE_URL =
   process.env.LLAMA_API_URL ||
-  "http://llama-server:8080";
+  "http://localhost:8000";
 
-// IMPORTANT:
-// llama.cpp automatically loads split files
-// if you point to PART 1
-const MODEL_PATH =
+// HuggingFace model name
+const MODEL_NAME =
   process.env.LLAMA_MODEL ||
-  "/models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf";
+  "Qwen/Qwen2.5-7B-Instruct";
 
 // ==========================
 // 🔢 TOKEN ESTIMATION
@@ -124,47 +135,92 @@ function buildContext(chunks = []) {
 }
 
 // ==========================
-// 🚀 CALL LLAMA SERVER
+// ⏳ DELAY
+// ==========================
+function delay(ms) {
+  return new Promise((resolve) =>
+    setTimeout(resolve, ms)
+  );
+}
+
+// ==========================
+// 🚀 CALL vLLM
 // ==========================
 async function callLlama(messages, maxTokens) {
-  try {
-    const payload = {
-      model: MODEL_PATH,
-      messages,
-      max_tokens: maxTokens,
-      temperature: CONFIG.TEMPERATURE,
-      stream: false,
-    };
+  for (
+    let attempt = 1;
+    attempt <= CONFIG.RETRIES;
+    attempt++
+  ) {
+    try {
+      console.log(
+        `🚀 Sending request to vLLM (attempt ${attempt})`
+      );
 
-    console.log(
-      "🚀 Sending request to llama-server..."
-    );
+      const payload = {
+        model: MODEL_NAME,
 
-    const response = await axios.post(
-      `${BASE_URL}/v1/chat/completions`,
-      payload,
-      {
-        headers: {
-          "Content-Type": "application/json",
-        },
+        messages,
 
-        timeout: CONFIG.TIMEOUT,
+        max_tokens: maxTokens,
+
+        temperature: CONFIG.TEMPERATURE,
+
+        stream: false,
+      };
+
+      const response = await axios.post(
+        `${BASE_URL}/v1/chat/completions`,
+        payload,
+        {
+          headers: {
+            "Content-Type": "application/json",
+          },
+
+          timeout: CONFIG.TIMEOUT,
+
+          validateStatus: (status) => status < 500,
+        }
+      );
+
+      // Handle API-level errors
+      if (response.status !== 200) {
+        console.error(
+          "❌ vLLM API error:",
+          response.status,
+          response.data
+        );
+
+        throw new Error(
+          `vLLM returned ${response.status}`
+        );
       }
-    );
 
-    return (
-      response.data?.choices?.[0]?.message
-        ?.content || ""
-    );
+      console.log("✅ vLLM response received");
 
-  } catch (err) {
-    console.error(
-      "❌ llama-server error:",
-      err.response?.data || err.message
-    );
+      const answer =
+        response.data?.choices?.[0]?.message
+          ?.content || "";
 
-    return null;
+      return answer;
+
+    } catch (err) {
+      console.error(
+        "❌ vLLM error:",
+        err.response?.data || err.message
+      );
+
+      if (attempt < CONFIG.RETRIES) {
+        console.log(
+          `⏳ Retrying in ${CONFIG.RETRY_DELAY}ms`
+        );
+
+        await delay(CONFIG.RETRY_DELAY);
+      }
+    }
   }
+
+  return null;
 }
 
 // ==========================
@@ -175,11 +231,24 @@ function formatAnswer(text) {
 
   let formatted = text;
 
+  // Remove markdown fences
+  formatted = formatted.replace(
+    /```html/g,
+    ""
+  );
+
+  formatted = formatted.replace(
+    /```/g,
+    ""
+  );
+
+  // Bold markdown
   formatted = formatted.replace(
     /\*\*(.*?)\*\*/g,
     "<strong>$1</strong>"
   );
 
+  // Headings
   formatted = formatted.replace(
     /^### (.*?)$/gm,
     "<br/><br/><strong>$1</strong><br/>"
@@ -195,16 +264,19 @@ function formatAnswer(text) {
     "<br/><br/><strong>$1</strong><br/>"
   );
 
+  // Numbered points
   formatted = formatted.replace(
     /^\d+\.\s/gm,
     "<br/>• "
   );
 
+  // Bullet points
   formatted = formatted.replace(
     /^-\s/gm,
     "<br/>• "
   );
 
+  // Paragraph spacing
   formatted = formatted.replace(
     /\n\n/g,
     "<br/><br/>"
@@ -266,16 +338,16 @@ export async function handleLLMAnswer({
 
       content: cleanChunk(
         m.content || ""
-      ).slice(0, 400),
+      ).slice(0, 350),
     }));
 
   // ==========================
   // 💬 SYSTEM PROMPT
   // ==========================
   const systemPrompt = `
-You are Aryabhata, an elite UPSC mentor.
+You are Aryabhata, an elite UPSC Civil Services mentor.
 
-Generate highly analytical UPSC mains answers.
+Generate detailed UPSC mains answers.
 
 STRICT RULES:
 
@@ -289,23 +361,29 @@ STRICT RULES:
 - Bullet points
 - Examples
 - Constitutional references
-- Committees
 - Reports
+- Committees
 - Current affairs
 - Case studies
 
 3. Writing style:
 - Analytical
 - Structured
-- UPSC ranker style
 - High information density
+- UPSC ranker style
 
 4. NEVER:
-- Give short answers
+- Give very short answers
 - Stop abruptly
-- Hallucinate facts
+- Hallucinate fake facts
+- Repeat unnecessarily
 
-5. Use HTML formatting.
+5. Keep answers:
+- Balanced
+- Multi-dimensional
+- Exam-oriented
+
+6. Use HTML formatting.
 `;
 
   // ==========================
@@ -316,7 +394,7 @@ QUESTION:
 ${prompt}
 
 REFERENCE CONTEXT:
-${contextText}
+${contextText || "No reference context available."}
 
 TASK:
 Generate a FULL UPSC MAINS answer.
@@ -362,7 +440,8 @@ Requirements:
     `🧠 Estimated prompt tokens: ${estimatedPromptTokens}`
   );
 
-  if (estimatedPromptTokens > 7000) {
+  // Trim history if too large
+  if (estimatedPromptTokens > 3500) {
     console.warn(
       "⚠️ Prompt too large, trimming history"
     );
@@ -385,10 +464,6 @@ Requirements:
   // ✅ SUCCESS
   // ==========================
   if (rawAnswer && rawAnswer.trim()) {
-    console.log(
-      "\n✅ llama-server response received"
-    );
-
     return {
       answer: formatAnswer(rawAnswer),
 
@@ -399,7 +474,7 @@ Requirements:
       tokensUsed:
         estimateTokens(rawAnswer),
 
-      provider: "llama-server",
+      provider: "vllm-qwen",
     };
   }
 
@@ -408,7 +483,7 @@ Requirements:
   // ==========================
   return {
     answer:
-      "⚠️ Local AI server is unavailable or returned empty response.",
+      "⚠️ AI server unavailable or returned empty response.",
 
     context_source: "llm_error",
 
