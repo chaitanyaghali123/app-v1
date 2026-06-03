@@ -3,14 +3,29 @@
 import axios from "axios";
 
 const BASE = process.env.FASTAPI_URL || process.env.VECTOR_API;
+const API_KEY = process.env.VECTOR_API_KEY || process.env.API_KEY;
+const VECTOR_TIMEOUT_MS = Number(process.env.VECTOR_API_TIMEOUT_MS || 2500);
 
 /**
  * 🔍 Query ChromaDB
  */
-export async function queryChroma({ prompt }) {
+export async function queryChroma({ prompt, topK, skipRerank = false }) {
   try {
-    const resp = await axios.post(`${BASE}/chunks`, {
-      query: prompt
+    const body = {
+      query: prompt,
+    };
+
+    if (topK) {
+      body.top_k = topK;
+    }
+
+    if (skipRerank) {
+      body.skip_rerank = true;
+    }
+
+    const resp = await axios.post(`${BASE}/chunks`, body, {
+      headers: API_KEY ? { "x-api-key": API_KEY } : undefined,
+      timeout: VECTOR_TIMEOUT_MS
     });
     return resp.data.chunks || [];
   } catch (err) {
@@ -27,6 +42,9 @@ export async function storeDocument({ text, doc_id }) {
     const resp = await axios.post(`${BASE}/store`, {
       text,
       docId: doc_id
+    }, {
+      headers: API_KEY ? { "x-api-key": API_KEY } : undefined,
+      timeout: VECTOR_TIMEOUT_MS
     });
 
     return resp.data;

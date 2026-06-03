@@ -23,4 +23,4 @@ vite.config.ts.*
 venv310/
 
 models/*.gguf
-uploads/*
+uploads/*third_party/zig/

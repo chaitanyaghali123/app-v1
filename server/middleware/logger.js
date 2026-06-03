@@ -14,7 +14,7 @@ export async function requestLogger(req, res, next) {
         user_id: req.user?.id || req.body?.user_id || "anon",
         method: req.method,
         endpoint: req.originalUrl,
-        status: res.statusCode,
+        status_code: res.statusCode,
         response_time_ms: responseTime,
         ip: req.ip
       });

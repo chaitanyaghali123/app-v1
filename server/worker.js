@@ -47,4 +47,3 @@ const worker = new Worker(
 );
 
 export default worker;
-

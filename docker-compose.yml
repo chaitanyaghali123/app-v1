@@ -49,13 +49,20 @@ services:
       - RAZORPAY_WEBHOOK_SECRET=stub-webhook
       - FRONTEND_URL=http://localhost:4173
       - KAFKA_BROKER=kafka:9092 # ✅ point backend to Kafka
+      - KAFKAJS_NO_PARTITIONER_WARNING=1
+      - LLAMA_API_URL=http://llama-server:8080
+      - LLAMA_MODEL=qwen2.5-0.5b-instruct-q4_k_m.gguf
+      - MOBILE_POLISH_MODE=full
+      - MOBILE_POLISH_TIMEOUT_MS=600000
+      - MOBILE_POLISH_MAX_TOKENS=900
       
     depends_on:
       - postgres
       - chromadb
-      - chunker
+      
       - n8n
       - kafka # ✅ ensure Kafka starts before backend
+      - redis
      
     restart: always
     networks:
@@ -66,53 +73,33 @@ services:
       timeout: 5s
       retries: 5
 
-  chunker:
-    build:
-      context: ./vector_server
-      dockerfile: Dockerfile
-    container_name: docx-chunker
-    volumes:
-      - ./vector_server:/app
-      - ./vector_server/data/UPSC_DOC:/app/vector_server/data/UPSC_DOC
-      
-      - chroma_cache:/root/.cache/chroma
-    working_dir: /app
-    command: ["uvicorn", "ingest_hybrid_api:app", "--host", "0.0.0.0", "--port", "8000"]
-    ports:
-      - "8001:8000"
-    env_file:
-      - ./vector_server/.env
-    depends_on:
-      - postgres
-      - chromadb
-    restart: unless-stopped
-    networks:
-      - sambit-net
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
+  
   ingestor:
     build:
       context: ./vector_server
       dockerfile: Dockerfile
     container_name: aryabhata-ingestor
     working_dir: /app
-    command: ["uvicorn", "ingest_hybrid_api:app", "--host", "0.0.0.0", "--port", "7860"]
+    command: >
+        sh -c "
+        python ingest_hybrid.py --folder /app/data/UPSC_DOC &&
+        uvicorn ingest_hybrid_api:app --host 0.0.0.0 --port 7860
+        "
     ports:
       - "7860:7860"
     volumes:
       - ./vector_server:/app
-      - ./vector_server/data/UPSC_DOC:/app/vector_server/data/UPSC_DOC
+     
       
     env_file:
       - ./vector_server/.env
  
 
     depends_on:
-      - semantic-backend
+      chromadb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - sambit-net
@@ -140,14 +127,20 @@ services:
       retries: 5
 
   chromadb:
-    image: chromadb/chroma
+    image: chromadb/chroma:0.5.5
     container_name: aryabhata-chromadb
     ports:
       - "8000:8000"
     volumes:
-      - ./vector_server/chroma:/chroma
+      - chroma_data:/chroma/chroma
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     networks:
       - sambit-net
+    
           
               
 
@@ -261,6 +254,23 @@ services:
     networks:
       - sambit-net
 
+  llama-server:
+    build:
+      context: ./llama
+      dockerfile: Dockerfile
+    container_name: llama-server
+    volumes:
+        - ./models:/models 
+    environment:
+        - LLAMA_MODEL_PATH=/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+        - LLAMA_THREADS=8
+        - LLAMA_CTX_SIZE=1536
+    ports:
+        - "8080:8080"
+    networks:
+        - sambit-net
+    restart: unless-stopped
+
 
 
 
@@ -272,11 +282,10 @@ services:
 volumes:
   postgres:
   pgadmin:
-  chroma_cache:
+  chroma_data:
   n8n_data:
 
   redis_data:   # ✅ declare the named volume here
 networks:
   sambit-net:
     driver: bridge
-

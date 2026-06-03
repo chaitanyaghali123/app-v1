@@ -1,311 +1,1634 @@
 # ingest_hybrid_api.py
-# FastAPI retrieval service
-# ChromaDB v2 REST API compatible
+# ==========================================================
+# ENTERPRISE HYBRID RETRIEVAL API
+# ==========================================================
 
 import os
+import re
+import json
+import hmac
+import hashlib
+import time
+import uuid
+import torch
 import logging
-import requests
+import threading
+import unicodedata
+
+from typing import List, Dict, Optional
+from collections import OrderedDict
+
+import chromadb
 import psycopg2
+import numpy as np
+import redis
 
-from fastapi import FastAPI, Request
+from chromadb.config import Settings
+
+from fastapi import (
+    FastAPI,
+    Request,
+    HTTPException,
+    Header
+)
+
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
-from requests.adapters import HTTPAdapter, Retry
+from psycopg2.pool import SimpleConnectionPool
+from psycopg2.extras import RealDictCursor
+
 from sentence_transformers import SentenceTransformer
 
+from optimum.onnxruntime import (
+    ORTModelForSequenceClassification
+)
+
+from transformers import AutoTokenizer
+
+from starlette.concurrency import run_in_threadpool
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+
+# ==========================================================
+# TORCH OPTIMIZATION
+# ==========================================================
+
+torch.set_grad_enabled(False)
+
+# ==========================================================
+# LOGGING
+# ==========================================================
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-# --------------------------------------------------
-# Config
-# --------------------------------------------------
+logger = logging.getLogger(__name__)
 
-CHROMA_BASE = os.getenv(
-    "CHROMA_HOST",
-    "http://chromadb:8000/api/v2/tenants/default_tenant/databases/default_database"
-)
+# ==========================================================
+# CONFIG
+# ==========================================================
+
+APP_VERSION = "15.0.0"
+
+
+ENVIRONMENT = os.getenv(
+    "ENVIRONMENT",
+    "development"
+).lower()
 
 COLLECTION_NAME = os.getenv(
     "CHROMA_COLLECTION",
-    "upsc_chunks_v2"
+    "upsc_chunks_v5"
 )
+
+CHROMA_HOST = os.getenv(
+    "CHROMA_HOST",
+    "chromadb"
+)
+
+CHROMA_PORT = int(
+    os.getenv("CHROMA_PORT", "8000")
+)
+
+MAX_QUERY_LENGTH = int(
+    os.getenv(
+        "MAX_QUERY_LENGTH",
+        "1000"
+    )
+)
+
+
+MIN_QUERY_LENGTH = int(
+    os.getenv(
+        "MIN_QUERY_LENGTH",
+        "2"
+    )
+)
+
+# ==========================================================
+# SECURITY
+# ==========================================================
+
+API_KEY = os.getenv(
+    "API_KEY",
+    "change_this_in_production"
+)
+
+ENABLE_AUTH = os.getenv(
+    "ENABLE_AUTH",
+    "true"
+).lower() == "true"
+
+RATE_LIMIT_PER_MINUTE = int(
+    os.getenv("RATE_LIMIT_PER_MINUTE", "120")
+)
+
+
+ENABLE_RATE_LIMIT = os.getenv(
+    "ENABLE_RATE_LIMIT",
+    "true"
+).lower() == "true"
+
+TRUST_PROXY_HEADERS = os.getenv(
+    "TRUST_PROXY_HEADERS",
+    "false"
+).lower() == "true"
+
+# ==========================================================
+# DEVICE
+# ==========================================================
+
+DEVICE = (
+    "cuda"
+    if torch.cuda.is_available()
+    else "cpu"
+)
+
+logger.info(
+    f"🧠 Device: {DEVICE}"
+)
+
+# ==========================================================
+# EMBEDDING MODEL
+# ==========================================================
 
 EMBED_MODEL = os.getenv(
-    "EMBEDDING_MODEL",
-    "all-MiniLM-L6-v2"
+    "EMBED_MODEL",
+    "BAAI/bge-base-en-v1.5"
 )
 
-EMBED_DIM = int(os.getenv("EMBED_DIM", "384"))
 
-PG_DB = os.getenv("DB_NAME", "aryabhata_db")
-PG_USER = os.getenv("DB_USER", "aryabhata_user")
-PG_PASS = os.getenv("DB_PASSWORD", "Password123")
-PG_HOST = os.getenv("DB_HOST", "postgres")
-PG_PORT = os.getenv("DB_PORT", "5432")
+EMBED_DIM = int(
+    os.getenv("EMBED_DIM", "768")
+)
 
-# --------------------------------------------------
-# Embedding model
-# --------------------------------------------------
+# ==========================================================
+# RERANK MODEL
+# ==========================================================
 
-logging.info(f"Loading embedding model: {EMBED_MODEL}")
+RERANK_MODEL = os.getenv(
+    "RERANK_MODEL",
+    "cross-encoder/ms-marco-MiniLM-L-6-v2"
+)
 
-embedder = SentenceTransformer(EMBED_MODEL)
+ENABLE_RERANK = os.getenv(
+    "ENABLE_RERANK",
+    "true"
+).lower() == "true"
 
-# --------------------------------------------------
-# PostgreSQL
-# --------------------------------------------------
+# ==========================================================
+# RETRIEVAL CONFIG
+# ==========================================================
 
-pg_ready = False
+TOP_K = int(
+    os.getenv("TOP_K", "5")
+)
 
-try:
-    conn = psycopg2.connect(
-        dbname=PG_DB,
-        user=PG_USER,
-        password=PG_PASS,
-        host=PG_HOST,
-        port=PG_PORT
+MAX_TOP_K = int(
+    os.getenv("MAX_TOP_K", "20")
+)
+
+VECTOR_CANDIDATES = int(
+    os.getenv("VECTOR_CANDIDATES", "40")
+)
+
+BM25_CANDIDATES = int(
+    os.getenv("BM25_CANDIDATES", "40")
+)
+
+RERANK_CANDIDATES = int(
+    os.getenv("RERANK_CANDIDATES", "30")
+)
+
+MAX_CHUNK_CHARS = int(
+    os.getenv("MAX_CHUNK_CHARS", "1200")
+)
+
+MIN_SIMILARITY_SCORE = float(
+    os.getenv("MIN_SIMILARITY_SCORE", "0.15")
+)
+
+# ==========================================================
+# CACHE
+# ==========================================================
+
+CACHE_SIZE = int(
+    os.getenv("CACHE_SIZE", "5000")
+)
+
+CACHE_TTL_SECONDS = int(
+    os.getenv("CACHE_TTL_SECONDS", "300")
+)
+
+
+ENABLE_CACHE = os.getenv(
+    "ENABLE_CACHE",
+    "true"
+).lower() == "true"
+
+ENABLE_REDIS_CACHE = os.getenv(
+    "ENABLE_REDIS_CACHE",
+    "false"
+).lower() == "true"
+
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
+
+query_cache = OrderedDict()
+
+cache_lock = threading.Lock()
+
+# ==========================================================
+# RATE LIMIT
+# ==========================================================
+
+request_tracker = {}
+
+rate_limit_lock = threading.Lock()
+
+
+redis_client = None
+
+if ENABLE_REDIS_CACHE:
+
+    try:
+
+        redis_client = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            db=REDIS_DB,
+            password=REDIS_PASSWORD,
+            socket_timeout=float(os.getenv("REDIS_SOCKET_TIMEOUT", "5")),
+            socket_connect_timeout=float(os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT", "5")),
+            decode_responses=True
+        )
+
+        redis_client.ping()
+
+        logger.info("Redis connected")
+
+    except Exception as e:
+
+        redis_client = None
+
+        logger.warning(
+            f"Redis unavailable, using local memory fallback: {e}"
+        )
+
+# ==========================================================
+# POSTGRES
+# ==========================================================
+
+PG_DB = os.getenv(
+    "DB_NAME",
+    "aryabhata_db"
+)
+
+PG_USER = os.getenv(
+    "DB_USER",
+    "aryabhata_user"
+)
+
+PG_PASS = os.getenv(
+    "DB_PASSWORD",
+    "Password123"
+)
+
+PG_HOST = os.getenv(
+    "DB_HOST",
+    "postgres"
+)
+
+PG_PORT = os.getenv(
+    "DB_PORT",
+    "5432"
+)
+
+
+PG_POOL_MIN = int(os.getenv("PG_POOL_MIN_CONN", "2"))
+PG_POOL_MAX = int(os.getenv("PG_POOL_MAX_CONN", "20"))
+POSTGRES_STATEMENT_TIMEOUT = int(os.getenv("POSTGRES_STATEMENT_TIMEOUT", "30000"))
+
+REQUEST_COUNT = Counter(
+    "hybrid_api_requests_total",
+    "Total API requests",
+    ["endpoint", "status"]
+)
+
+REQUEST_LATENCY = Histogram(
+    "hybrid_api_request_latency_seconds",
+    "Request latency in seconds",
+    ["endpoint"]
+)
+
+CACHE_HITS = Counter(
+    "hybrid_api_cache_hits_total",
+    "Total cache hits",
+    ["backend"]
+)
+
+CACHE_MISSES = Counter(
+    "hybrid_api_cache_misses_total",
+    "Total cache misses"
+)
+
+CHROMA_DOCS = Gauge(
+    "hybrid_api_chroma_documents",
+    "Documents in Chroma collection"
+)
+
+# ==========================================================
+# LOAD EMBEDDING MODEL
+# ==========================================================
+
+logger.info(
+    f"Loading embed model: {EMBED_MODEL}"
+)
+
+embedder = SentenceTransformer(
+    EMBED_MODEL,
+    device=DEVICE
+)
+
+
+actual_embed_dim = embedder.get_sentence_embedding_dimension()
+
+if actual_embed_dim != EMBED_DIM:
+
+    raise RuntimeError(
+        f"Embedding dimension mismatch: EMBED_DIM={EMBED_DIM}, "
+        f"model {EMBED_MODEL} produces {actual_embed_dim}"
     )
 
-    conn.autocommit = True
-
-    pg_ready = True
-
-    logging.info("✅ Connected to PostgreSQL")
-
-except Exception as e:
-
-    logging.error(f"❌ PostgreSQL connection failed: {e}")
-
-# --------------------------------------------------
-# HTTP Session
-# --------------------------------------------------
-
-session = requests.Session()
-
-retries = Retry(
-    total=5,
-    backoff_factor=1,
-    status_forcelist=[500, 502, 503, 504]
+logger.info(
+    "✅ Embedding model loaded"
 )
 
-adapter = HTTPAdapter(max_retries=retries)
+# ==========================================================
+# LOAD RERANKER
+# ==========================================================
 
-session.mount("http://", adapter)
-session.mount("https://", adapter)
+reranker = None
+rerank_tokenizer = None
 
-# --------------------------------------------------
-# Ensure tables
-# --------------------------------------------------
+if ENABLE_RERANK:
 
-def ensure_tables():
+    try:
 
-    if not pg_ready:
-        return
+        logger.info(
+            f"Loading reranker: {RERANK_MODEL}"
+        )
+
+        rerank_tokenizer = AutoTokenizer.from_pretrained(
+            RERANK_MODEL
+        )
+
+        reranker = ORTModelForSequenceClassification.from_pretrained(
+            RERANK_MODEL,
+            export=True,
+            provider=(
+                "CUDAExecutionProvider"
+                if DEVICE == "cuda"
+                else "CPUExecutionProvider"
+            )
+        )
+
+        logger.info(
+            "✅ Reranker loaded"
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Reranker failed: {e}"
+        )
+
+# ==========================================================
+# POSTGRES POOL
+# ==========================================================
+
+pg_pool = SimpleConnectionPool(
+    minconn=PG_POOL_MIN,
+    maxconn=PG_POOL_MAX,
+    dbname=PG_DB,
+    user=PG_USER,
+    password=PG_PASS,
+    host=PG_HOST,
+    port=PG_PORT
+)
+
+logger.info(
+    "✅ PostgreSQL pool ready"
+)
+
+# ==========================================================
+# HELPERS
+# ==========================================================
+
+def get_conn():
+    conn = pg_pool.getconn()
 
     with conn.cursor() as cur:
 
-        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        cur.execute(
+            "SET statement_timeout = %s",
+            (POSTGRES_STATEMENT_TIMEOUT,)
+        )
 
-        cur.execute(f"""
-            CREATE TABLE IF NOT EXISTS upsc_chunks (
-                id TEXT PRIMARY KEY,
-                chunk TEXT,
-                topic TEXT,
-                difficulty TEXT,
-                embedding VECTOR({EMBED_DIM}),
-                file_hash TEXT
-            );
-        """)
+    return conn
 
-    logging.info("✅ Tables ensured")
+def release_conn(conn):
+    pg_pool.putconn(conn)
 
-# --------------------------------------------------
-# Chroma Helpers
-# --------------------------------------------------
 
-def ensure_collection(name: str):
+def validate_production_config():
 
-    resp = session.get(
-        f"{CHROMA_BASE}/collections",
-        timeout=30
-    )
+    if ENVIRONMENT != "production":
+        return
 
-    if resp.status_code != 200:
-        logging.error(f"❌ Failed fetching collections: {resp.text}")
-        return False
-
-    data = resp.json()
-
-    collections = (
-        data if isinstance(data, list)
-        else data.get("collections", [])
-    )
-
-    names = [c["name"] for c in collections]
-
-    if name in names:
-        return True
-
-    r = session.post(
-        f"{CHROMA_BASE}/collections",
-        json={"name": name},
-        timeout=30
-    )
-
-    if r.status_code in [200, 201]:
-        logging.info(f"✅ Created collection: {name}")
-        return True
-
-    logging.error(f"❌ Failed creating collection: {r.text}")
-
-    return False
-
-def get_collection_id(name: str):
-
-    resp = session.get(
-        f"{CHROMA_BASE}/collections",
-        timeout=30
-    )
-
-    if resp.status_code != 200:
-        logging.error(f"❌ Failed reading collections: {resp.text}")
-        return None
-
-    data = resp.json()
-
-    collections = (
-        data if isinstance(data, list)
-        else data.get("collections", [])
-    )
-
-    for c in collections:
-
-        if c.get("name") == name:
-            return c.get("id")
-
-    return None
-
-# --------------------------------------------------
-# FIXED QUERY FUNCTION
-# --------------------------------------------------
-
-def query_chunks(collection_id, query_embedding, n_results=5):
-
-    if hasattr(query_embedding, "tolist"):
-        query_embedding = query_embedding.tolist()
-
-    query_embedding = [float(x) for x in query_embedding]
-
-    payload = {
-        "query_embeddings": [query_embedding],
-        "n_results": n_results,
-        "include": [
-            "documents",
-            "metadatas",
-            "distances"
-        ]
+    weak_values = {
+        "change_this_in_production",
+        "CHANGE_THIS_TO_64_CHAR_SECRET",
+        "change_this_key",
+        "Password123",
+        ""
     }
 
-    # ✅ Correct Chroma v2 endpoint
-    resp = session.post(
-        f"{CHROMA_BASE}/collections/{collection_id}/query",
-        json=payload,
-        timeout=60
+    if ENABLE_AUTH and API_KEY in weak_values:
+
+        raise RuntimeError(
+            "Refusing to start production API with an unsafe API_KEY"
+        )
+
+    if PG_PASS in weak_values:
+
+        raise RuntimeError(
+            "Refusing to start production API with an unsafe DB_PASSWORD"
+        )
+
+# ==========================================================
+# ENSURE TABLES
+# ==========================================================
+
+def ensure_tables():
+
+    conn = get_conn()
+
+    try:
+
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS api_logs (
+                    id BIGSERIAL PRIMARY KEY,
+                    request_id TEXT,
+                    query TEXT,
+                    topic TEXT,
+                    latency FLOAT,
+                    top_k INTEGER,
+                    client_ip TEXT,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+
+            cur.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS request_id TEXT;
+            """)
+
+            cur.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS query TEXT;
+            """)
+
+            cur.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS topic TEXT;
+            """)
+
+            cur.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS latency FLOAT;
+            """)
+
+            cur.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS top_k INTEGER;
+            """)
+
+            cur.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS client_ip TEXT;
+            """)
+
+            cur.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_logs_created
+                ON api_logs(created_at);
+            """)
+
+        conn.commit()
+
+    finally:
+
+        release_conn(conn)
+
+# ==========================================================
+# CHROMADB CONNECT
+# ==========================================================
+
+def connect_chroma():
+
+    retries = 5
+
+    for attempt in range(retries):
+
+        try:
+
+            client = chromadb.HttpClient(
+                host=CHROMA_HOST,
+                port=CHROMA_PORT,
+                settings=Settings(
+                    anonymized_telemetry=False
+                )
+            )
+
+            collection = client.get_or_create_collection(
+                name=COLLECTION_NAME
+            )
+
+            logger.info(
+                "✅ Chroma connected"
+            )
+
+            return client, collection
+
+        except Exception as e:
+
+            logger.warning(
+                f"Chroma retry {attempt+1}/{retries}: {e}"
+            )
+
+            time.sleep(3)
+
+    raise RuntimeError(
+        "Failed connecting ChromaDB"
     )
 
-    if resp.status_code != 200:
+logger.info(
+    "Connecting to ChromaDB..."
+)
 
-        logging.error(
-            f"❌ Chroma query failed: "
-            f"{resp.status_code} {resp.text}"
+chroma_client, collection = connect_chroma()
+
+# ==========================================================
+# NORMALIZE QUERY
+# ==========================================================
+
+def normalize_query(query: str):
+
+    query = unicodedata.normalize(
+        "NFKC",
+        query
+    )
+
+    query = query.lower()
+
+    query = re.sub(
+        r"\s+",
+        " ",
+        query
+    )
+
+    return query.strip()
+
+# ==========================================================
+# CACHE
+# ==========================================================
+
+def get_cache(key):
+
+    if not ENABLE_CACHE:
+        return None
+
+    if redis_client:
+
+        try:
+
+            raw = redis_client.get(
+                f"query_cache:{hashlib.sha256(key.encode()).hexdigest()}"
+            )
+
+            if raw:
+
+                CACHE_HITS.labels(backend="redis").inc()
+
+                return json.loads(raw)
+
+        except Exception as e:
+
+            logger.warning(f"Redis cache read failed: {e}")
+
+    with cache_lock:
+
+        if key not in query_cache:
+            CACHE_MISSES.inc()
+            return None
+
+        payload = query_cache[key]
+
+        age = time.time() - payload["timestamp"]
+
+        if age > CACHE_TTL_SECONDS:
+
+            del query_cache[key]
+
+            return None
+
+        query_cache.move_to_end(key)
+
+        CACHE_HITS.labels(backend="memory").inc()
+
+        return payload["data"]
+
+def set_cache(key, value):
+
+    if not ENABLE_CACHE:
+        return
+
+    if redis_client:
+
+        try:
+
+            redis_client.setex(
+                f"query_cache:{hashlib.sha256(key.encode()).hexdigest()}",
+                CACHE_TTL_SECONDS,
+                json.dumps(value)
+            )
+
+            return
+
+        except Exception as e:
+
+            logger.warning(f"Redis cache write failed: {e}")
+
+    with cache_lock:
+
+        query_cache[key] = {
+            "timestamp": time.time(),
+            "data": value
+        }
+
+        query_cache.move_to_end(key)
+
+        if len(query_cache) > CACHE_SIZE:
+
+            query_cache.popitem(last=False)
+
+# ==========================================================
+# RATE LIMIT
+# ==========================================================
+
+def check_rate_limit(ip):
+
+    if not ENABLE_RATE_LIMIT:
+        return
+
+    if redis_client:
+
+        key = f"rate_limit:{ip}:{int(time.time() // 60)}"
+
+        try:
+
+            count = redis_client.incr(key)
+
+            if count == 1:
+                redis_client.expire(key, 70)
+
+            if count > RATE_LIMIT_PER_MINUTE:
+
+                raise HTTPException(
+                    status_code=429,
+                    detail="Rate limit exceeded"
+                )
+
+            return
+
+        except HTTPException:
+            raise
+
+        except Exception as e:
+
+            logger.warning(f"Redis rate limit failed: {e}")
+
+    now = time.time()
+
+    with rate_limit_lock:
+
+        requests = request_tracker.get(ip, [])
+
+        requests = [
+            r
+            for r in requests
+            if now - r < 60
+        ]
+
+        if len(requests) >= RATE_LIMIT_PER_MINUTE:
+
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded"
+            )
+
+        requests.append(now)
+
+        request_tracker[ip] = requests
+
+# ==========================================================
+# AUTH
+# ==========================================================
+
+def verify_api_key(x_api_key):
+
+    if not ENABLE_AUTH:
+        return
+
+    if not x_api_key:
+
+        raise HTTPException(
+            status_code=401,
+            detail="Missing API key"
+        )
+
+    if not hmac.compare_digest(x_api_key, API_KEY):
+
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid API key"
+        )
+
+# ==========================================================
+# VECTOR SEARCH
+# ==========================================================
+
+def chroma_search(
+    query_embedding,
+    topic=None
+):
+
+    try:
+        if hasattr(query_embedding, "tolist"):
+            query_embedding = query_embedding.tolist()
+
+        where_filter = None
+
+        if topic:
+
+            where_filter = {
+                "topic": topic
+            }
+
+        results = collection.query(
+            query_embeddings=[
+                query_embedding
+            ],
+            n_results=VECTOR_CANDIDATES,
+            where=where_filter
+        )
+
+        docs = results["documents"][0]
+        metas = results["metadatas"][0]
+        ids = results["ids"][0]
+        distances = results["distances"][0]
+
+        chunks = []
+
+        for cid, doc, meta, dist in zip(
+            ids,
+            docs,
+            metas,
+            distances
+        ):
+
+            score = max(
+                0.0,
+                1.0 - float(dist)
+            )
+
+            if score < MIN_SIMILARITY_SCORE:
+                continue
+
+            chunks.append({
+                "id": cid,
+                "text": doc,
+                "metadata": meta,
+                "vector_score": round(score, 4)
+            })
+
+        return chunks
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Chroma search failed: {e}"
         )
 
         return []
 
-    data = resp.json()
+# ==========================================================
+# REQUEST HELPERS
+# ==========================================================
 
-    docs = data.get("documents", [[]])[0]
-    metas = data.get("metadatas", [[]])[0]
-    distances = data.get("distances", [[]])[0]
+def request_bool(
+    body,
+    key,
+    default=False
+):
 
-    logging.info(f"✅ Retrieved {len(docs)} chunks from Chroma")
+    value = body.get(
+        key,
+        default
+    )
 
-    results = []
+    if isinstance(value, bool):
+        return value
 
-    for doc, meta, dist in zip(docs, metas, distances):
+    if isinstance(value, str):
+        return value.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on"
+        }
 
-        results.append({
-            "text": doc,
-            "metadata": meta,
-            "distance": dist
-        })
+    return bool(value)
+
+# ==========================================================
+# BM25 SEARCH
+# ==========================================================
+
+def postgres_bm25_search(
+    query,
+    topic=None
+):
+
+    conn = get_conn()
+
+    try:
+
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            if topic:
+
+                cur.execute("""
+                    SELECT
+                        id,
+                        chunk,
+                        topic,
+                        difficulty,
+                        source_file,
+                        ts_rank(
+                            search_vector,
+                            plainto_tsquery(
+                                'english',
+                                %s
+                            )
+                        ) AS bm25_score
+
+                    FROM upsc_chunks
+
+                    WHERE
+                        search_vector @@ plainto_tsquery(
+                            'english',
+                            %s
+                        )
+                        AND topic=%s
+
+                    ORDER BY bm25_score DESC
+                    LIMIT %s
+                """, (
+                    query,
+                    query,
+                    topic,
+                    BM25_CANDIDATES
+                ))
+
+            else:
+
+                cur.execute("""
+                    SELECT
+                        id,
+                        chunk,
+                        topic,
+                        difficulty,
+                        source_file,
+                        ts_rank(
+                            search_vector,
+                            plainto_tsquery(
+                                'english',
+                                %s
+                            )
+                        ) AS bm25_score
+
+                    FROM upsc_chunks
+
+                    WHERE
+                        search_vector @@ plainto_tsquery(
+                            'english',
+                            %s
+                        )
+
+                    ORDER BY bm25_score DESC
+                    LIMIT %s
+                """, (
+                    query,
+                    query,
+                    BM25_CANDIDATES
+                ))
+
+            rows = cur.fetchall()
+
+            results = []
+
+            for row in rows:
+
+                results.append({
+                    "id": row["id"],
+                    "text": row["chunk"],
+                    "metadata": {
+                        "topic": row["topic"],
+                        "difficulty": row["difficulty"],
+                        "source_file": row["source_file"]
+                    },
+                    "bm25_score": float(
+                        row["bm25_score"]
+                    )
+                })
+
+            return results
+
+    finally:
+
+        release_conn(conn)
+
+# ==========================================================
+# RRF FUSION
+# ==========================================================
+
+def reciprocal_rank_fusion(
+    vector_results,
+    bm25_results
+):
+
+    combined = {}
+
+    k = 60
+
+    for rank, item in enumerate(vector_results):
+
+        cid = item["id"]
+
+        if cid not in combined:
+            combined[cid] = item
+
+        combined[cid]["rrf_score"] = (
+            combined[cid].get(
+                "rrf_score",
+                0
+            )
+            + 1 / (k + rank + 1)
+        )
+
+    for rank, item in enumerate(bm25_results):
+
+        cid = item["id"]
+
+        if cid not in combined:
+            combined[cid] = item
+
+        combined[cid]["rrf_score"] = (
+            combined[cid].get(
+                "rrf_score",
+                0
+            )
+            + 1 / (k + rank + 1)
+        )
+
+    results = list(combined.values())
+
+    results.sort(
+        key=lambda x: x["rrf_score"],
+        reverse=True
+    )
 
     return results
 
-# --------------------------------------------------
-# FastAPI
-# --------------------------------------------------
+# ==========================================================
+# DEDUP
+# ==========================================================
 
-app = FastAPI(title="Hybrid Retrieval Service")
+def deduplicate_chunks(chunks):
+
+    seen = set()
+
+    final = []
+
+    for chunk in chunks:
+
+        key = (
+            chunk["text"][:200]
+            .strip()
+            .lower()
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        final.append(chunk)
+
+    return final
+
+# ==========================================================
+# DIVERSITY
+# ==========================================================
+
+def diversify_chunks(chunks):
+
+    topic_counter = {}
+
+    final = []
+
+    for chunk in chunks:
+
+        topic = chunk["metadata"].get(
+            "topic",
+            "General"
+        )
+
+        count = topic_counter.get(
+            topic,
+            0
+        )
+
+        if count >= 2:
+            continue
+
+        topic_counter[topic] = count + 1
+
+        final.append(chunk)
+
+    return final
+
+# ==========================================================
+# RERANK
+# ==========================================================
+
+def rerank_chunks(
+    query,
+    chunks,
+    final_top_k
+):
+
+    if not reranker:
+        return chunks[:final_top_k]
+
+    try:
+
+        queries = []
+        docs = []
+
+        for chunk in chunks:
+
+            queries.append(query)
+            docs.append(chunk["text"])
+
+        inputs = rerank_tokenizer(
+            queries,
+            docs,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt"
+        )
+
+        with torch.no_grad():
+
+            outputs = reranker(
+                **inputs
+            )
+
+        scores = (
+            outputs.logits
+            .squeeze(-1)
+            .cpu()
+            .numpy()
+        )
+
+        reranked = []
+
+        for chunk, score in zip(
+            chunks,
+            scores
+        ):
+
+            chunk["rerank_score"] = round(
+                float(score),
+                4
+            )
+
+            reranked.append(chunk)
+
+        reranked.sort(
+            key=lambda x: x["rerank_score"],
+            reverse=True
+        )
+
+        return reranked[:final_top_k]
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Rerank failed: {e}"
+        )
+
+        return chunks[:final_top_k]
+
+# ==========================================================
+# FINAL RETRIEVAL
+# ==========================================================
+
+async def hybrid_retrieval(
+    query,
+    top_k,
+    topic=None,
+    use_rerank=True
+):
+
+    cache_key = (
+        f"{query}_{topic}_{top_k}_{use_rerank}"
+    )
+
+    cached = get_cache(cache_key)
+
+    if cached:
+        return cached
+
+    q_emb = await run_in_threadpool(
+        lambda: embedder.encode(
+            [query],
+            normalize_embeddings=True,
+            show_progress_bar=False
+        )[0]
+    )
+
+    vector_results = await run_in_threadpool(
+        chroma_search,
+        q_emb,
+        topic
+    )
+
+    bm25_results = await run_in_threadpool(
+        postgres_bm25_search,
+        query,
+        topic
+    )
+
+    fused = reciprocal_rank_fusion(
+        vector_results,
+        bm25_results
+    )
+
+    fused = deduplicate_chunks(
+        fused
+    )
+
+    if use_rerank and reranker:
+
+        fused = await run_in_threadpool(
+            rerank_chunks,
+            query,
+            fused[:RERANK_CANDIDATES],
+            top_k
+        )
+
+    else:
+
+        fused = fused[:top_k]
+
+    fused = diversify_chunks(
+        fused
+    )
+
+    final = []
+
+    for item in fused[:top_k]:
+
+        text = item["text"]
+
+        if len(text) > MAX_CHUNK_CHARS:
+
+            text = text[:MAX_CHUNK_CHARS]
+
+        item["text"] = text
+
+        final.append(item)
+
+    set_cache(
+        cache_key,
+        final
+    )
+
+    return final
+
+# ==========================================================
+# REQUEST LOGGING
+# ==========================================================
+
+def log_request(
+    request_id,
+    query,
+    topic,
+    latency,
+    top_k,
+    client_ip
+):
+
+    conn = get_conn()
+
+    try:
+
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                INSERT INTO api_logs (
+                    request_id,
+                    query,
+                    topic,
+                    latency,
+                    top_k,
+                    client_ip
+                )
+                VALUES (%s,%s,%s,%s,%s,%s)
+            """, (
+                request_id,
+                query,
+                topic,
+                latency,
+                top_k,
+                client_ip
+            ))
+
+        conn.commit()
+
+    except Exception as e:
+
+        logger.warning(
+            f"Request log failed: {e}"
+        )
+
+    finally:
+
+        release_conn(conn)
+
+# ==========================================================
+# FASTAPI
+# ==========================================================
+
+app = FastAPI(
+    title="Enterprise Hybrid Retrieval API",
+    version=APP_VERSION
+)
+
+CORS_ALLOW_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"]
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_methods=[
+        method.strip()
+        for method in os.getenv("CORS_ALLOW_METHODS", "*").split(",")
+        if method.strip()
+    ],
+    allow_headers=[
+        header.strip()
+        for header in os.getenv("CORS_ALLOW_HEADERS", "*").split(",")
+        if header.strip()
+    ]
 )
 
-# --------------------------------------------------
-# Retrieval Endpoint
-# --------------------------------------------------
+app.add_middleware(
+    GZipMiddleware,
+    minimum_size=1000
+)
 
-@app.post("/chunks")
-async def chunks_api(request: Request):
+# ==========================================================
+# STARTUP
+# ==========================================================
 
-    data = await request.json()
+@app.on_event("startup")
+def startup():
 
-    query = data.get("query", "").strip()
+    logger.info(
+        "🚀 Starting API"
+    )
 
-    if not query:
-        return {"chunks": []}
+    validate_production_config()
 
     ensure_tables()
 
-    if not ensure_collection(COLLECTION_NAME):
-        return {
-            "chunks": [],
-            "error": "Failed ensuring collection"
-        }
 
-    collection_id = get_collection_id(COLLECTION_NAME)
+@app.middleware("http")
+async def security_headers(request, call_next):
 
-    if not collection_id:
-        return {
-            "chunks": [],
-            "error": "Collection ID not found"
-        }
+    response = await call_next(request)
 
-    q_emb = embedder.encode([query])[0]
+    if os.getenv("ENABLE_SECURITY_HEADERS", "true").lower() == "true":
 
-    results = query_chunks(
-        collection_id,
-        q_emb,
-        n_results=10
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+
+    return response
+
+# ==========================================================
+# GLOBAL ERROR
+# ==========================================================
+
+@app.exception_handler(Exception)
+async def global_exception_handler(
+    request,
+    exc
+):
+
+    logger.exception(
+        f"❌ Unhandled exception: {exc}"
     )
 
-    return {
-        "chunks": results
-    }
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "message": str(exc)
+        }
+    )
 
-# --------------------------------------------------
-# Health
-# --------------------------------------------------
+# ==========================================================
+# RETRIEVAL ENDPOINT
+# ==========================================================
+
+@app.post("/chunks")
+async def chunks_api(
+    request: Request,
+    x_api_key: str = Header(None)
+):
+
+    verify_api_key(x_api_key)
+
+    client_ip = request.client.host
+
+    if TRUST_PROXY_HEADERS:
+
+        forwarded_for = request.headers.get("x-forwarded-for")
+
+        if forwarded_for:
+
+            client_ip = forwarded_for.split(",")[0].strip()
+
+    check_rate_limit(client_ip)
+
+    request_id = str(uuid.uuid4())
+
+    start_time = time.time()
+
+    try:
+
+        body = await request.json()
+
+        query = body.get(
+            "query",
+            ""
+        ).strip()
+
+        topic = body.get(
+            "topic",
+            None
+        )
+
+        top_k = int(
+            body.get(
+                "top_k",
+                TOP_K
+            )
+        )
+
+        top_k = max(
+            1,
+            min(
+                top_k,
+                MAX_TOP_K
+            )
+        )
+
+        use_rerank = (
+            ENABLE_RERANK
+            and not request_bool(
+                body,
+                "skip_rerank",
+                False
+            )
+        )
+
+        if "rerank" in body:
+
+            use_rerank = request_bool(
+                body,
+                "rerank",
+                use_rerank
+            )
+
+        if not query:
+
+            raise HTTPException(
+                status_code=400,
+                detail="Query required"
+            )
+
+        if len(query) > MAX_QUERY_LENGTH:
+
+            raise HTTPException(
+                status_code=400,
+                detail="Query too long"
+            )
+
+        if len(query) < MIN_QUERY_LENGTH:
+
+            raise HTTPException(
+                status_code=400,
+                detail="Query too short"
+            )
+
+        query = normalize_query(query)
+
+        logger.info(
+            f"🔎 Query: {query}"
+        )
+
+        chunks = await hybrid_retrieval(
+            query=query,
+            top_k=top_k,
+            topic=topic,
+            use_rerank=use_rerank
+        )
+
+        latency = round(
+            time.time() - start_time,
+            3
+        )
+
+        log_request(
+            request_id,
+            query,
+            topic,
+            latency,
+            top_k,
+            client_ip
+        )
+
+        REQUEST_COUNT.labels(endpoint="/chunks", status="success").inc()
+        REQUEST_LATENCY.labels(endpoint="/chunks").observe(latency)
+
+        return {
+            "request_id": request_id,
+            "query": query,
+            "count": len(chunks),
+            "latency_seconds": latency,
+            "device": DEVICE,
+            "reranking_enabled": (
+                use_rerank and reranker is not None
+            ),
+            "hybrid_search": True,
+            "chunks": chunks
+        }
+
+    except HTTPException:
+
+        REQUEST_COUNT.labels(endpoint="/chunks", status="client_error").inc()
+
+        raise
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Retrieval failed: {e}"
+        )
+
+        REQUEST_COUNT.labels(endpoint="/chunks", status="error").inc()
+
+        return {
+            "request_id": request_id,
+            "error": str(e),
+            "chunks": []
+        }
+
+# ==========================================================
+# HEALTH
+# ==========================================================
 
 @app.get("/health")
 def health():
 
+    chroma_ok = False
+    chroma_count = 0
+
+    postgres_ok = False
+
+    try:
+
+        chroma_count = collection.count()
+
+        CHROMA_DOCS.set(chroma_count)
+
+        chroma_ok = True
+
+    except:
+        chroma_ok = False
+
+    try:
+
+        conn = get_conn()
+
+        with conn.cursor() as cur:
+
+            cur.execute("SELECT 1")
+
+        postgres_ok = True
+
+    except:
+        postgres_ok = False
+
+    finally:
+
+        try:
+            release_conn(conn)
+        except:
+            pass
+
     return {
-        "status": "ok"
+        "status": "ok",
+        "version": APP_VERSION,
+        "device": DEVICE,
+        "postgres": postgres_ok,
+        "chromadb": chroma_ok,
+        "collection": COLLECTION_NAME,
+        "embedding_model": EMBED_MODEL,
+        "reranker_model": RERANK_MODEL,
+        "cache_entries": len(query_cache),
+        "rate_limit_per_minute": RATE_LIMIT_PER_MINUTE,
+        "chroma_documents": chroma_count
+    }
+
+# ==========================================================
+# METRICS
+# ==========================================================
+
+@app.get("/metrics")
+def metrics():
+
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
+
+# ==========================================================
+# ROOT
+# ==========================================================
+
+@app.get("/")
+def root():
+
+    return {
+        "service": "Enterprise Hybrid Retrieval API",
+        "status": "running",
+        "version": APP_VERSION,
+        "gpu": DEVICE == "cuda",
+        "hybrid_retrieval": True,
+        "mobile_rag_optimized": True,
+        "production_ready": True
     }
