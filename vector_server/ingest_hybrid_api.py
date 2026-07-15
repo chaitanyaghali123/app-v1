@@ -202,11 +202,11 @@ BM25_CANDIDATES = int(
 RERANK_CANDIDATES = int(
     os.getenv("RERANK_CANDIDATES", "30")
 )
-
 MAX_CHUNK_CHARS = int(
-    os.getenv("MAX_CHUNK_CHARS", "1200")
-)
 
+    os.getenv("MAX_CHUNK_CHARS", "2000")
+
+)
 MIN_SIMILARITY_SCORE = float(
     os.getenv("MIN_SIMILARITY_SCORE", "0.15")
 )
@@ -346,27 +346,10 @@ CHROMA_DOCS = Gauge(
 # LOAD EMBEDDING MODEL
 # ==========================================================
 
-logger.info(
-    f"Loading embed model: {EMBED_MODEL}"
-)
-
-embedder = SentenceTransformer(
-    EMBED_MODEL,
-    device=DEVICE
-)
-
-
-actual_embed_dim = embedder.get_sentence_embedding_dimension()
-
-if actual_embed_dim != EMBED_DIM:
-
-    raise RuntimeError(
-        f"Embedding dimension mismatch: EMBED_DIM={EMBED_DIM}, "
-        f"model {EMBED_MODEL} produces {actual_embed_dim}"
-    )
+embedder = None
 
 logger.info(
-    "✅ Embedding model loaded"
+    "Model loading deferred until first retrieval request"
 )
 
 # ==========================================================
@@ -376,37 +359,105 @@ logger.info(
 reranker = None
 rerank_tokenizer = None
 
-if ENABLE_RERANK:
+model_lock = threading.Lock()
+reranker_load_attempted = False
 
-    try:
+
+def get_embedder():
+
+    global embedder
+
+    if embedder is not None:
+        return embedder
+
+    with model_lock:
+
+        if embedder is not None:
+            return embedder
 
         logger.info(
-            f"Loading reranker: {RERANK_MODEL}"
+            f"Loading embed model: {EMBED_MODEL}"
         )
 
-        rerank_tokenizer = AutoTokenizer.from_pretrained(
-            RERANK_MODEL
+        loaded = SentenceTransformer(
+            EMBED_MODEL,
+            device=DEVICE
         )
 
-        reranker = ORTModelForSequenceClassification.from_pretrained(
-            RERANK_MODEL,
-            export=True,
-            provider=(
-                "CUDAExecutionProvider"
-                if DEVICE == "cuda"
-                else "CPUExecutionProvider"
+        actual_embed_dim = loaded.get_sentence_embedding_dimension()
+
+        if actual_embed_dim != EMBED_DIM:
+
+            raise RuntimeError(
+                f"Embedding dimension mismatch: EMBED_DIM={EMBED_DIM}, "
+                f"model {EMBED_MODEL} produces {actual_embed_dim}"
             )
-        )
+
+        embedder = loaded
 
         logger.info(
-            "✅ Reranker loaded"
+            "Embedding model loaded"
         )
 
-    except Exception as e:
+        return embedder
 
-        logger.exception(
-            f"❌ Reranker failed: {e}"
-        )
+
+def get_reranker():
+
+    global reranker
+    global rerank_tokenizer
+    global reranker_load_attempted
+
+    if not ENABLE_RERANK:
+        return None, None
+
+    if reranker is not None and rerank_tokenizer is not None:
+        return reranker, rerank_tokenizer
+
+    with model_lock:
+
+        if reranker is not None and rerank_tokenizer is not None:
+            return reranker, rerank_tokenizer
+
+        if reranker_load_attempted:
+            return reranker, rerank_tokenizer
+
+        reranker_load_attempted = True
+
+        try:
+
+            logger.info(
+                f"Loading reranker: {RERANK_MODEL}"
+            )
+
+            loaded_tokenizer = AutoTokenizer.from_pretrained(
+                RERANK_MODEL
+            )
+
+            loaded_model = ORTModelForSequenceClassification.from_pretrained(
+                RERANK_MODEL,
+                export=True,
+                provider=(
+                    "CUDAExecutionProvider"
+                    if DEVICE == "cuda"
+                    else "CPUExecutionProvider"
+                )
+            )
+
+            rerank_tokenizer = loaded_tokenizer
+            reranker = loaded_model
+
+            logger.info(
+                "Reranker loaded"
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"Reranker failed: {e}"
+            )
+
+        return reranker, rerank_tokenizer
 
 # ==========================================================
 # POSTGRES POOL
@@ -1102,20 +1153,22 @@ def rerank_chunks(
     final_top_k
 ):
 
-    if not reranker:
+    model, tokenizer = get_reranker()
+
+    if model is None or tokenizer is None:
         return chunks[:final_top_k]
 
     try:
 
-        queries = []
-        docs = []
+        # Filter out chunks with empty/invalid text (avoids tokenizer crash)
+        valid = [c for c in chunks if c.get("text") and len(c["text"].strip()) > 0]
+        if not valid:
+            return chunks[:final_top_k]
 
-        for chunk in chunks:
+        queries = [query] * len(valid)
+        docs = [c["text"] for c in valid]
 
-            queries.append(query)
-            docs.append(chunk["text"])
-
-        inputs = rerank_tokenizer(
+        inputs = tokenizer(
             queries,
             docs,
             padding=True,
@@ -1126,7 +1179,7 @@ def rerank_chunks(
 
         with torch.no_grad():
 
-            outputs = reranker(
+            outputs = model(
                 **inputs
             )
 
@@ -1140,7 +1193,7 @@ def rerank_chunks(
         reranked = []
 
         for chunk, score in zip(
-            chunks,
+            valid,
             scores
         ):
 
@@ -1187,7 +1240,7 @@ async def hybrid_retrieval(
         return cached
 
     q_emb = await run_in_threadpool(
-        lambda: embedder.encode(
+        lambda: get_embedder().encode(
             [query],
             normalize_embeddings=True,
             show_progress_bar=False
@@ -1215,7 +1268,7 @@ async def hybrid_retrieval(
         fused
     )
 
-    if use_rerank and reranker:
+    if use_rerank and ENABLE_RERANK:
 
         fused = await run_in_threadpool(
             rerank_chunks,
@@ -1521,7 +1574,7 @@ async def chunks_api(
             "latency_seconds": latency,
             "device": DEVICE,
             "reranking_enabled": (
-                use_rerank and reranker is not None
+                use_rerank and ENABLE_RERANK and reranker is not None
             ),
             "hybrid_search": True,
             "chunks": chunks
@@ -1546,6 +1599,123 @@ async def chunks_api(
             "error": str(e),
             "chunks": []
         }
+
+# ==========================================================
+# FAITHFULNESS VERIFICATION
+# ==========================================================
+
+VERIFY_THRESHOLD = float(
+    os.getenv("VERIFY_THRESHOLD", "0.45")
+)
+
+
+@app.post("/verify")
+async def verify_faithfulness(
+    request: Request,
+    x_api_key: str = Header(None)
+):
+
+    verify_api_key(x_api_key)
+
+    client_ip = request.client.host
+
+    if TRUST_PROXY_HEADERS:
+
+        forwarded_for = request.headers.get("x-forwarded-for")
+
+        if forwarded_for:
+
+            client_ip = forwarded_for.split(",")[0].strip()
+
+    check_rate_limit(client_ip)
+
+    body = await request.json()
+
+    sentences = body.get("sentences", [])
+
+    chunks = body.get("chunks", [])
+
+    threshold = float(
+        body.get(
+            "threshold",
+            VERIFY_THRESHOLD
+        )
+    )
+
+    if not sentences or not chunks:
+
+        raise HTTPException(
+            status_code=400,
+            detail="sentences and chunks are required"
+        )
+
+    chunk_texts = [
+        c.get("text", "")
+        for c in chunks
+    ]
+
+    chunk_ids = [
+        c.get("id", f"chunk_{i}")
+        for i, c in enumerate(chunks)
+    ]
+
+    all_texts = sentences + chunk_texts
+
+    embeddings = await run_in_threadpool(
+        lambda: get_embedder().encode(
+            all_texts,
+            normalize_embeddings=True,
+            show_progress_bar=False
+        )
+    )
+
+    sentence_embs = embeddings[:len(sentences)]
+
+    chunk_embs = embeddings[len(sentences):]
+
+    sim_matrix = np.dot(
+        sentence_embs,
+        chunk_embs.T
+    )
+
+    chunk_max_scores = [0.0] * len(chunks)
+
+    results = []
+
+    for i, sentence in enumerate(sentences):
+
+        scores = sim_matrix[i]
+
+        max_idx = int(np.argmax(scores))
+
+        max_score = float(scores[max_idx])
+
+        chunk_max_scores[max_idx] = max(
+            chunk_max_scores[max_idx],
+            max_score
+        )
+
+        verdict = (
+            "SUPPORTED"
+            if max_score >= threshold
+            else "UNSUPPORTED"
+        )
+
+        results.append({
+            "sentence": sentence,
+            "score": round(max_score, 4),
+            "bestChunkId": chunk_ids[max_idx],
+            "verdict": verdict
+        })
+
+    return {
+        "results": results,
+        "chunkScores": [
+            round(s, 4)
+            for s in chunk_max_scores
+        ]
+    }
+
 
 # ==========================================================
 # HEALTH
@@ -1598,7 +1768,9 @@ def health():
         "chromadb": chroma_ok,
         "collection": COLLECTION_NAME,
         "embedding_model": EMBED_MODEL,
+        "embedding_model_loaded": embedder is not None,
         "reranker_model": RERANK_MODEL,
+        "reranker_model_loaded": reranker is not None,
         "cache_entries": len(query_cache),
         "rate_limit_per_minute": RATE_LIMIT_PER_MINUTE,
         "chroma_documents": chroma_count

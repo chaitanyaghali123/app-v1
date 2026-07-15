@@ -2,8 +2,6 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { Kafka } from "kafkajs";
-import { Queue } from "bullmq";
 import { requestLogger } from "./middleware/logger.js";
 import fs from "fs";
 import path from "path";
@@ -19,44 +17,51 @@ if (!fs.existsSync(uploadDir)) {
   console.log("📁 uploads folder created");
 }
 
-// Kafka
-const kafka = new Kafka({
-  clientId: "invoice-app",
-  brokers: [process.env.KAFKA_BROKER || "kafka:9092"],
-});
-
 // Routes
 import chunkRoutes from "./routes/chunk.route.js";
 import ingestRoutes from "./routes/ingest.route.js";
-import llmRoutes from "./routes/llm.route.js";
+// import llmRoutes from "./routes/llm.route.js"; // disabled: phone does on-device LLM generation
+
 import revisionRoutes from "./routes/revision.route.js";
 import authRoutes from "./routes/auth.route.js";
-import subscriptionRoutes from "./routes/subscription.route.js";
-import invoiceRoutes from "./routes/invoice.route.js";
-import paymentRoutes from "./routes/payment.route.js";
-import webhookRoutes from "./routes/webhook.route.js";
-import profileRoutes from "./routes/profile.route.js";
-import chatRoutes from "./routes/chat.routes.js";
 import mobileRoutes from "./routes/mobile.route.js";
+import geminiRoutes from "./routes/gemini.route.js";
+import subjectRoutes from "./routes/subject.route.js";
 
 // DB
 import {
   ensureRevisionsTable,
-  ensureResultsTable,
   ensureUsersTable,
-  ensureInvoicesTable,
-  ensureRefreshTokensTable,
   ensureApiLogsTable,
-  ensureChatsTable,
-  ensureMessagesTable,
+  ensureGeminiKeysTable,
 } from "./services/db.service.js";
 
+import multer from "multer";
+
 const app = express();
+
+const trustProxy = process.env.TRUST_PROXY ?? "1";
+if (trustProxy !== "false") {
+  app.set("trust proxy", trustProxy === "true" ? true : Number(trustProxy) || trustProxy);
+}
+
+// Security headers (replaces helmet)
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "0");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' http://localhost:* https:;");
+  next();
+});
 
 // CORS
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN?.split(",") || [
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
       "http://localhost:4173",
       "http://127.0.0.1:4173",
     ],
@@ -67,14 +72,8 @@ app.use(
 app.use(express.json({ limit: "2mb" }));
 app.use(requestLogger);
 
-// BullMQ Queue
-const queue = new Queue("llm-queue", {
-  connection: {
-    host: process.env.REDIS_HOST || "localhost",
-    port: 6379,
-    maxRetriesPerRequest: null,
-  },
-});
+// Serve web app (Expo web export)
+app.use(express.static(path.resolve("dist")));
 
 // Health Check
 app.get("/health", (_req, res) => {
@@ -85,52 +84,41 @@ app.get("/health", (_req, res) => {
   });
 });
 
-// LLM Result Polling
-app.get("/api/llm/result/:id", async (req, res) => {
-  try {
-    const job = await queue.getJob(req.params.id);
-    if (!job) return res.json({ status: "not_found" });
-
-    const state = await job.getState();
-    if (state === "completed") {
-      return res.json({ status: "done", data: job.returnvalue });
-    }
-    return res.json({ status: state });
-  } catch (err) {
-    console.error("❌ Result fetch error:", err);
-    res.status(500).json({ error: "Failed to fetch result" });
-  }
-});
-
 // Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/chunk", chunkRoutes);
 app.use("/api/ingest", ingestRoutes);
-app.use("/api/llm", llmRoutes);
 app.use("/api/revisions", revisionRoutes);
-app.use("/api/subscribe", subscriptionRoutes);
-app.use("/api/invoices", invoiceRoutes);
-app.use("/api/payment", paymentRoutes);
-app.use("/api/webhook", webhookRoutes);
-app.use("/api/chat", chatRoutes);
-app.use("/api/profile", profileRoutes);
 app.use("/api/mobile", mobileRoutes);
+app.use("/api", geminiRoutes);
+app.use("/api", subjectRoutes);
+
+// Global error handler (Multer errors, validation errors, etc.)
+app.use((err, _req, res, _next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "File too large (max 10 MB)" });
+    }
+    return res.status(400).json({ error: err.message });
+  }
+  if (err.message?.startsWith("Unsupported file type")) {
+    return res.status(415).json({ error: err.message });
+  }
+  console.error("Unhandled error:", err);
+  return res.status(500).json({ error: "Internal server error" });
+});
 
 // Init DB + Server
 async function initialize() {
   try {
     await Promise.all([
       ensureRevisionsTable(),
-      ensureResultsTable(),
       ensureUsersTable(),
-      ensureInvoicesTable(),
-      ensureRefreshTokensTable(),
       ensureApiLogsTable(),
-      ensureChatsTable(),
-      ensureMessagesTable(),
+      ensureGeminiKeysTable(),
     ]);
 
-    console.log("✅ Database initialized (with chat system)");
+    console.log("✅ Database initialized");
 
     const PORT = Number(process.env.PORT || 3000);
     app.listen(PORT, "0.0.0.0", () => {

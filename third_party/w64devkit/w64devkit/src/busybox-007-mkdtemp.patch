@@ -1,6 +1,0 @@
---- a/include/platform.h
-+++ b/include/platform.h
-@@ -474,3 +474,2 @@
- # undef HAVE_MEMRCHR
--# undef HAVE_MKDTEMP
- # undef HAVE_SETBIT

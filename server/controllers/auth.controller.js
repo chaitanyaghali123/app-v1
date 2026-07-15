@@ -156,7 +156,9 @@ export const refresh = async (req, res) => {
         );
 
         await deleteAllUserTokens(decoded.userId);
-      } catch {}
+      } catch (rotateErr) {
+        console.error("Token rotation error during reuse detection:", rotateErr.message);
+      }
 
       return res.status(403).json({
         error: "Invalid refresh token"

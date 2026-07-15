@@ -3,8 +3,20 @@
 import pg from "pg";
 import crypto from "crypto";
 
+function readIntEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL
+  connectionString: process.env.DATABASE_URL,
+  max: readIntEnv("DB_POOL_MAX", 10),
+  idleTimeoutMillis: readIntEnv("DB_IDLE_TIMEOUT_MS", 30000),
+  connectionTimeoutMillis: readIntEnv("DB_CONNECTION_TIMEOUT_MS", 5000),
+});
+
+pool.on("error", (err) => {
+  console.error("Unexpected PostgreSQL pool error:", err.message);
 });
 
 // =====================================================
@@ -393,6 +405,129 @@ export async function ensureRefreshTokensTable() {
   } catch (err) {
     console.error("❌ ensureRefreshTokensTable error:", err.message);
   }
+}
+
+// =====================================================
+// GEMINI KEY VAULT
+// =====================================================
+
+export async function ensureGeminiKeysTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS gemini_keys (
+        device_id TEXT PRIMARY KEY,
+        encrypted_key TEXT NOT NULL,
+        key_hash TEXT,
+        last_validated_at TIMESTAMP,
+        last_error_code TEXT,
+        last_error_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await pool.query(`
+      ALTER TABLE gemini_keys
+      ADD COLUMN IF NOT EXISTS key_hash TEXT,
+      ADD COLUMN IF NOT EXISTS last_validated_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS last_error_code TEXT,
+      ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMP;
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_gemini_keys_updated_at
+      ON gemini_keys(updated_at DESC);
+    `);
+  } catch (err) {
+    console.error("❌ ensureGeminiKeysTable error:", err.message);
+  }
+}
+
+export async function upsertGeminiKey(deviceId, encryptedKey, metadata = {}) {
+  const keyHash = metadata.keyHash || null;
+  const { rows } = await pool.query(
+    `
+    INSERT INTO gemini_keys (
+      device_id,
+      encrypted_key,
+      key_hash,
+      last_validated_at,
+      last_error_code,
+      last_error_at,
+      updated_at
+    )
+    VALUES ($1, $2, $3, NOW(), NULL, NULL, NOW())
+    ON CONFLICT (device_id)
+    DO UPDATE SET
+      encrypted_key = $2,
+      key_hash = $3,
+      last_validated_at = NOW(),
+      last_error_code = NULL,
+      last_error_at = NULL,
+      updated_at = NOW()
+    RETURNING device_id;
+    `,
+    [deviceId, encryptedKey, keyHash]
+  );
+  return rows[0];
+}
+
+export async function getGeminiKeyRecord(deviceId) {
+  const { rows } = await pool.query(
+    `
+    SELECT
+      device_id,
+      encrypted_key,
+      key_hash,
+      last_validated_at,
+      last_error_code,
+      last_error_at,
+      updated_at
+    FROM gemini_keys
+    WHERE device_id = $1
+    `,
+    [deviceId]
+  );
+  return rows[0] || null;
+}
+
+export async function getGeminiKey(deviceId) {
+  const record = await getGeminiKeyRecord(deviceId);
+  return record?.encrypted_key || null;
+}
+
+export async function deleteGeminiKey(deviceId) {
+  await pool.query(
+    `
+    DELETE FROM gemini_keys WHERE device_id = $1
+    `,
+    [deviceId]
+  );
+}
+
+export async function markGeminiKeyFailure(deviceId, errorCode) {
+  await pool.query(
+    `
+    UPDATE gemini_keys
+    SET last_error_code = $2,
+        last_error_at = NOW(),
+        updated_at = NOW()
+    WHERE device_id = $1
+    `,
+    [deviceId, errorCode || "GEMINI_ERROR"]
+  );
+}
+
+export async function markGeminiKeyValidated(deviceId) {
+  await pool.query(
+    `
+    UPDATE gemini_keys
+    SET last_validated_at = NOW(),
+        last_error_code = NULL,
+        last_error_at = NULL,
+        updated_at = NOW()
+    WHERE device_id = $1
+    `,
+    [deviceId]
+  );
 }
 
 // db.service.js

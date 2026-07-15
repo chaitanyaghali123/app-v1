@@ -30,16 +30,12 @@ export const handleChunk = async (req, res) => {
 
       return res.json({ chunks });
     } catch (proxyError) {
-      console.warn("⚠️ FastAPI chunk proxy failed, falling back to static chunks");
+      console.warn("⚠️ FastAPI chunk proxy failed:", proxyError.message);
+      return res.status(503).json({ error: "Vector server unavailable" });
     }
 
     // Fallback: static chunks for offline mode
-    const chunks = [
-      { text: "Context chunk 1: UPSC syllabus overview" },
-      { text: "Context chunk 2: Previous year question trends" },
-      { text: "Context chunk 3: Recommended sources and strategies" }
-    ];
-    res.json({ chunks });
+    return res.json({ chunks: [] });
   } catch (err) {
     console.error("❌ Chunking error:", err?.response?.data || err.message);
     res.status(500).json({ error: "Chunking failed" });

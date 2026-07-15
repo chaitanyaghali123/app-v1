@@ -4,12 +4,12 @@ import axios from "axios";
 
 const BASE = process.env.FASTAPI_URL || process.env.VECTOR_API;
 const API_KEY = process.env.VECTOR_API_KEY || process.env.API_KEY;
-const VECTOR_TIMEOUT_MS = Number(process.env.VECTOR_API_TIMEOUT_MS || 2500);
+const VECTOR_TIMEOUT_MS = Number(process.env.VECTOR_API_TIMEOUT_MS || 15000);
 
 /**
  * 🔍 Query ChromaDB
  */
-export async function queryChroma({ prompt, topK, skipRerank = false }) {
+export async function queryChroma({ prompt, topK, skipRerank = false, topic }) {
   try {
     const body = {
       query: prompt,
@@ -21,6 +21,10 @@ export async function queryChroma({ prompt, topK, skipRerank = false }) {
 
     if (skipRerank) {
       body.skip_rerank = true;
+    }
+
+    if (topic) {
+      body.topic = topic;
     }
 
     const resp = await axios.post(`${BASE}/chunks`, body, {

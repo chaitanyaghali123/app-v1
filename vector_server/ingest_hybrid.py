@@ -170,13 +170,11 @@ EMBED_DIM = int(
 # ==========================================================
 # CHUNKING
 # ==========================================================
-
 CHUNK_SIZE = int(
-    os.getenv("CHUNK_SIZE", "350")
+    os.getenv("CHUNK_SIZE", "800")
 )
-
 CHUNK_OVERLAP = int(
-    os.getenv("CHUNK_OVERLAP", "50")
+    os.getenv("CHUNK_OVERLAP", "150")
 )
 
 MIN_CHUNK_TOKENS = int(
@@ -201,6 +199,9 @@ MAX_WORKERS = int(
 
 MAX_FILE_SIZE_MB = int(
     os.getenv("MAX_FILE_SIZE_MB", "100")
+)
+MODEL_MAX_TOKENS = int(
+    os.getenv("MODEL_MAX_TOKENS", "512")
 )
 
 CHROMA_UPSERT_BATCH_SIZE = int(
@@ -698,48 +699,33 @@ def clean_text(text: str):
 # ==========================================================
 
 def read_txt(path: Path):
-
-    text = path.read_text(
-        encoding="utf-8",
-        errors="ignore"
-    )
-
-    return clean_text(text)
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    text = unicodedata.normalize("NFKC", text)
+    text = text.replace("\u00a0", " ")
+    text = re.sub(r"\r\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"Page\s+\d+", "", text, flags=re.IGNORECASE)
+    return text.strip()
 
 def read_docx(path: Path):
-
     document = docx.Document(str(path))
-
-    text = "\n".join([
-        p.text
-        for p in document.paragraphs
-        if p.text.strip()
-    ])
-
-    return clean_text(text)
+    texts = [p.text.strip() for p in document.paragraphs if p.text.strip()]
+    return "\n\n".join(texts)
 
 def read_pdf(path: Path):
-
     if not validate_pdf(path):
-
-        raise Exception(
-            "Invalid PDF file"
-        )
-
+        raise Exception("Invalid PDF file")
     pages = []
-
     with fitz.open(str(path)) as pdf:
-
         for page in pdf:
-
             txt = page.get_text().strip()
-
             if txt:
                 pages.append(txt)
-
-    return clean_text(
-        "\n".join(pages)
-    )
+    text = "\n\n".join(pages)
+    text = unicodedata.normalize("NFKC", text)
+    text = text.replace("\u00a0", " ")
+    text = re.sub(r"Page\s+\d+", "", text, flags=re.IGNORECASE)
+    return text.strip()
 
 # ==========================================================
 # TOKEN CHUNKING
@@ -826,106 +812,105 @@ def simhash_bucket(fingerprint):
     )
 
 def chunk_text(text):
+    # ======================================================
+    # PARAGRAPH-AWARE CHUNKING with overlap
+    # Splits on \n\n boundaries (markdown paragraphs),
+    # groups to ~CHUNK_SIZE tokens, slides CHUNK_OVERLAP
+    # tokens of overlap between adjacent chunks.
+    # Oversized paragraphs (>MODEL_MAX_TOKENS) are split by
+    # sentence to stay within the embedding model's limit.
+    # ======================================================
 
-    sentences = re.split(
-        r"(?<=[.!?])\s+",
-        text
-    )
+    raw_paragraphs = re.split(r"\n\s*\n", text)
+    paragraphs = []
+    for p in raw_paragraphs:
+        p = p.strip()
+        if not p:
+            continue
+        tk = token_count(p)
+        if tk < 5:
+            continue
+        if tk > MODEL_MAX_TOKENS:
+            sentences = re.split(r"(?<=[.!?])\s+", p)
+            for s in sentences:
+                s = s.strip()
+                if not s:
+                    continue
+                stk = token_count(s)
+                if stk < 5:
+                    continue
+                # guard against single sentence still too long
+                if stk > MODEL_MAX_TOKENS:
+                    s = s[:4000] if len(s) > 4000 else s
+                    stk = token_count(s)
+                paragraphs.append((s, stk))
+        else:
+            paragraphs.append((p, tk))
+
+    if not paragraphs:
+        return []
 
     chunks = []
+    start_idx = 0
 
-    current = []
+    while start_idx < len(paragraphs):
+        current = []  # list of (text, tokens) tuples
+        current_tokens = 0
 
-    current_tokens = 0
+        for i in range(start_idx, len(paragraphs)):
+            p_text, p_tokens = paragraphs[i]
+            if current_tokens + p_tokens > CHUNK_SIZE and current:
+                break
+            current.append((p_text, p_tokens))
+            current_tokens += p_tokens
+            start_idx = i + 1
 
-    for sentence in sentences:
+        if not current:
+            p_text, p_tokens = paragraphs[start_idx]
+            current = [(p_text, p_tokens)]
+            start_idx += 1
 
-        sentence = sentence.strip()
+        chunk_text = "\n\n".join(t[0] for t in current)
+        chunks.append(chunk_text)
 
-        if not sentence:
-            continue
+        # slide overlap: find trailing paragraphs that together
+        # are under CHUNK_OVERLAP tokens
+        overlap_tokens = 0
+        overlap_paras = 0
+        for _, p_tokens in reversed(current):
+            if overlap_tokens + p_tokens > CHUNK_OVERLAP:
+                break
+            overlap_tokens += p_tokens
+            overlap_paras += 1
 
-        sentence_tokens = token_count(sentence)
-
-        if sentence_tokens < 5:
-            continue
-
-        if (
-            current_tokens
-            + sentence_tokens
-        ) > CHUNK_SIZE:
-
-            chunk = " ".join(current)
-
-            if chunk:
-
-                chunks.append(chunk)
-
-            current, current_tokens = token_limited_overlap(
-                current
-            )
-
-            if sentence_tokens > CHUNK_SIZE:
-
-                chunks.append(sentence)
-                current = []
-                current_tokens = 0
-                continue
-
-        current.append(sentence)
-
-        current_tokens += sentence_tokens
-
-    if current:
-
-        chunks.append(
-            " ".join(current)
-        )
+        if overlap_paras > 0:
+            start_idx = max(0, start_idx - overlap_paras)
 
     # ======================================================
     # DEDUP
     # ======================================================
 
     final_chunks = []
-
     dedup_buckets = {}
-
     exact_seen = set()
 
     for chunk in chunks:
-
         chunk = clean_text(chunk)
-
         if len(chunk.split()) < 8:
             continue
 
-        exact_key = " ".join(
-            normalized_words(chunk)
-        )
-
+        exact_key = " ".join(normalized_words(chunk))
         if exact_key in exact_seen:
             continue
 
         fingerprint = chunk_simhash(chunk)
-
         bucket = simhash_bucket(fingerprint)
-
-        candidates = dedup_buckets.get(
-            bucket,
-            []
-        )[-DEDUP_COMPARE_LIMIT:]
+        candidates = dedup_buckets.get(bucket, [])[-DEDUP_COMPARE_LIMIT:]
 
         duplicate = False
-
         for existing in candidates:
-
-            score = fuzz.ratio(
-                chunk,
-                existing
-            )
-
+            score = fuzz.ratio(chunk, existing)
             if score > SIMILARITY_DEDUP_THRESHOLD:
-
                 duplicate = True
                 break
 
@@ -933,13 +918,8 @@ def chunk_text(text):
             continue
 
         exact_seen.add(exact_key)
-
         final_chunks.append(chunk)
-
-        dedup_buckets.setdefault(
-            bucket,
-            []
-        ).append(chunk)
+        dedup_buckets.setdefault(bucket, []).append(chunk)
 
     return final_chunks
 
@@ -1312,9 +1292,18 @@ def insert_postgres_rows(rows):
 # PROCESS FILE
 # ==========================================================
 
+root_folder = None
+
 def process_file(file):
 
-    fname = file.name
+    global root_folder
+    if root_folder:
+        try:
+            fname = str(file.relative_to(root_folder))
+        except ValueError:
+            fname = file.name
+    else:
+        fname = file.name
 
     suffix = file.suffix.lower()
 
@@ -1565,7 +1554,10 @@ def ingest_folder(folder):
 
     ensure_tables()
 
+    global root_folder
     folder_path = Path(folder)
+    root_folder = folder_path.parent
+    folder_name = folder_path.name
 
     total_files = 0
 

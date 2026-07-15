@@ -5,13 +5,19 @@ import dotenv from "dotenv";
 
 dotenv.config({ path: "/app/.env" });
 
-if (!process.env.OPENAI_API_KEY) {
-  throw new Error("OPENAI_API_KEY not set");
-}
+let client = null;
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+function getClient() {
+  if (!client) {
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error("OPENAI_API_KEY not set");
+    }
+    client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+  }
+  return client;
+}
 
 // 🔥 safe batch size
 const MAX_BATCH = 100;
@@ -21,6 +27,7 @@ export async function encode(texts) {
     throw new Error("encode() requires a non-empty array of texts");
   }
 
+  const openai = getClient();
   const results = [];
 
   for (let i = 0; i < texts.length; i += MAX_BATCH) {

@@ -1,8 +1,4 @@
-import pg from "pg";
-
-const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL
-});
+import { pool } from "./db.service.js";
 
 // === Create User ===
 export async function createUser({ name, email, password, phone }) {

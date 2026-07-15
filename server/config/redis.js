@@ -1,86 +1,151 @@
-// config/redis.js
-import Redis from "ioredis";
+const store = new Map();
 
-// -----------------------------
-// Redis Client
-// -----------------------------
-const redis = new Redis({
-  host: process.env.REDIS_HOST || "aryabhata-redis", // ✅ docker service
-  port: parseInt(process.env.REDIS_PORT, 10) || 6379,
+let redis = null;
+let redisReady = false;
 
-  // Optional (for cloud later)
-  username: process.env.REDIS_USERNAME || undefined,
-  password: process.env.REDIS_PASSWORD || undefined,
-
-  // ✅ Reliability
-  maxRetriesPerRequest: 3,
-  enableReadyCheck: true,
-
-  // ✅ Auto reconnect strategy
-  retryStrategy(times) {
-    const delay = Math.min(times * 100, 2000);
-    console.log(`🔁 Redis retry ${times}, delay ${delay}ms`);
-    return delay;
-  },
-});
-
-// -----------------------------
-// Events (important for debugging)
-// -----------------------------
-redis.on("connect", () => {
-  console.log("✅ Redis connected");
-});
-
-redis.on("ready", () => {
-  console.log("🚀 Redis ready");
-});
-
-redis.on("error", (err) => {
-  console.error("❌ Redis error:", err.message);
-});
-
-redis.on("close", () => {
-  console.warn("⚠️ Redis connection closed");
-});
-
-redis.on("reconnecting", () => {
-  console.log("🔄 Redis reconnecting...");
-});
-
-// -----------------------------
-// Helper functions (clean usage)
-// -----------------------------
-
-// ✅ Set cache with TTL (seconds)
-export async function setCache(key, value, ttl = 60) {
+if (process.env.REDIS_URL || process.env.REDIS_HOST) {
   try {
-    await redis.set(key, JSON.stringify(value), "EX", ttl);
+    const { default: Redis } = await import("ioredis");
+    redis = process.env.REDIS_URL
+      ? new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: 3 })
+      : new Redis({
+          host: process.env.REDIS_HOST,
+          port: Number(process.env.REDIS_PORT || 6379),
+          username: process.env.REDIS_USERNAME || undefined,
+          password: process.env.REDIS_PASSWORD || undefined,
+          maxRetriesPerRequest: 3,
+        });
+
+    redis.on("connect", () => console.log("[redis] connected"));
+    redis.on("ready", () => {
+      redisReady = true;
+      console.log("[redis] ready");
+    });
+    redis.on("close", () => {
+      redisReady = false;
+    });
+    redis.on("end", () => {
+      redisReady = false;
+    });
+    redis.on("error", (err) => {
+      redisReady = false;
+      console.error("[redis] error:", err.message);
+    });
   } catch (err) {
-    console.error("Redis SET error:", err);
+    console.warn("[redis] ioredis unavailable; using in-memory cache:", err.message);
+    redis = null;
   }
 }
 
-// ✅ Get cache
-export async function getCache(key) {
-  try {
-    const data = await redis.get(key);
-    return data ? JSON.parse(data) : null;
-  } catch (err) {
-    console.error("Redis GET error:", err);
+function getMemoryEntry(key) {
+  const entry = store.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expires) {
+    store.delete(key);
     return null;
   }
+  return entry;
 }
 
-// ✅ Delete cache
-export async function deleteCache(key) {
-  try {
-    await redis.del(key);
-  } catch (err) {
-    console.error("Redis DEL error:", err);
+export async function setCache(key, value, ttl = 60) {
+  if (redis) {
+    await redis.set(key, JSON.stringify(value), "EX", ttl);
+    return;
   }
+  store.set(key, { data: value, expires: Date.now() + ttl * 1000 });
 }
 
-// -----------------------------
-// Export
-// -----------------------------
-export default redis;
+export async function getCache(key) {
+  if (redis) {
+    const value = await redis.get(key);
+    return value ? JSON.parse(value) : null;
+  }
+
+  const entry = getMemoryEntry(key);
+  return entry ? entry.data : null;
+}
+
+export async function deleteCache(key) {
+  if (redis) {
+    await redis.del(key);
+    return;
+  }
+  store.delete(key);
+}
+
+const cache = {
+  async incr(key) {
+    if (redis) {
+      return redis.incr(key);
+    }
+
+    const existing = getMemoryEntry(key);
+    const entry = existing || { count: 0, expires: 0 };
+    entry.count = (entry.count || 0) + 1;
+    if (!entry.expires) entry.expires = Date.now() + 60000;
+    store.set(key, entry);
+    return entry.count;
+  },
+
+  async incrBy(key, value) {
+    if (redis) {
+      return redis.incrby(key, value);
+    }
+
+    const existing = getMemoryEntry(key);
+    const entry = existing || { count: 0, expires: 0 };
+    entry.count = (entry.count || 0) + Number(value || 0);
+    if (!entry.expires) entry.expires = Date.now() + 60000;
+    store.set(key, entry);
+    return entry.count;
+  },
+
+  async expire(key, seconds) {
+    if (redis) {
+      await redis.expire(key, seconds);
+      return;
+    }
+
+    const entry = store.get(key);
+    if (entry) entry.expires = Date.now() + seconds * 1000;
+  },
+
+  async ttl(key) {
+    if (redis) {
+      return redis.ttl(key);
+    }
+
+    const entry = getMemoryEntry(key);
+    if (!entry) return -2;
+    const remaining = Math.ceil((entry.expires - Date.now()) / 1000);
+    return remaining > 0 ? remaining : -2;
+  },
+
+  async sadd(key, member) {
+    if (redis) {
+      return redis.sadd(key, member);
+    }
+
+    const existing = getMemoryEntry(key);
+    const entry = existing || { set: new Set(), expires: 0 };
+    if (!entry.set) entry.set = new Set();
+    entry.set.add(String(member));
+    store.set(key, entry);
+    return entry.set.size;
+  },
+
+  async scard(key) {
+    if (redis) {
+      return redis.scard(key);
+    }
+
+    const entry = getMemoryEntry(key);
+    return entry?.set?.size || 0;
+  },
+};
+
+export function isDistributedCacheEnabled() {
+  return Boolean(redis && redisReady);
+}
+
+export default cache;
