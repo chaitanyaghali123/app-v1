@@ -14,17 +14,17 @@ vite.config.ts.*
 
 # Archives and environment files
 *.tar.gz.env
-.env
 
 # Git internals (shouldn’t be tracked)
 .git
 
+
+.env
 # Logs
 *.log
 
 # Virtual environments
 venv310/
 
-models/*.gguf
-uploads/*
-videos/third_party/zig/
+
+
