@@ -1,3 +1,5 @@
+import * as SecureStore from "expo-secure-store";
+
 function generateDeviceId(): string {
   const chars = "abcdef0123456789";
   const bytes = new Uint8Array(32);
@@ -51,7 +53,7 @@ async function readApiError(response: Response, fallback: string): Promise<strin
   }
 }
 
-export function getOrCreateDeviceId(): string {
+export async function getOrCreateDeviceId(): Promise<string> {
   if (typeof localStorage !== "undefined") {
     let id = localStorage.getItem(DEVICE_ID_KEY);
     if (!id) {
@@ -60,7 +62,11 @@ export function getOrCreateDeviceId(): string {
     }
     return id;
   }
-  return generateDeviceId();
+  const cached = await SecureStore.getItemAsync(DEVICE_ID_KEY);
+  if (cached) return cached;
+  const id = generateDeviceId();
+  await SecureStore.setItemAsync(DEVICE_ID_KEY, id);
+  return id;
 }
 
 type GeminiChunk = {
@@ -138,6 +144,32 @@ export async function generateWithGemini(
   let tokenCount = 0;
   let sentenceScores: ProxyResult["sentenceScores"] = [];
   let chunkScores: ProxyResult["chunkScores"] = [];
+  const processProxyLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data: ")) return;
+    const jsonStr = trimmed.slice(6).trim();
+    if (!jsonStr) return;
+    try {
+      const data = JSON.parse(jsonStr);
+      if (data.type === "token") {
+        fullAnswer = data.text;
+        onToken?.(data.text);
+      } else if (data.type === "status") {
+        onStatus?.(data.status);
+      } else if (data.type === "done") {
+        fullAnswer = data.answer;
+        tokenCount = data.tokenCount;
+        sentenceScores = data.sentenceScores || [];
+        chunkScores = data.chunkScores || [];
+        onToken?.(data.answer);
+      } else if (data.type === "error") {
+        throw new Error(formatApiError(data, "Gemini request failed. Please try again."));
+      }
+    } catch (e) {
+      if (e instanceof SyntaxError) return;
+      throw e;
+    }
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -147,32 +179,12 @@ export async function generateWithGemini(
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? "";
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data: ")) continue;
-      const jsonStr = trimmed.slice(6).trim();
-      if (!jsonStr) continue;
-      try {
-        const data = JSON.parse(jsonStr);
-        if (data.type === "token") {
-          fullAnswer = data.text;
-          onToken?.(data.text);
-        } else if (data.type === "status") {
-          onStatus?.(data.status);
-        } else if (data.type === "done") {
-          fullAnswer = data.answer;
-          tokenCount = data.tokenCount;
-          sentenceScores = data.sentenceScores || [];
-          chunkScores = data.chunkScores || [];
-          onToken?.(data.answer);
-        } else if (data.type === "error") {
-          throw new Error(formatApiError(data, "Gemini request failed. Please try again."));
-        }
-      } catch (e) {
-        if (e instanceof SyntaxError) continue;
-        throw e;
-      }
-    }
+    for (const line of lines) processProxyLine(line);
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    for (const line of buffer.split("\n")) processProxyLine(line);
   }
 
   if (!fullAnswer) {
@@ -188,7 +200,7 @@ export async function generateWithGemini(
 }
 
 export async function storeApiKeyOnBackend(backendUrl: string, apiKey: string): Promise<void> {
-  const deviceId = getOrCreateDeviceId();
+  const deviceId = await getOrCreateDeviceId();
   const url = `${backendUrl.replace(/\/+$/, "")}/api/gemini/store-key`;
 
   const response = await fetch(url, {
@@ -205,7 +217,7 @@ export async function storeApiKeyOnBackend(backendUrl: string, apiKey: string): 
 }
 
 export async function deleteStoredApiKey(backendUrl: string): Promise<void> {
-  const deviceId = getOrCreateDeviceId();
+  const deviceId = await getOrCreateDeviceId();
   const url = `${backendUrl.replace(/\/+$/, "")}/api/gemini/store-key`;
 
   const response = await fetch(url, {

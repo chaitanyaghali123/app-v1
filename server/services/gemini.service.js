@@ -1,9 +1,13 @@
 import crypto from "crypto";
-import axios from "axios";
 
 const ENCRYPTION_ALGORITHM = "aes-256-gcm";
 const KEY_LENGTH = 32;
+const ENVELOPE_ENCRYPTION_VERSION = 2;
+const LOCAL_ENVELOPE_PROVIDER = "local-envelope";
+const AWS_KMS_PROVIDER = "aws-kms";
 let warnedWeakEncryptionSecret = false;
+let awsKmsSdkPromise = null;
+let awsKmsClient = null;
 
 function getEncryptionKey() {
   const secret = process.env.GEMINI_ENCRYPTION_SECRET;
@@ -51,17 +55,249 @@ export function decrypt(encoded) {
   return decrypted.toString("utf8");
 }
 
+function encodeEncryptedBuffer(buffer, key) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, key, iv);
+  const encrypted = Buffer.concat([cipher.update(buffer), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return [
+    "gcm",
+    iv.toString("base64url"),
+    authTag.toString("base64url"),
+    encrypted.toString("base64url"),
+  ].join(":");
+}
+
+function decodeEncryptedBuffer(encoded, key) {
+  const parts = String(encoded || "").split(":");
+  if (parts.length !== 4 || parts[0] !== "gcm") {
+    throw new Error("Invalid envelope encrypted format");
+  }
+  const iv = Buffer.from(parts[1], "base64url");
+  const authTag = Buffer.from(parts[2], "base64url");
+  const encrypted = Buffer.from(parts[3], "base64url");
+  const decipher = crypto.createDecipheriv(ENCRYPTION_ALGORITHM, key, iv);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]);
+}
+
+function normalizeEnvelopeProvider(provider) {
+  const value = String(provider || "").trim().toLowerCase();
+  if (value === "aws" || value === "aws_kms" || value === AWS_KMS_PROVIDER) {
+    return AWS_KMS_PROVIDER;
+  }
+  if (value === "local" || value === "local_envelope" || value === LOCAL_ENVELOPE_PROVIDER) {
+    return LOCAL_ENVELOPE_PROVIDER;
+  }
+  return LOCAL_ENVELOPE_PROVIDER;
+}
+
+function getConfiguredEnvelopeProvider() {
+  return normalizeEnvelopeProvider(
+    process.env.GEMINI_KEY_VAULT_PROVIDER ||
+      process.env.GEMINI_KMS_PROVIDER ||
+      LOCAL_ENVELOPE_PROVIDER
+  );
+}
+
+function getAwsKmsKeyId() {
+  return process.env.GEMINI_KMS_KEY_ID || process.env.AWS_KMS_KEY_ID || "";
+}
+
+function getAwsKmsEncryptionContext() {
+  const appName = process.env.APP_NAME || "upsc-rag";
+  return {
+    app: appName,
+    purpose: "gemini-byok",
+  };
+}
+
+async function getAwsKmsSdk() {
+  if (!awsKmsSdkPromise) {
+    awsKmsSdkPromise = import("@aws-sdk/client-kms").catch((err) => {
+      awsKmsSdkPromise = null;
+      throw new Error(
+        `AWS KMS provider requires @aws-sdk/client-kms to be installed: ${err.message}`
+      );
+    });
+  }
+  return awsKmsSdkPromise;
+}
+
+async function getAwsKmsClient() {
+  if (!awsKmsClient) {
+    const { KMSClient } = await getAwsKmsSdk();
+    awsKmsClient = new KMSClient({
+      region: process.env.AWS_REGION || process.env.GEMINI_KMS_REGION || "ap-south-1",
+    });
+  }
+  return awsKmsClient;
+}
+
+async function generateEnvelopeDataKey() {
+  const provider = getConfiguredEnvelopeProvider();
+
+  if (provider === AWS_KMS_PROVIDER) {
+    const keyId = getAwsKmsKeyId();
+    if (!keyId) {
+      throw new Error("GEMINI_KMS_KEY_ID or AWS_KMS_KEY_ID is required for AWS KMS key vault.");
+    }
+
+    const { GenerateDataKeyCommand } = await getAwsKmsSdk();
+    const client = await getAwsKmsClient();
+    const response = await client.send(
+      new GenerateDataKeyCommand({
+        KeyId: keyId,
+        KeySpec: "AES_256",
+        EncryptionContext: getAwsKmsEncryptionContext(),
+      })
+    );
+
+    if (!response.Plaintext || !response.CiphertextBlob) {
+      throw new Error("AWS KMS did not return a usable data key.");
+    }
+
+    return {
+      dataKey: Buffer.from(response.Plaintext),
+      encryptedDataKey: `aws-kms:${Buffer.from(response.CiphertextBlob).toString("base64")}`,
+      encryptionProvider: AWS_KMS_PROVIDER,
+      encryptionKeyId: keyId,
+    };
+  }
+
+  const dataKey = crypto.randomBytes(KEY_LENGTH);
+  return {
+    dataKey,
+    encryptedDataKey: encodeEncryptedBuffer(dataKey, getEncryptionKey()),
+    encryptionProvider: LOCAL_ENVELOPE_PROVIDER,
+    encryptionKeyId: null,
+  };
+}
+
+async function decryptEnvelopeDataKey(record) {
+  const provider = normalizeEnvelopeProvider(record.encryption_provider);
+  const encryptedDataKey = String(record.encrypted_data_key || "");
+
+  if (provider === AWS_KMS_PROVIDER || encryptedDataKey.startsWith("aws-kms:")) {
+    const { DecryptCommand } = await getAwsKmsSdk();
+    const client = await getAwsKmsClient();
+    const encoded = encryptedDataKey.replace(/^aws-kms:/, "");
+    const response = await client.send(
+      new DecryptCommand({
+        CiphertextBlob: Buffer.from(encoded, "base64"),
+        EncryptionContext: getAwsKmsEncryptionContext(),
+      })
+    );
+    if (!response.Plaintext) {
+      throw new Error("AWS KMS did not return a plaintext data key.");
+    }
+    return Buffer.from(response.Plaintext);
+  }
+
+  return decodeEncryptedBuffer(encryptedDataKey, getEncryptionKey());
+}
+
+export function getGeminiKeyVaultStatus() {
+  const provider = getConfiguredEnvelopeProvider();
+  return {
+    provider,
+    envelopeVersion: ENVELOPE_ENCRYPTION_VERSION,
+    kmsKeyConfigured: provider !== AWS_KMS_PROVIDER || Boolean(getAwsKmsKeyId()),
+  };
+}
+
+export async function encryptGeminiApiKey(apiKey) {
+  const envelope = await generateEnvelopeDataKey();
+  const dataKey = envelope.dataKey;
+
+  try {
+    return {
+      encryptedKey: encodeEncryptedBuffer(Buffer.from(apiKey, "utf8"), dataKey),
+      encryptedDataKey: envelope.encryptedDataKey,
+      encryptionVersion: ENVELOPE_ENCRYPTION_VERSION,
+      encryptionProvider: envelope.encryptionProvider,
+      encryptionKeyId: envelope.encryptionKeyId,
+    };
+  } finally {
+    dataKey.fill(0);
+  }
+}
+
+export async function decryptGeminiApiKeyRecord(record) {
+  if (!record?.encrypted_key) {
+    throw new Error("Missing encrypted Gemini key");
+  }
+
+  if (
+    Number(record.encryption_version || 1) >= ENVELOPE_ENCRYPTION_VERSION &&
+    record.encrypted_data_key
+  ) {
+    const dataKey = await decryptEnvelopeDataKey(record);
+    try {
+      return decodeEncryptedBuffer(record.encrypted_key, dataKey).toString("utf8");
+    } finally {
+      dataKey.fill(0);
+    }
+  }
+
+  return decrypt(record.encrypted_key);
+}
+
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
+const GEMINI_MODEL_FALLBACKS = String(
+  process.env.GEMINI_MODEL_FALLBACKS || "gemini-3.5-flash-lite,gemini-3.6-flash"
+)
+  .split(",")
+  .map((m) => m.trim())
+  .filter(Boolean);
+const GEMINI_MODEL_CHAIN = [...new Set([GEMINI_MODEL, ...GEMINI_MODEL_FALLBACKS].filter(Boolean))];
+const GEMINI_MODEL_BUSY_STATUSES = new Set([429, 500, 502, 503, 504]);
 const GEMINI_REQUEST_TIMEOUT_MS = Number(process.env.GEMINI_REQUEST_TIMEOUT_MS || 90000);
 const GEMINI_KEY_VALIDATION_TIMEOUT_MS = Number(process.env.GEMINI_KEY_VALIDATION_TIMEOUT_MS || 15000);
 const GEMINI_MAX_RETRIES = Math.max(0, Number(process.env.GEMINI_MAX_RETRIES || 2));
-const VECTOR_SERVER_URL = process.env.FASTAPI_URL || process.env.VECTOR_API || "http://aryabhata-ingestor:7860";
-const VECTOR_API_KEY = process.env.VECTOR_API_KEY || "CHANGE_THIS_TO_64_CHAR_SECRET";
-const VERIFY_THRESHOLD = Number(process.env.VERIFY_THRESHOLD || 0.45);
-const VERIFY_TIMEOUT_MS = Number(process.env.VERIFY_TIMEOUT_MS || 12000);
+const GEMINI_THINKING_LEVEL = String(process.env.GEMINI_THINKING_LEVEL || "minimal").toLowerCase();
+const GEMINI_THINKING_BUDGET = Number(process.env.GEMINI_THINKING_BUDGET ?? 0);
 
 const RETRYABLE_GEMINI_STATUS_CODES = new Set([408, 409, 429, 500, 502, 503, 504]);
+
+export function getGeminiModel() {
+  return GEMINI_MODEL;
+}
+
+function getGeminiModelNameFromUrl(url) {
+  return url.match(/models\/([^:?/]+)/)?.[1] || url;
+}
+
+function buildGeminiUrls(action) {
+  return GEMINI_MODEL_CHAIN.map((model) => `${GEMINI_API_BASE}/${model}${action}`);
+}
+
+function getGeminiThinkingConfig() {
+  const model = String(GEMINI_MODEL || "").toLowerCase();
+  if (model === "gemini-2.0-flash-thinking" || model === "gemini-2.5-pro" || model.includes("gemini-3.")) {
+    return { thinkingLevel: GEMINI_THINKING_LEVEL };
+  }
+  if (model.includes("gemini-2.5-flash")) {
+    return { thinkingBudget: Number.isFinite(GEMINI_THINKING_BUDGET) ? GEMINI_THINKING_BUDGET : 0 };
+  }
+  return null;
+}
+
+function buildGeminiGenerationConfig({ maxOutputTokens, temperature = 0.0, topP = null }) {
+  const config = {
+    temperature,
+    maxOutputTokens,
+  };
+  if (topP !== null && topP !== undefined) {
+    config.topP = topP;
+  }
+  const thinkingConfig = getGeminiThinkingConfig();
+  if (thinkingConfig) {
+    config.thinkingConfig = thinkingConfig;
+  }
+  return config;
+}
 
 export class GeminiApiError extends Error {
   constructor({
@@ -72,6 +308,7 @@ export class GeminiApiError extends Error {
     retryAfterSeconds = null,
     retriable = false,
     operation = "gemini",
+    originalError = null,
   }) {
     super(message);
     this.name = "GeminiApiError";
@@ -81,6 +318,7 @@ export class GeminiApiError extends Error {
     this.retryAfterSeconds = retryAfterSeconds;
     this.retriable = retriable;
     this.operation = operation;
+    this.originalError = originalError;
   }
 }
 
@@ -120,23 +358,29 @@ function classifyGeminiError(status, body, statusText, retryAfterSeconds, operat
   let userMessage = "Gemini request failed. Please try again.";
   let publicStatus = status >= 500 ? 502 : status;
 
-  if (status === 400) {
-    code = "GEMINI_BAD_REQUEST";
-    userMessage = "Gemini rejected this request. Please shorten the question or evidence and try again.";
-  } else if (status === 401 || combined.includes("api key not valid") || combined.includes("invalid api key")) {
+  if (
+    combined.includes("api key not valid") ||
+    combined.includes("invalid api key")
+  ) {
     code = "GEMINI_INVALID_KEY";
     publicStatus = 401;
     userMessage = "This Gemini API key is invalid. Please check the key and save it again.";
+  } else if (combined.includes("quota project")) {
+    code = "GEMINI_BILLING_REQUIRED";
+    publicStatus = 402;
+    userMessage = "This Gemini key cannot be used because billing or API access is not enabled for its Google project.";
+  } else if (combined.includes("quota") || combined.includes("rate limit")) {
+    code = "GEMINI_QUOTA_EXCEEDED";
+    publicStatus = 429;
+    userMessage = "This Gemini key has reached its quota or rate limit. Please wait and try again, or use another key.";
   } else if (
-    status === 402 ||
     combined.includes("billing") ||
-    combined.includes("payment") ||
-    combined.includes("quota project")
+    combined.includes("payment")
   ) {
     code = "GEMINI_BILLING_REQUIRED";
     publicStatus = 402;
     userMessage = "This Gemini key cannot be used because billing or API access is not enabled for its Google project.";
-  } else if (status === 403 || combined.includes("permission_denied")) {
+  } else if (combined.includes("permission_denied")) {
     code = "GEMINI_PERMISSION_DENIED";
     publicStatus = 403;
     userMessage = "This Gemini key does not have permission to use the selected model. Enable Gemini API access or use another key.";
@@ -144,10 +388,21 @@ function classifyGeminiError(status, body, statusText, retryAfterSeconds, operat
     code = "GEMINI_MODEL_NOT_FOUND";
     publicStatus = 502;
     userMessage = "The configured Gemini model is not available for this key or region.";
-  } else if (status === 429 || combined.includes("quota") || combined.includes("rate limit")) {
+  } else if (status === 429) {
     code = "GEMINI_QUOTA_EXCEEDED";
     publicStatus = 429;
     userMessage = "This Gemini key has reached its quota or rate limit. Please wait and try again, or use another key.";
+  } else if (status === 403) {
+    code = "GEMINI_PERMISSION_DENIED";
+    publicStatus = 403;
+    userMessage = "This Gemini key does not have permission to use the selected model. Enable Gemini API access or use another key.";
+  } else if (status === 402) {
+    code = "GEMINI_BILLING_REQUIRED";
+    publicStatus = 402;
+    userMessage = "This Gemini key cannot be used because billing or API access is not enabled for its Google project.";
+  } else if (status === 400) {
+    code = "GEMINI_BAD_REQUEST";
+    userMessage = "Gemini rejected this request. Please shorten the question or evidence and try again.";
   } else if (status >= 500) {
     code = "GEMINI_TEMPORARY_FAILURE";
     publicStatus = 502;
@@ -163,6 +418,12 @@ function classifyGeminiError(status, body, statusText, retryAfterSeconds, operat
     retryAfterSeconds,
     retriable,
     operation,
+    originalError: {
+      httpStatus: status,
+      apiCode: parsed.code,
+      apiStatus: parsed.status,
+      apiMessage: parsed.message,
+    },
   });
 }
 
@@ -193,59 +454,78 @@ async function requestGemini(apiKey, url, init, {
   timeoutMs = GEMINI_REQUEST_TIMEOUT_MS,
   retries = GEMINI_MAX_RETRIES,
 } = {}) {
+  const urls = Array.isArray(url) ? url : [url];
   let lastError;
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  for (let modelIndex = 0; modelIndex < urls.length; modelIndex++) {
+    const modelUrl = urls[modelIndex];
 
-    try {
-      const response = await fetch(url, {
-        ...init,
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          "X-Goog-Api-Key": apiKey,
-          ...(init.headers || {}),
-        },
-      });
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-      if (response.ok) {
-        return response;
+      try {
+        const response = await fetch(modelUrl, {
+          ...init,
+          signal: controller.signal,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": apiKey,
+            ...(init.headers || {}),
+          },
+        });
+
+        if (response.ok) {
+          console.log(
+            `[gemini] ${operation} served by ${getGeminiModelNameFromUrl(modelUrl)} (attempt ${attempt + 1})`
+          );
+          return response;
+        }
+
+        lastError = await buildGeminiError(response, operation);
+      } catch (err) {
+        if (err?.name === "AbortError") {
+          lastError = new GeminiApiError({
+            message: `Gemini ${operation} timed out after ${timeoutMs}ms`,
+            status: 504,
+            code: "GEMINI_TIMEOUT",
+            userMessage: "Gemini took too long to respond. Please try again.",
+            retriable: true,
+            operation,
+          });
+        } else if (err instanceof GeminiApiError) {
+          lastError = err;
+        } else {
+          lastError = new GeminiApiError({
+            message: `Gemini ${operation} network error: ${err?.message || err}`,
+            status: 502,
+            code: "GEMINI_NETWORK_ERROR",
+            userMessage: "Could not reach Gemini. Please check the connection and try again.",
+            retriable: true,
+            operation,
+          });
+        }
+      } finally {
+        clearTimeout(timeout);
       }
 
-      lastError = await buildGeminiError(response, operation);
-    } catch (err) {
-      if (err?.name === "AbortError") {
-        lastError = new GeminiApiError({
-          message: `Gemini ${operation} timed out after ${timeoutMs}ms`,
-          status: 504,
-          code: "GEMINI_TIMEOUT",
-          userMessage: "Gemini took too long to respond. Please try again.",
-          retriable: true,
-          operation,
-        });
-      } else if (err instanceof GeminiApiError) {
-        lastError = err;
-      } else {
-        lastError = new GeminiApiError({
-          message: `Gemini ${operation} network error: ${err?.message || err}`,
-          status: 502,
-          code: "GEMINI_NETWORK_ERROR",
-          userMessage: "Could not reach Gemini. Please check the connection and try again.",
-          retriable: true,
-          operation,
-        });
+      if (!lastError?.retriable || attempt >= retries) {
+        break;
       }
-    } finally {
-      clearTimeout(timeout);
+
+      await sleep(getRetryDelayMs(lastError, attempt));
     }
 
-    if (!lastError?.retriable || attempt >= retries) {
-      throw lastError;
+    const isBusy = lastError && (GEMINI_MODEL_BUSY_STATUSES.has(lastError.status) || lastError.status >= 500);
+    if (isBusy && modelIndex < urls.length - 1) {
+      console.warn(
+        `[gemini] ${operation} failed on ${getGeminiModelNameFromUrl(modelUrl)} (${lastError.status}), trying fallback model`
+      );
+      await sleep(500);
+      continue;
     }
 
-    await sleep(getRetryDelayMs(lastError, attempt));
+    throw lastError;
   }
 
   throw lastError;
@@ -257,34 +537,28 @@ export function fingerprintGeminiApiKey(apiKey) {
 }
 
 export function toPublicGeminiError(err) {
-  if (err instanceof GeminiApiError) {
-    return {
-      status: err.status,
-      body: {
-        error: err.userMessage,
-        code: err.code,
-        retryAfter: err.retryAfterSeconds,
-      },
-    };
+  const body = {
+    code: err instanceof GeminiApiError ? err.code : "GEMINI_ERROR",
+    retryAfter: err?.retryAfterSeconds || null,
+  };
+
+  if (err instanceof GeminiApiError && err.originalError) {
+    body.httpStatus = err.originalError.httpStatus;
+    body.apiCode = err.originalError.apiCode;
+    body.apiStatus = err.originalError.apiStatus;
+    body.apiMessage = err.originalError.apiMessage;
+    body.error = err.userMessage;
+  } else {
+    body.error = err?.userMessage || "Gemini request failed. Please try again.";
   }
 
-  if (err?.status && err?.code && err?.userMessage) {
-    return {
-      status: err.status,
-      body: {
-        error: err.userMessage,
-        code: err.code,
-        retryAfter: err.retryAfterSeconds || null,
-      },
-    };
+  if (err?.message && !body.apiMessage) {
+    body.detail = err.message;
   }
 
   return {
-    status: 500,
-    body: {
-      error: "Gemini request failed. Please try again.",
-      code: "GEMINI_ERROR",
-    },
+    status: err instanceof GeminiApiError ? err.status : 500,
+    body,
   };
 }
 
@@ -300,15 +574,18 @@ export async function validateGeminiApiKey(apiKey) {
     });
   }
 
-  const url = `${GEMINI_API_BASE}/${GEMINI_MODEL}:generateContent`;
+  const urls = buildGeminiUrls(":generateContent");
   await requestGemini(
     cleanKey,
-    url,
+    urls,
     {
       method: "POST",
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: "Reply with OK." }] }],
-        generation_config: { temperature: 0, max_output_tokens: 1 },
+        generationConfig: buildGeminiGenerationConfig({
+          temperature: 0,
+          maxOutputTokens: 16,
+        }),
       }),
     },
     {
@@ -321,349 +598,221 @@ export async function validateGeminiApiKey(apiKey) {
   return true;
 }
 
-const COVERAGE_MODES = new Set(["full-file", "file-section-coverage"]);
+function buildRagPrompt({ question, chunks, subjectId }) {
+  if (!chunks || chunks.length === 0) {
+    throw new Error("No evidence chunks provided to buildRagPrompt");
+  }
 
-function isCoverageMode(mode) {
-  return COVERAGE_MODES.has(String(mode || "").toLowerCase());
-}
-
-function countWords(text) {
-  return String(text || "").match(/\b[\w'-]+\b/g)?.length || 0;
-}
-
-function countCoveredChunks(chunkScores, threshold = 0.12) {
-  return (chunkScores || []).filter((score) => Number(score) >= threshold).length;
-}
-
-function buildExtractPrompt(chunks, mode = "limited") {
-  const chunksText = chunks
-    .map((chunk, idx) => `EVIDENCE ${idx + 1}:\n${chunk.text}`)
-    .join("\n\n");
-  const coverageInstruction = isCoverageMode(mode)
-    ? `FULL-FILE COVERAGE MODE:
-- You MUST process every EVIDENCE block from EVIDENCE 1 through EVIDENCE ${chunks.length}.
-- Return facts grouped under headings "EVIDENCE 1 FACTS", "EVIDENCE 2 FACTS", etc.
-- Do not stop after the definition or introduction. Later evidence blocks are equally important.`
-    : "Return as a single numbered list.";
-
-  return `You are an exact fact extractor. Extract EVERY distinct fact, claim, statement, detail, and data point from the EVIDENCE below. Do NOT summarize, combine, paraphrase, or omit anything. Preserve all numbers, names, lists, sub-items, and specific terminology exactly as written.
-
-LIST HANDLING — READ CAREFULLY:
-If you see a bulleted list (items starting with * or -) or a numbered list in the evidence, you MUST extract EACH list item as its OWN separate numbered entry. NEVER summarize a list using phrases like "such as" or "including" or "among others". Every single item in the source list must appear as a separate numbered fact in your output.
-
-Return as a single numbered list. Each item must be one atomic fact or detail. Do not group related facts into one item — each fact gets its own number.
-
-${coverageInstruction}
-
-EVIDENCE:
-${chunksText}
-
-EXTRACTED FACTS:`;
-}
-
-function buildSynthesizePrompt({ question, factsText, chunks, targetTokens, mode }) {
-  const coverageInstruction = isCoverageMode(mode)
-    ? `FULL-FILE COVERAGE REQUIREMENT:
-- This is a broad topic question. Do NOT write only a definition or introduction.
-- Cover EVIDENCE 1 through EVIDENCE ${chunks.length} in order.
-- Write at least ${chunks.length} substantial paragraphs, with coverage from every evidence block.
-- Include all major sections present in the evidence: definition/introduction, physical geography, human geography, space/place and human activity, historical and modern human-environment relations, modern tools/digital geography, global challenges, and conclusion when present.
-- If an evidence block contains a list, include each list item explicitly.`
-    : "Cover the relevant facts completely.";
-
-  return `QUESTION:\n${question}\n\nEXTRACTED FACTS:\n${factsText}\n\nYou are an extractive answer writer. Write a flowing answer using ONLY the EXTRACTED FACTS listed above. Do NOT add, infer, expand, or introduce any information not present in the extracted facts.
-
-Rules:
-${coverageInstruction}
-- Use this exact answer structure:
-  **Introduction:**
-  **Body:**
-  **Conclusion:**
-- Put the main evidence coverage inside Body.
-- Inside Body, use numbered bold evidence-based subheadings before related paragraphs, like **1. Physical Geography**.
-- Choose subheadings only from themes actually present in the evidence, such as Physical Geography, Human Geography, Space and Place, Historical Human-Environment Relations, Modern Technologies, GIS, Remote Sensing, GPS, Global Challenges, Sustainable Resource Management, Disaster Risk Reduction, Urban Sprawl and Migration, Limitations, Way Forward, or Future Scope.
-- Do not invent subheadings that are not supported by the evidence.
-- Use clean Markdown bolding for headings only. Do not bold entire paragraphs.
-- Target length: up to ${targetTokens || 3000} tokens. For full-file coverage, prefer complete coverage over brevity.
-- Every sentence must be directly traceable to a fact in the list above.
-- Cover ALL facts — do not skip any.
-- NEVER use phrases like "such as" or "including" or "among others" to skip items. If the extracted facts contain a sequence of related items (like numbered list entries covering subfields, branches, tools, etc.), include EVERY single one explicitly in the answer.
-- Weave related facts into smooth paragraphs, but preserve every detail.
-- If multiple facts cover the same topic, group them together without dropping anything.`;
-}
-
-function buildDirectCoveragePrompt({ question, chunks, targetTokens }) {
   const chunkText = chunks
-    .map((chunk, idx) => `EVIDENCE ${idx + 1}:\n${chunk.text}`)
+    .map((chunk, idx) => `EVIDENCE ${idx + 1}:\n${chunk.text.trim()}`)
     .join("\n\n");
 
-  return `QUESTION:
+  const chunkSummaries = chunks
+    .map((chunk, idx) => {
+      const headings = (chunk.text.match(/##\s+(.+)/g) || []).map(h => h.replace(/^##\s+/, "").trim());
+      const bullets = (chunk.text.match(/\*\s+\*\*([^:]+):\*\*/g) || []).map(b => b.replace(/^\*\s+\*\*:?/, "").replace(/:?\*\*$/, "").trim());
+      const parts = [];
+      if (headings.length) parts.push("headings: " + headings.join(", "));
+      if (bullets.length) parts.push("topics: " + bullets.join(", "));
+      return `EVIDENCE ${idx + 1} MUST cover: ${parts.length ? parts.join("; ") : "(general content from this chunk)"}`;
+    })
+    .join("\n");
+
+  return `
+You are an expert UPSC Mains AI Tutor for ${(subjectId || "general studies").toUpperCase()}. Structure your response using clean, natural Markdown.
+
+CRITICAL RULES - VIOLATION IS FORBIDDEN:
+1. YOU MUST NOT use ANY external knowledge, training data, or information not in the evidence.
+2. EVERY fact, date, name, concept, and detail MUST come directly from the evidence chunks.
+3. If evidence is insufficient or missing key information, you MUST state: "Insufficient evidence in provided chunks."
+4. NEVER guess, infer, or add information that is not explicitly stated in the evidence.
+5. NEVER use general knowledge about India, history, geography, or any topic.
+6. If you are uncertain about any detail, omit it or state the uncertainty.
+7. NEVER add generic summary sections like "Summary of ..." or "Overview of ...".
+8. NEVER add blockquote callouts like "> UPSC Mains Takeaway" or "> UPSC Exam Takeaway". Answer directly without generic wrapper sections.
+
+WORKFLOW — FOLLOW THESE TWO STEPS IN ORDER:
+STEP 1 (EXTRACT): Read EVERY evidence chunk, one by one. From each chunk, extract a complete list of facts: names, dates, definitions, concepts, examples, and key points. Do this for ALL chunks INCLUDING the later ones — never stop at the first chunks. Silently build this fact list (do not output it).
+STEP 2 (WRITE): Using ONLY the facts extracted in Step 1, write the final answer. Every sentence must trace back to a fact from Step 1. Structure the answer as:
+  - **Introduction**: \`## **Introduction**\` heading, states the question's theme using extracted facts.
+  - **Body**: numbered bold major subheadings \`## **1. <Theme>**\`, \`## **2. <Theme>**\`, \`## **3. <Theme>**\` (with \`### **<Sub-theme>**\` sub-sections that are NOT numbered) created ONLY from themes present in the evidence. Under each, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets (never numbered lists, never invent bold sub-labels inside bullets); write evidence prose as plain paragraphs without bullets.
+  - **Conclusion**: \`## **Conclusion**\` heading, restates the key extracted points.
+Cover ALL evidence chunks, including the LATER sections — the answer must not stop early or omit the final chunks' content.
+
+FORMATTING RULES:
+1. Use Markdown ATX headers with the heading text BOLDED inside the header: \`## **Introduction**\`, \`## **1. <Theme>**\`, \`## **2. <Theme>**\`, and \`## **Conclusion**\` for major sections; use \`### **<Sub-theme>**\` for sub-sections. Number ONLY the major section headings (1., 2., 3.); do NOT number the sub-sections (no 1.1, 2.1 prefixes). NEVER use plain unbolded headers (e.g. \`## 1. ...\` or \`## Introduction\`), and NEVER use a bold line without a Markdown \`#\` header as a heading. Do NOT write literal "Introduction:", "Body:", "Conclusion:" labels.
+2. Use Markdown blockquotes (> ) only for direct quotes or definitions from the evidence. Never use blockquotes for generic summaries or takeaway callouts.
+3. Do NOT add citations of any kind — no [EVIDENCE X], no [1]/[2], no footnotes. Write facts as plain sentences.
+4. Bold key terms and keywords essential for UPSC answers.
+5. Use bullet points (lines starting with \`* \`) ONLY for content that is a bulleted list in the evidence — for those, never use numbered lists (1., 2., 3.). When the evidence presents content as plain prose/paragraphs, write it as plain sentences and paragraphs — do NOT turn prose into bullets.
+6. If the evidence contains an ASCII/box diagram (usually inside a \`\`\`text block), COPY it character-for-character into a \`\`\`text block in your answer. Reproduce EVERY character EXACTLY: all box-drawing characters (─, │, ┌, ┐, └, ┘, ├, ┤, ▼), the leading indentation/spaces, the inner padding/spacing, and the labels. Do NOT re-indent, re-center, re-pad, trim spaces, or reformat the diagram in any way. Place the diagram as a STANDALONE block: leave a blank line before the opening \`\`\`text fence, put the opening fence on its own line, the diagram lines after it, then the closing \`\`\` fence on its own line followed by a blank line. Do NOT attach the fence to a bullet, heading, sentence, or citation.
+7. Body subheadings MUST be created ONLY from themes that are actually present in the evidence chunks (e.g. topics listed in the chunk summaries above). NEVER invent headings like "Limitations", "Challenges", "Future Scope", "Way Forward", "Government Initiatives", "Impact", "Criticism", etc., unless that theme explicitly appears in the evidence. If the evidence does not contain a theme, do NOT create a heading for it.
+8. NEVER create any sub-heading on your own. \`### **<Sub-theme>**\` sub-sections may ONLY be created from headings that literally appear in the evidence (e.g. "Physical Geography", "Human Geography", "Sustainable Resource Management", "Disaster Risk Reduction", "Urban Sprawl and Migration" when present in the evidence). NEVER create sub-subheadings or bold label prefixes inside bullets (e.g. "Resource Mapping:", "Policy Application:", "Hazard vs. Disaster:", "Urbanization Challenges:") unless the evidence literally contains such a label. Write bullet content as plain sentences. Use at most two heading levels (## and ###) — never a third level, and never turn bullet text into heading-like bold labels. Each distinct major section from the evidence must appear as its own numbered \`##\` section in order — never fold a major evidence section inside another section as a sub-section.
+
+MANDATORY COVERAGE — YOU MUST INCLUDE CONTENT FROM EVERY EVIDENCE CHUNK:
+${chunkSummaries}
+
+QUESTION:
 ${question}
 
-REFERENCE EVIDENCE:
+EVIDENCE CHUNKS:
 ${chunkText}
+`;
+}
 
-You are writing a strict RAG answer using ONLY the reference evidence above.
+function normalizeFenceBlocks(text) {
+  const tokens = String(text || "").split(/(```[a-zA-Z][a-zA-Z0-9_-]*|```)/);
+  let out = "";
+  let prevWasFence = false;
+  for (const t of tokens) {
+    if (/^```/.test(t)) {
+      if (out.length > 0 && !out.endsWith("\n")) out += "\n";
+      out += t;
+      prevWasFence = true;
+    } else if (t !== "") {
+      if (prevWasFence && !t.startsWith("\n")) out += "\n";
+      out += t;
+      prevWasFence = false;
+    }
+  }
+  const lines = out.split("\n");
+  const result = [];
+  for (const ln of lines) {
+    if (/^```/.test(ln)) {
+      if (result.length > 0 && result[result.length - 1] !== "") result.push("");
+      result.push(ln);
+    } else if (ln !== "") {
+      if (result.length > 0 && result[result.length - 1] === "```") result.push("");
+      result.push(ln);
+    } else {
+      result.push(ln);
+    }
+  }
+  return result.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
 
-MANDATORY FULL-FILE COVERAGE RULES:
-- You must cover EVIDENCE 1 through EVIDENCE ${chunks.length}, in order.
-- Use this exact answer structure:
-  **Introduction:**
-  **Body:**
-  **Conclusion:**
-- Put the main evidence coverage inside Body.
-- Inside Body, use numbered bold evidence-based subheadings before related paragraphs, like **1. Physical Geography**.
-- Choose subheadings only from themes actually present in the evidence, such as Physical Geography, Human Geography, Space and Place, Historical Human-Environment Relations, Modern Technologies, GIS, Remote Sensing, GPS, Global Challenges, Sustainable Resource Management, Disaster Risk Reduction, Urban Sprawl and Migration, Limitations, Way Forward, or Future Scope.
-- Do not invent subheadings that are not supported by the evidence.
-- Use clean Markdown bolding for headings only. Do not bold entire paragraphs.
-- The Body must cover EVIDENCE 1 through EVIDENCE ${chunks.length}, in order.
-- Do not stop after the definition/introduction.
-- If an evidence block contains bullet/list items, include every item explicitly.
-- Do not add any fact, example, institution, date, term, or explanation that is not present in the evidence.
-- Do not use outside knowledge.
-- Do not mention "Evidence", "Chunk", or paragraph numbers in the answer.
-- Target length: use up to ${targetTokens || 3000} tokens. Prefer complete coverage over brevity.
+function fenceDiagrams(text) {
+  const lines = String(text || "").split("\n");
+  const out = [];
+  let inFence = false;
+  let i = 0;
+  while (i < lines.length) {
+    const ln = lines[i];
+    if (/^```/.test(ln.trim())) {
+      inFence = !inFence;
+      out.push(ln);
+      i++;
+      continue;
+    }
+    if (!inFence && ln.includes("┌")) {
+      let end = i;
+      for (let j = i; j < lines.length; j++) {
+        if (lines[j].includes("└") || lines[j].includes("┘")) end = j;
+      }
+      out.push("```text", ...lines.slice(i, end + 1), "```", "");
+      i = end + 1;
+      continue;
+    }
+    out.push(ln);
+    i++;
+  }
+  return out.join("\n");
+}
 
-The answer is incomplete unless it includes the later sections such as modern tools, GIS, Remote Sensing, GPS, global challenges, and conclusion when they appear in the evidence.`;
+function collapseOutsideDiagrams(seg) {
+  const lines = seg.split("\n");
+  const isRegion = new Array(lines.length).fill(false);
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes("┌")) {
+      let end = i;
+      for (let j = i; j < lines.length; j++) {
+        if (lines[j].includes("└") || lines[j].includes("┘")) end = j;
+      }
+      for (let k = i; k <= end; k++) isRegion[k] = true;
+      i = end;
+    }
+  }
+  return lines
+    .map((ln, i) => (isRegion[i] ? ln : ln.replace(/[ \t]+/g, " ").trim()))
+    .join("\n");
+}
+
+function alignDiagramIndentation(text) {
+  const lines = String(text || "").split("\n");
+  const out = [];
+  let block = [];
+  const flush = () => {
+    if (block.length === 0) return;
+    for (let i = 0; i < block.length; i++) {
+      if (block[i].trimStart().startsWith("┌")) {
+        const indents = [];
+        for (let j = i + 1; j < block.length; j++) {
+          const m = block[j].match(/^\s*[│└┘┐┌┬▼▲]/);
+          if (m) indents.push(block[j].match(/^\s*/)[0].length);
+        }
+        if (indents.length > 0) {
+          const sorted = [...indents].sort((a, b) => a - b);
+          const target = sorted[Math.floor(sorted.length / 2)];
+          const current = block[i].match(/^\s*/)[0].length;
+          if (current !== target) {
+            block[i] = " ".repeat(target) + block[i].trimStart();
+          }
+        }
+        break;
+      }
+    }
+    out.push(...block);
+    block = [];
+  };
+  for (const ln of lines) {
+    if (/^```/.test(ln.trim())) {
+      flush();
+      out.push(ln);
+    } else {
+      block.push(ln);
+    }
+  }
+  flush();
+  return out.join("\n");
 }
 
 function cleanModelOutput(text) {
-  return String(text || "")
-    .replace(/^```(?:text|markdown)?\s*/i, "")
-    .replace(/```$/i, "")
+  let out = String(text || "")
     .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
+    .trim()
+    .replace(/^#{1,6}\s+\*\*\s*\d+\.\s*Conclusion\s*\*\*\s*$/gim, "## **Conclusion**")
+    .replace(/^#{1,6}\s+\d+\.\s*Conclusion\s*$/gim, "## **Conclusion**");
 
-function filterUnsupportedSentencesLexical(answer, chunks) {
-  if (!answer || !chunks || chunks.length === 0) {
-    return { filtered: answer, sentenceScores: [], chunkScores: [] };
+  const isFullyFenced = /^```[\w-]*\s*[\s\S]*?```$/i.test(out);
+  if (isFullyFenced) {
+    out = out.replace(/^```[\w-]*\s*/i, "").replace(/```$/i, "");
   }
 
-  const chunkTexts = chunks.map((c) => (c.text || "").toLowerCase());
-  const combinedChunkText = chunkTexts.join(" ");
-
-  const contentWords = new Set(
-    combinedChunkText
-      .split(/\s+/)
-      .filter((w) => w.length > 3)
-      .map((w) => w.replace(/[^a-z0-9]/g, ""))
-      .filter(Boolean)
-  );
-
-  const paragraphs = answer.split(/\n\n+/);
-  const allSentenceScores = [];
-  const chunkOverlapCounts = new Array(chunks.length).fill(0);
-  const chunkTotalUnique = new Array(chunks.length).fill(0);
-  const chunkWordSets = chunkTexts.map((text) => {
-    const words = text
-      .split(/\s+/)
-      .filter((w) => w.length > 3)
-      .map((w) => w.replace(/[^a-z0-9]/g, ""))
-      .filter(Boolean);
-    return new Set(words);
+  const segments = out.split("```");
+  const cleaned = segments.map((seg, idx) => {
+    if (idx % 2 === 1) return seg;
+    return collapseOutsideDiagrams(seg);
   });
-
-  const filteredParagraphs = [];
-
-  for (const para of paragraphs) {
-    const trimmed = para.trim();
-    if (!trimmed) continue;
-
-    const sentences = trimmed.match(/[^.!?]+[.!?]+/g) || [trimmed];
-    const kept = [];
-
-    for (const sentence of sentences) {
-      const s = sentence.trim();
-      if (!s) continue;
-
-      const words = s
-        .toLowerCase()
-        .split(/\s+/)
-        .filter((w) => w.length > 3)
-        .map((w) => w.replace(/[^a-z0-9]/g, ""))
-        .filter(Boolean);
-
-      if (words.length === 0) {
-        kept.push(s);
-        allSentenceScores.push({ sentence: s, score: 0, bestChunkId: "", verdict: "UNSUPPORTED" });
-        continue;
-      }
-
-      const supported = words.filter((w) => contentWords.has(w));
-      const ratio = supported.length / words.length;
-
-      let bestChunkIdx = 0;
-      let bestOverlap = 0;
-      for (let i = 0; i < chunkWordSets.length; i++) {
-        const overlap = words.filter((w) => chunkWordSets[i].has(w)).length;
-        if (overlap > bestOverlap) {
-          bestOverlap = overlap;
-          bestChunkIdx = i;
-        }
-      }
-
-      if (ratio >= 0.4 || words.length <= 2) {
-        kept.push(s);
-      }
-
-      const lexicalScore = words.length > 0 ? Math.min(1, bestOverlap / words.length) : 0;
-      allSentenceScores.push({
-        sentence: s,
-        score: Math.round(lexicalScore * 10000) / 10000,
-        bestChunkId: String(bestChunkIdx),
-        verdict: ratio >= 0.4 || words.length <= 2 ? "SUPPORTED" : "UNSUPPORTED",
-      });
-
-      if (bestOverlap > chunkOverlapCounts[bestChunkIdx]) {
-        chunkOverlapCounts[bestChunkIdx] = bestOverlap;
-      }
-      chunkTotalUnique[bestChunkIdx] = Math.max(chunkTotalUnique[bestChunkIdx], words.length);
-    }
-
-    if (kept.length > 0) {
-      filteredParagraphs.push(kept.join(" "));
-    }
-  }
-
-  const chunkScores = chunks.map((_, i) => {
-    if (chunkTotalUnique[i] === 0) return 0;
-    return Math.round((chunkOverlapCounts[i] / Math.max(chunkTotalUnique[i], 1)) * 10000) / 10000;
-  });
-
-  return {
-    filtered: filteredParagraphs.join("\n\n"),
-    sentenceScores: allSentenceScores,
-    chunkScores,
-  };
-}
-
-async function filterUnsupportedSentencesSemantic(answer, chunks) {
-  if (!answer || !chunks || chunks.length === 0) return { filtered: answer, sentenceScores: [], chunkScores: [] };
-
-  const paragraphs = answer.split(/\n\n+/);
-  const allResults = [];
-  const allScores = [];
-
-  for (const para of paragraphs) {
-    const trimmed = para.trim();
-    if (!trimmed) continue;
-
-    const sentences = trimmed.match(/[^.!?]+[.!?]+/g) || [trimmed];
-    const trimmedSentences = sentences.map((s) => s.trim()).filter(Boolean);
-    if (trimmedSentences.length === 0) continue;
-
-    try {
-      const payload = {
-        sentences: trimmedSentences,
-        chunks: chunks.map((c, i) => ({
-          id: c.id || String(i),
-          text: c.text || "",
-        })),
-        threshold: VERIFY_THRESHOLD,
-      };
-
-      const response = await axios.post(
-        `${VECTOR_SERVER_URL}/verify`,
-        payload,
-        {
-          timeout: VERIFY_TIMEOUT_MS,
-          headers: { "x-api-key": VECTOR_API_KEY },
-        }
-      );
-
-      const { results, chunkScores: paraChunkScores } = response.data;
-      const kept = [];
-      for (let i = 0; i < results.length; i++) {
-        if (results[i].verdict === "SUPPORTED") {
-          kept.push(trimmedSentences[i]);
-        }
-      }
-
-      if (kept.length > 0) {
-        allResults.push(kept.join(" "));
-      }
-      allScores.push({ scores: results, chunkScores: paraChunkScores });
-    } catch (err) {
-      console.warn("[gemini] Semantic verify failed, falling back to lexical filter:", err.message);
-      const lexical = filterUnsupportedSentencesLexical(answer, chunks);
-      return lexical;
-    }
-  }
-
-  const chunkScores = new Array(chunks.length).fill(0);
-  for (const item of allScores) {
-    const scores = item.chunkScores || [];
-    for (let i = 0; i < chunks.length; i += 1) {
-      chunkScores[i] = Math.max(chunkScores[i], Number(scores[i] || 0));
-    }
-  }
-  const sentenceScores = allScores.flatMap((s) => s.scores);
-
-  return {
-    filtered: allResults.join("\n\n"),
-    sentenceScores,
-    chunkScores,
-  };
-}
-
-async function extractFactsFromChunks(apiKey, chunks, mode) {
-  const extractPrompt = buildExtractPrompt(chunks, mode);
-  const url = `${GEMINI_API_BASE}/${GEMINI_MODEL}:generateContent`;
-
-  const response = await requestGemini(
-    apiKey,
-    url,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: "You are an exact fact extractor. Your only job is to extract facts verbatim without summarizing, combining, or omitting anything. In full-file coverage mode, you must extract facts from every evidence block, not only the first block." }],
-        },
-        contents: [{ role: "user", parts: [{ text: extractPrompt }] }],
-        generation_config: { temperature: 0.0, max_output_tokens: 8192 },
-      }),
-    },
-    { operation: "extract_facts" }
-  );
-
-  const data = await response.json();
-  const facts = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-  if (!facts) {
-    throw new Error("Gemini returned empty facts during extraction step.");
-  }
-
-  console.log(`[gemini] Extract step — ${facts.length} chars, ${facts.split("\n").length} lines`);
-  return facts;
+  return alignDiagramIndentation(normalizeFenceBlocks(fenceDiagrams(cleaned.join("```"))).trim());
 }
 
 export async function proxyGeminiCall(apiKey, options) {
   const { question, chunks, targetTokens, mode, onToken, onStatus } = options;
 
-  let userPrompt;
-  if (isCoverageMode(mode)) {
-    onStatus?.("writing full-file coverage");
-    userPrompt = buildDirectCoveragePrompt({
-      question,
-      chunks,
-      targetTokens,
-    });
-  } else {
-    onStatus?.("extracting");
-    const extractedFacts = await extractFactsFromChunks(apiKey, chunks, mode);
-
-    onStatus?.("writing");
-    userPrompt = buildSynthesizePrompt({
-      question,
-      factsText: extractedFacts,
-      chunks,
-      targetTokens,
-      mode,
-    });
-  }
-  const url = `${GEMINI_API_BASE}/${GEMINI_MODEL}:streamGenerateContent?alt=sse`;
+  onStatus?.("writing strict RAG answer");
+  const subjectId = options.subjectId || (chunks?.[0]?.subject_id) || null;
+  const userPrompt = buildRagPrompt({ question, chunks, subjectId });
+  const url = buildGeminiUrls(":streamGenerateContent?alt=sse");
+  const maxOutputTokens = targetTokens > 0 ? Math.min(targetTokens + 4096, 65536) : 8192;
+  const generationConfig = buildGeminiGenerationConfig({
+    temperature: 0.0,
+    topP: 1,
+    maxOutputTokens,
+  });
+  console.log(
+    `[gemini] request config: mode=${mode || "limited"}, chunks=${chunks.length}, maxOutputTokens=${maxOutputTokens}, thinking=${JSON.stringify(generationConfig.thinkingConfig || null)}`
+  );
 
   const response = await requestGemini(
     apiKey,
@@ -671,10 +820,10 @@ export async function proxyGeminiCall(apiKey, options) {
     {
       method: "POST",
       body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: "You are an extractive answer writer. Write using ONLY the extracted facts provided below. Do NOT add, infer, or expand. Never introduce concepts, examples, dates, names, or explanations not in the extracted facts. Every sentence must be directly traceable to a specific extracted fact. If facts are insufficient, say only what the facts say and nothing more. In full-file coverage mode, you must cover every evidence block and must not stop after the introduction." }],
+        systemInstruction: {
+          parts: [{ text: "You are a STRICT RAG answer engine. WORKFLOW: STEP 1 (EXTRACT) — read EVERY evidence chunk and extract all facts (names, dates, definitions, concepts, examples) from ALL chunks INCLUDING the later ones; never stop at the first chunks. STEP 2 (WRITE) — using ONLY the extracted facts, write the answer as: \`## **Introduction**\` (Markdown header with bold text inside), numbered bold major headings \`## **1. <Theme>**\`, \`## **2. <Theme>**\`, etc. for the Body created ONLY from themes present in the evidence, and \`## **Conclusion**\`. Number ONLY the major section headings (1., 2., 3.); never number the sub-sections — sub-sections use \`### **<Sub-theme>**\` with no 1.1, 2.1 prefixes. Inside sections, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets — never numbered lists (1., 2., 3.) — and write evidence prose as plain paragraphs without bullets. Cover EVERY chunk including the later sections — do not stop early. RULES: 1) NEVER use external knowledge. 2) EVERY fact MUST come from evidence chunks. 3) Do NOT add citations of any kind — no [EVIDENCE X], no [1]/[2], no footnotes; write facts as plain sentences. 4) You MUST cover ALL chunks — the prompt lists what each chunk contains. 5) If any chunk is missing from your answer, it is INVALID. 6) Never guess or infer. 7) If evidence is insufficient, say 'Insufficient evidence.' 8) Body subheadings MUST come ONLY from themes present in the evidence — NEVER invent 'Limitations', 'Challenges', 'Future Scope', 'Way Forward', 'Government Initiatives', 'Impact', 'Criticism' unless explicitly in the evidence. NEVER create any sub-heading on your own: ### sub-sections may only come from headings that literally appear in the evidence, never create bold label prefixes inside bullets (like 'Resource Mapping:', 'Policy Application:') unless the evidence literally contains them — write bullets as plain sentences. Use at most two heading levels (## and ###). Each distinct major section from the evidence must appear as its own numbered ## section — never fold a major evidence section inside another as a sub-section. 9) If the evidence contains an ASCII/box diagram inside a ```text block, COPY it character-for-character into a ```text block in your answer — reproduce EVERY character EXACTLY: every box-drawing character (─, │, ┌, ┐, └, ┘, ├, ┤, ▼), the leading indentation/spaces, inner padding, and labels. Do NOT re-indent, re-center, re-pad, trim spaces, or reformat. Place it as a STANDALONE block: blank line before the opening fence, opening \`\`\`text fence on its own line, diagram lines, closing \`\`\` fence on its own line, blank line after. Do NOT attach the fence to a bullet, heading, sentence, or citation. Before finishing, mentally check each EVIDENCE N was covered." }],
         },
-        safety_settings: [
+        safetySettings: [
           { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
           { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
           { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
@@ -686,11 +835,7 @@ export async function proxyGeminiCall(apiKey, options) {
             parts: [{ text: userPrompt }],
           },
         ],
-        generation_config: {
-          temperature: 0.0,
-          top_p: 1,
-          max_output_tokens: targetTokens > 0 ? targetTokens : 8192,
-        },
+        generationConfig,
       }),
     },
     { operation: "stream_answer" }
@@ -705,6 +850,46 @@ export async function proxyGeminiCall(apiKey, options) {
   let buffer = "";
   let fullText = "";
   let tokenCount = 0;
+  let finishReason = "";
+  let promptTokenCount = 0;
+  let thoughtTokenCount = 0;
+  let totalTokenCount = 0;
+  const processStreamLine = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data: ")) return;
+    const jsonStr = trimmed.slice(6).trim();
+    if (!jsonStr || jsonStr === "[DONE]") return;
+    try {
+      const data = JSON.parse(jsonStr);
+      const parts = data?.candidates?.[0]?.content?.parts || [];
+      const text = parts.map((part) => part?.text || "").join("");
+      if (text) {
+        fullText += text;
+        onToken?.(cleanModelOutput(fullText));
+      }
+      const usage = data?.usageMetadata || {};
+      if (usage.candidatesTokenCount) {
+        tokenCount = usage.candidatesTokenCount;
+      }
+      if (usage.promptTokenCount) {
+        promptTokenCount = usage.promptTokenCount;
+      }
+      if (usage.thoughtsTokenCount) {
+        thoughtTokenCount = usage.thoughtsTokenCount;
+      }
+      if (usage.totalTokenCount) {
+        totalTokenCount = usage.totalTokenCount;
+      }
+      if (data?.candidates?.[0]?.finishReason) {
+        finishReason = data.candidates[0].finishReason;
+      }
+      if (data?.promptFeedback?.blockReason) {
+        console.error("[gemini] stream blocked:", data.promptFeedback.blockReason, data.promptFeedback.safetyRatings);
+      }
+    } catch (parseErr) {
+      console.error("[gemini] stream parse error on line:", trimmed.slice(0, 200), parseErr.message);
+    }
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -714,23 +899,12 @@ export async function proxyGeminiCall(apiKey, options) {
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? "";
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data: ")) continue;
-      const jsonStr = trimmed.slice(6).trim();
-      if (!jsonStr || jsonStr === "[DONE]") continue;
-      try {
-        const data = JSON.parse(jsonStr);
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-        if (text) {
-          fullText += text;
-          onToken?.(cleanModelOutput(fullText));
-        }
-        if (data?.usageMetadata?.candidatesTokenCount) {
-          tokenCount = data.usageMetadata.candidatesTokenCount;
-        }
-      } catch {}
-    }
+    for (const line of lines) processStreamLine(line);
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    for (const line of buffer.split("\n")) processStreamLine(line);
   }
 
   if (!fullText) {
@@ -738,45 +912,37 @@ export async function proxyGeminiCall(apiKey, options) {
   }
 
   const cleaned = cleanModelOutput(fullText);
-  let { filtered, sentenceScores, chunkScores } = await filterUnsupportedSentencesSemantic(cleaned, chunks);
 
-  if (isCoverageMode(mode)) {
-    const semanticWords = countWords(filtered);
-    const cleanedWords = countWords(cleaned);
-    const semanticCoveredChunks = countCoveredChunks(chunkScores);
-    const requiredCoveredChunks = Math.max(1, Math.ceil(chunks.length * 0.6));
-
-    if (
-      cleanedWords > 0 &&
-      (semanticWords < Math.min(220, cleanedWords * 0.5) ||
-        semanticCoveredChunks < requiredCoveredChunks)
-    ) {
-      const lexical = filterUnsupportedSentencesLexical(cleaned, chunks);
-      const lexicalWords = countWords(lexical.filtered);
-      const lexicalCoveredChunks = countCoveredChunks(lexical.chunkScores);
-
-      if (
-        lexicalWords > semanticWords &&
-        lexicalCoveredChunks >= semanticCoveredChunks
-      ) {
-        filtered = lexical.filtered;
-        sentenceScores = lexical.sentenceScores;
-        chunkScores = lexical.chunkScores;
-        console.warn(
-          `[gemini] semantic verification trimmed full-file answer too much; using lexical grounded filter (${semanticWords}/${cleanedWords} words, chunks ${semanticCoveredChunks}/${chunks.length})`
-        );
-      }
+  if (finishReason && finishReason !== "STOP") {
+    if (finishReason === "MAX_TOKENS" && cleaned.length > 0) {
+      console.warn(`[gemini] answer truncated at MAX_TOKENS (${tokenCount} output tokens), returning partial answer`);
+      return {
+        answer: `${cleaned}\n\n_[Answer truncated — Gemini hit its token limit while writing. Ask again with a more specific question.]_`,
+        tokenCount,
+      };
     }
+    throw new GeminiApiError({
+      message: `Gemini stopped before completing the answer: ${finishReason}`,
+      status: 502,
+      code: "GEMINI_INCOMPLETE_RESPONSE",
+      userMessage: `Gemini stopped before completing the answer (${finishReason}). Please try again.`,
+      retriable: true,
+      operation: "stream_answer",
+    });
   }
 
+  if (finishReason) {
+    console.log(`[gemini] finish reason: ${finishReason}, tokens: ${promptTokenCount}+${tokenCount} (thoughts: ${thoughtTokenCount})`);
+  }
   console.log(
-    `[gemini] proxy — ${filtered.length} chars, ${tokenCount} tokens, filtered from ${cleaned.length}, sentences: ${sentenceScores.length}`
+    `[gemini] usage: prompt=${promptTokenCount || "unknown"}, output=${tokenCount || "unknown"}, thoughts=${thoughtTokenCount || 0}, total=${totalTokenCount || "unknown"}, maxOutputTokens=${maxOutputTokens}`
+  );
+  console.log(
+    `[gemini] proxy — ${cleaned.length} chars, ${tokenCount} tokens`
   );
 
   return {
-    answer: filtered,
+    answer: cleaned,
     tokenCount,
-    sentenceScores,
-    chunkScores,
   };
 }

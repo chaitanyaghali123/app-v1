@@ -12,9 +12,13 @@ dotenv.config();
 
 // Ensure uploads folder exists
 const uploadDir = path.resolve("uploads");
+const diagramAssetsDir = path.resolve(process.env.DIAGRAM_ASSET_DIR || "diagram-assets");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
   console.log("📁 uploads folder created");
+}
+if (!fs.existsSync(diagramAssetsDir)) {
+  fs.mkdirSync(diagramAssetsDir, { recursive: true });
 }
 
 // Routes
@@ -27,6 +31,7 @@ import authRoutes from "./routes/auth.route.js";
 import mobileRoutes from "./routes/mobile.route.js";
 import geminiRoutes from "./routes/gemini.route.js";
 import subjectRoutes from "./routes/subject.route.js";
+import ragRoutes from "./routes/rag.route.js";
 
 // DB
 import {
@@ -34,6 +39,7 @@ import {
   ensureUsersTable,
   ensureApiLogsTable,
   ensureGeminiKeysTable,
+  ensureUpscChunkMediaColumns,
 } from "./services/db.service.js";
 
 import multer from "multer";
@@ -73,6 +79,13 @@ app.use(express.json({ limit: "2mb" }));
 app.use(requestLogger);
 
 // Serve web app (Expo web export)
+app.use(
+  "/diagram-assets",
+  express.static(diagramAssetsDir, {
+    immutable: true,
+    maxAge: "30d",
+  })
+);
 app.use(express.static(path.resolve("dist")));
 
 // Health Check
@@ -92,6 +105,7 @@ app.use("/api/revisions", revisionRoutes);
 app.use("/api/mobile", mobileRoutes);
 app.use("/api", geminiRoutes);
 app.use("/api", subjectRoutes);
+app.use("/api/rag", ragRoutes);
 
 // Global error handler (Multer errors, validation errors, etc.)
 app.use((err, _req, res, _next) => {
@@ -116,6 +130,7 @@ async function initialize() {
       ensureUsersTable(),
       ensureApiLogsTable(),
       ensureGeminiKeysTable(),
+      ensureUpscChunkMediaColumns(),
     ]);
 
     console.log("✅ Database initialized");

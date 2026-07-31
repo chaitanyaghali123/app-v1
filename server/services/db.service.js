@@ -59,6 +59,15 @@ export async function ensureMessagesTable() {
   `);
 }
 
+export async function ensureUpscChunkMediaColumns() {
+  await pool.query(`
+    ALTER TABLE IF EXISTS upsc_chunks
+    ADD COLUMN IF NOT EXISTS page_number INTEGER;
+  `);
+
+
+}
+
 // =====================================================
 // 🆕 CHAT OPERATIONS
 // =====================================================
@@ -417,6 +426,10 @@ export async function ensureGeminiKeysTable() {
       CREATE TABLE IF NOT EXISTS gemini_keys (
         device_id TEXT PRIMARY KEY,
         encrypted_key TEXT NOT NULL,
+        encrypted_data_key TEXT,
+        encryption_version INTEGER DEFAULT 1,
+        encryption_provider TEXT DEFAULT 'static-secret',
+        encryption_key_id TEXT,
         key_hash TEXT,
         last_validated_at TIMESTAMP,
         last_error_code TEXT,
@@ -427,6 +440,10 @@ export async function ensureGeminiKeysTable() {
     `);
     await pool.query(`
       ALTER TABLE gemini_keys
+      ADD COLUMN IF NOT EXISTS encrypted_data_key TEXT,
+      ADD COLUMN IF NOT EXISTS encryption_version INTEGER DEFAULT 1,
+      ADD COLUMN IF NOT EXISTS encryption_provider TEXT DEFAULT 'static-secret',
+      ADD COLUMN IF NOT EXISTS encryption_key_id TEXT,
       ADD COLUMN IF NOT EXISTS key_hash TEXT,
       ADD COLUMN IF NOT EXISTS last_validated_at TIMESTAMP,
       ADD COLUMN IF NOT EXISTS last_error_code TEXT,
@@ -443,29 +460,49 @@ export async function ensureGeminiKeysTable() {
 
 export async function upsertGeminiKey(deviceId, encryptedKey, metadata = {}) {
   const keyHash = metadata.keyHash || null;
+  const encryptedDataKey = metadata.encryptedDataKey || null;
+  const encryptionVersion = Number(metadata.encryptionVersion || 1);
+  const encryptionProvider = metadata.encryptionProvider || "static-secret";
+  const encryptionKeyId = metadata.encryptionKeyId || null;
   const { rows } = await pool.query(
     `
     INSERT INTO gemini_keys (
       device_id,
       encrypted_key,
+      encrypted_data_key,
+      encryption_version,
+      encryption_provider,
+      encryption_key_id,
       key_hash,
       last_validated_at,
       last_error_code,
       last_error_at,
       updated_at
     )
-    VALUES ($1, $2, $3, NOW(), NULL, NULL, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NULL, NULL, NOW())
     ON CONFLICT (device_id)
     DO UPDATE SET
       encrypted_key = $2,
-      key_hash = $3,
+      encrypted_data_key = $3,
+      encryption_version = $4,
+      encryption_provider = $5,
+      encryption_key_id = $6,
+      key_hash = $7,
       last_validated_at = NOW(),
       last_error_code = NULL,
       last_error_at = NULL,
       updated_at = NOW()
     RETURNING device_id;
     `,
-    [deviceId, encryptedKey, keyHash]
+    [
+      deviceId,
+      encryptedKey,
+      encryptedDataKey,
+      encryptionVersion,
+      encryptionProvider,
+      encryptionKeyId,
+      keyHash,
+    ]
   );
   return rows[0];
 }
@@ -476,6 +513,10 @@ export async function getGeminiKeyRecord(deviceId) {
     SELECT
       device_id,
       encrypted_key,
+      encrypted_data_key,
+      encryption_version,
+      encryption_provider,
+      encryption_key_id,
       key_hash,
       last_validated_at,
       last_error_code,

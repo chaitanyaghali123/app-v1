@@ -1,18 +1,18 @@
-import { queryChroma } from "../services/vector.service.js";
+import { queryVector } from "../services/vector.service.js";
 import { pool } from "../services/db.service.js";
 
 import fs from "fs";
 import path from "path";
-const DEFAULT_MAX_CHUNKS = 5;
+const DEFAULT_MAX_CHUNKS = 15;
 
-const DEFAULT_MAX_CONTEXT_CHARS = 4000;
+const DEFAULT_MAX_CONTEXT_CHARS = 15000;
 const MOBILE_GEMINI_MAX_CHUNKS = Math.max(
   1,
-  Number(process.env.GEMINI_MAX_CHUNKS || 8)
+  Number(process.env.GEMINI_MAX_CHUNKS || 25)
 );
 const MOBILE_GEMINI_MAX_CONTEXT_CHARS = Math.max(
   300,
-  Number(process.env.GEMINI_MAX_CONTEXT_CHARS || 12000)
+  Number(process.env.GEMINI_MAX_CONTEXT_CHARS || 40000)
 );
 const MAX_FILE_COVERAGE_SOURCE_CHUNKS = 240;
 const MIN_USEFUL_CHUNK_CHARS = 20;
@@ -90,9 +90,41 @@ const DOMAIN_QUERY_EXPANSIONS = [
   },
 ];
 
+const MOJIBAKE_REPLACEMENTS = [
+  ["â€”", "—"],
+  ["â€“", "–"],
+  ["â€˜", "‘"],
+  ["â€™", "’"],
+  ["â€œ", "“"],
+  ["â€", "”"],
+  ["â€¦", "…"],
+  ["â‚¹", "₹"],
+];
+
+function repairMojibake(text) {
+  let repaired = String(text || "");
+  for (const [broken, fixed] of MOJIBAKE_REPLACEMENTS) {
+    repaired = repaired.split(broken).join(fixed);
+  }
+  return repaired;
+}
+
+function cleanDisplayText(text) {
+  return repairMojibake(text)
+    .replace(/\u0000/g, "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/[ \t]*\n[ \t]*/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function cleanChunkText(text) {
-  return String(text || "")
+  return cleanDisplayText(text)
     .replace(/₹/g, "Rs ")
+    .normalize("NFKD")
     .replace(/[^\x20-\x7E]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -216,11 +248,14 @@ function tagEvidenceFacets(chunks, question) {
 
 function selectBalancedChunks(chunks, question, maxChunks) {
   const ranked = chunks
-    .map((chunk) => ({
-      ...chunk,
-      text: cleanChunkText(chunk.text),
-      relevanceScore: chunkRelevanceScore(chunk, question),
-    }))
+    .map((chunk) => {
+      const text = cleanDisplayText(chunk.text);
+      return {
+        ...chunk,
+        text,
+        relevanceScore: chunkRelevanceScore({ ...chunk, text }, question),
+      };
+    })
     .filter((chunk) => chunk.text.length >= MIN_USEFUL_CHUNK_CHARS)
     .sort((a, b) => b.relevanceScore - a.relevanceScore);
 
@@ -323,7 +358,7 @@ function budgetChunksForCoverage(chunks, contextBudget) {
   if (chunks.length === 0) return [];
 
   const totalChars = chunks.reduce(
-    (sum, chunk) => sum + cleanChunkText(chunk.text).length,
+    (sum, chunk) => sum + cleanDisplayText(chunk.text).length,
     0
   );
   if (totalChars <= contextBudget) {
@@ -337,7 +372,7 @@ function budgetChunksForCoverage(chunks, contextBudget) {
 
   return chunks
     .map((chunk) => {
-      const text = cleanChunkText(chunk.text).slice(0, quota).trim();
+      const text = cleanDisplayText(chunk.text).slice(0, quota).trim();
       if (text.length < MIN_USEFUL_CHUNK_CHARS) return null;
       return { ...chunk, text };
     })
@@ -372,6 +407,75 @@ function getChunkSourceFile(chunk) {
     : null;
 }
 
+function numericValue(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function getRawChunkScore(chunk) {
+  const candidates = [
+    chunk?.metadata?.relevance_score,
+    chunk?.relevanceScore,
+    chunk?.metadata?.vector_score,
+    chunk?.vector_score,
+    chunk?.metadata?.search_score,
+    chunk?.metadata?.rerank_score,
+    chunk?.rerank_score,
+  ];
+
+  for (const candidate of candidates) {
+    const score = numericValue(candidate);
+    if (score !== null) return score;
+  }
+
+  return null;
+}
+
+function withNormalizedChunkScores(chunks) {
+  const rawScores = chunks.map(getRawChunkScore);
+  const validScores = rawScores.filter(
+    (score) => score !== null && Number.isFinite(score) && score >= 0
+  );
+
+  if (validScores.length === 0) {
+    return { chunks, chunkScores: undefined };
+  }
+
+  const maxScore = Math.max(...validScores);
+  if (maxScore <= 0) {
+    return { chunks, chunkScores: undefined };
+  }
+  const normalizedScores = rawScores.map((score) => {
+    if (score === null || !Number.isFinite(score) || score < 0) return null;
+    return Math.max(0, Math.min(1, maxScore > 1 ? score / maxScore : score));
+  });
+
+  return {
+    chunks: chunks.map((chunk, index) => {
+      const normalizedScore = normalizedScores[index];
+      if (normalizedScore === null) return chunk;
+
+      return {
+        ...chunk,
+        metadata: {
+          ...(chunk.metadata || {}),
+          relevance_score: Number(normalizedScore.toFixed(4)),
+          raw_relevance_score: getRawChunkScore(chunk),
+        },
+      };
+    }),
+    chunkScores: normalizedScores.every((score) => score !== null)
+      ? normalizedScores
+      : undefined,
+  };
+}
+
 function pickBestSourceFile(chunks, question) {
   const sourceScores = new Map();
 
@@ -401,7 +505,19 @@ function chunkOrderIndex(chunk, fallbackIndex) {
 }
 
 function pickCoverageChunks(chunks, maxChunks, question) {
-  if (chunks.length <= maxChunks) return chunks;
+  const attachScore = (chunk) => {
+    const score = chunkRelevanceScore(chunk, question);
+    return {
+      ...chunk,
+      relevanceScore: score,
+      metadata: {
+        ...(chunk.metadata || {}),
+        raw_relevance_score: score,
+      },
+    };
+  };
+
+  if (chunks.length <= maxChunks) return chunks.map(attachScore);
   if (maxChunks <= 1) return chunks.slice(0, 1);
 
   const scored = chunks
@@ -465,19 +581,26 @@ function pickCoverageChunks(chunks, maxChunks, question) {
 
   return selected
     .sort((a, b) => a.orderIndex - b.orderIndex)
-    .map((item) => item.chunk);
+    .map((item) => ({
+      ...item.chunk,
+      relevanceScore: item.score,
+      metadata: {
+        ...(item.chunk.metadata || {}),
+        raw_relevance_score: item.score,
+      },
+    }));
 }
 
 function buildChunkAnswerPrompt({ question, chunks, targetTokens, mode }) {
   const context = chunks
-    .map((chunk, index) => `Chunk ${index + 1}:\n${chunk.text}`)
+    .map((chunk, index) => `[${index + 1}] ${chunk.text}`)
     .join("\n\n");
 
   const lengthInstruction = mode === "sufficient"
     ? `Cover ALL information present in every available chunk. Extract every distinct point across all chunks. Keep the answer within approximately ${targetTokens} tokens.`
     : `Cover ALL information present in every available chunk. Extract every distinct point across all chunks. Be thorough and complete.`;
 
-  return `You are an extractive summarizer. Do NOT add, infer, or expand. Only rephrase words that appear strictly in the reference chunks below.
+  return `You are an expert UPSC Mains AI Tutor. Structure your response using clean, natural Markdown.
 
 CRITICAL RULES:
 - Every sentence must be directly extractable from the reference chunks.
@@ -485,15 +608,25 @@ CRITICAL RULES:
 - Do NOT make inferences, generalizations, or logical connections not present verbatim.
 - If the chunks are insufficient, say only what the chunks contain and stop.
 
-${lengthInstruction}
+WORKFLOW — FOLLOW THESE TWO STEPS IN ORDER:
+STEP 1 (EXTRACT): Read EVERY reference chunk, one by one. From each chunk, extract a complete list of facts: names, dates, definitions, concepts, examples, and key points. Do this for ALL chunks INCLUDING the later ones — never stop at the first chunks. Silently build this fact list (do not output it).
+STEP 2 (WRITE): Using ONLY the facts extracted in Step 1, write the final answer. Structure it as:
+  - **Introduction**: \`## **Introduction**\` heading stating the theme using extracted facts.
+  - **Body**: numbered bold major subheadings \`## **1. <Theme>**\`, \`## **2. <Theme>**\`, \`## **3. <Theme>**\` (with \`### **<Sub-theme>**\` sub-sections that are NOT numbered) created ONLY from themes present in the chunks. Under each, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets (never numbered lists, never invent bold sub-labels inside bullets); write evidence prose as plain paragraphs without bullets.
+  - **Conclusion**: \`## **Conclusion**\` heading restating the key extracted points.
+Cover ALL reference chunks, including the LATER sections — the answer must not stop early or omit the final chunks' content.
 
-Write one UPSC Mains answer using this exact structure:
-**Introduction:**
-**Body:**
-**Conclusion:**
-Inside Body, use numbered bold evidence-based subheadings before related paragraphs, like **1. Physical Geography**.
-Do not invent subheadings that are not supported by the reference chunks.
-Keep all factual content strictly grounded in the reference chunks.
+FORMATTING RULES:
+1. Use Markdown ATX headers with the heading text BOLDED inside the header: \`## **Introduction**\`, \`## **1. <Theme>**\`, \`## **2. <Theme>**\`, and \`## **Conclusion**\` for major sections; use \`### **<Sub-theme>**\` for sub-sections. Number ONLY the major section headings (1., 2., 3.); do NOT number the sub-sections (no 1.1, 2.1 prefixes). NEVER use plain unbolded headers (e.g. \`## 1. ...\` or \`## Introduction\`), and NEVER use a bold line without a Markdown \`#\` header as a heading. Do NOT write literal "Introduction:", "Body:", "Conclusion:" labels.
+2. Use Markdown blockquotes (> ) for key definitions, exam-takeaway callouts, or important UPSC-relevant summaries.
+3. Do NOT add citations of any kind — no [EVIDENCE X], no [1]/[2], no footnotes. Write facts as plain sentences.
+4. Bold key terms and keywords essential for UPSC answers.
+5. Use bullet points (lines starting with \`* \`) ONLY for content that is a bulleted list in the evidence — for those, never use numbered lists (1., 2., 3.). When the evidence presents content as plain prose/paragraphs, write it as plain sentences and paragraphs — do NOT turn prose into bullets.
+6. If a reference chunk contains an ASCII/box diagram (usually inside a \`\`\`text block), COPY it character-for-character into a \`\`\`text block in your answer. Reproduce EVERY character EXACTLY: all box-drawing characters (─, │, ┌, ┐, └, ┘, ├, ┤, ▼), the leading indentation/spaces, the inner padding/spacing, and the labels. Do NOT re-indent, re-center, re-pad, trim spaces, or reformat the diagram in any way. Place the diagram as a STANDALONE block: leave a blank line before the opening \`\`\`text fence, put the opening fence on its own line, the diagram lines after it, then the closing \`\`\` fence on its own line followed by a blank line. Do NOT attach the fence to a bullet, heading, sentence, or citation.
+7. Body subheadings MUST be created ONLY from themes that are actually present in the reference chunks. NEVER invent headings like "Limitations", "Challenges", "Future Scope", "Way Forward", "Government Initiatives", "Impact", "Criticism", etc., unless that theme explicitly appears in the chunks. If the chunks do not contain a theme, do NOT create a heading for it.
+8. NEVER create any sub-heading on your own. \`### **<Sub-theme>**\` sub-sections may ONLY be created from headings that literally appear in the evidence (e.g. "Physical Geography", "Human Geography", "Sustainable Resource Management", "Disaster Risk Reduction", "Urban Sprawl and Migration" when present in the evidence). NEVER create sub-subheadings or bold label prefixes inside bullets (e.g. "Resource Mapping:", "Policy Application:", "Hazard vs. Disaster:", "Urbanization Challenges:") unless the evidence literally contains such a label. Write bullet content as plain sentences. Use at most two heading levels (## and ###) — never a third level, and never turn bullet text into heading-like bold labels. Each distinct major section from the evidence must appear as its own numbered \`##\` section in order — never fold a major evidence section inside another section as a sub-section.
+
+${lengthInstruction}
 
 QUESTION:
 ${question}
@@ -523,6 +656,132 @@ function parseJsonObject(text) {
   }
 }
 
+function collapseOutsideCodeFences(text) {
+  const segments = String(text || "").split("```");
+  return segments
+    .map((seg, idx) => {
+      if (idx % 2 === 1) return seg;
+      return collapseOutsideDiagrams(seg);
+    })
+    .join("```");
+}
+
+function collapseOutsideDiagrams(seg) {
+  const lines = seg.split("\n");
+  const isRegion = new Array(lines.length).fill(false);
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes("┌")) {
+      let end = i;
+      for (let j = i; j < lines.length; j++) {
+        if (lines[j].includes("└") || lines[j].includes("┘")) end = j;
+      }
+      for (let k = i; k <= end; k++) isRegion[k] = true;
+      i = end;
+    }
+  }
+  return lines
+    .map((ln, i) => (isRegion[i] ? ln : ln.replace(/[ \t]+/g, " ").trim()))
+    .join("\n");
+}
+
+function alignDiagramIndentation(text) {
+  const lines = String(text || "").split("\n");
+  const out = [];
+  let block = [];
+  const flush = () => {
+    if (block.length === 0) return;
+    for (let i = 0; i < block.length; i++) {
+      if (block[i].trimStart().startsWith("┌")) {
+        const indents = [];
+        for (let j = i + 1; j < block.length; j++) {
+          const m = block[j].match(/^\s*[│└┘┐┌┬▼▲]/);
+          if (m) indents.push(block[j].match(/^\s*/)[0].length);
+        }
+        if (indents.length > 0) {
+          const sorted = [...indents].sort((a, b) => a - b);
+          const target = sorted[Math.floor(sorted.length / 2)];
+          const current = block[i].match(/^\s*/)[0].length;
+          if (current !== target) {
+            block[i] = " ".repeat(target) + block[i].trimStart();
+          }
+        }
+        break;
+      }
+    }
+    out.push(...block);
+    block = [];
+  };
+  for (const ln of lines) {
+    if (/^```/.test(ln.trim())) {
+      flush();
+      out.push(ln);
+    } else {
+      block.push(ln);
+    }
+  }
+  flush();
+  return out.join("\n");
+}
+
+function fenceDiagrams(text) {
+  const lines = String(text || "").split("\n");
+  const out = [];
+  let inFence = false;
+  let i = 0;
+  while (i < lines.length) {
+    const ln = lines[i];
+    if (/^```/.test(ln.trim())) {
+      inFence = !inFence;
+      out.push(ln);
+      i++;
+      continue;
+    }
+    if (!inFence && ln.includes("┌")) {
+      let end = i;
+      for (let j = i; j < lines.length; j++) {
+        if (lines[j].includes("└") || lines[j].includes("┘")) end = j;
+      }
+      out.push("```text", ...lines.slice(i, end + 1), "```", "");
+      i = end + 1;
+      continue;
+    }
+    out.push(ln);
+    i++;
+  }
+  return out.join("\n");
+}
+
+function normalizeFenceBlocks(text) {
+  const tokens = String(text || "").split(/(```[a-zA-Z][a-zA-Z0-9_-]*|```)/);
+  let out = "";
+  let prevWasFence = false;
+  for (const t of tokens) {
+    if (/^```/.test(t)) {
+      if (out.length > 0 && !out.endsWith("\n")) out += "\n";
+      out += t;
+      prevWasFence = true;
+    } else if (t !== "") {
+      if (prevWasFence && !t.startsWith("\n")) out += "\n";
+      out += t;
+      prevWasFence = false;
+    }
+  }
+  const lines = out.split("\n");
+  const result = [];
+  for (const ln of lines) {
+    if (/^```/.test(ln)) {
+      if (result.length > 0 && result[result.length - 1] !== "") result.push("");
+      result.push(ln);
+    } else if (ln !== "") {
+      if (result.length > 0 && result[result.length - 1] === "```") result.push("");
+      result.push(ln);
+    } else {
+      result.push(ln);
+    }
+  }
+  return result.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function cleanPolishText(text) {
   return String(text || "")
     .replace(/<[^>]+>/g, "")
@@ -532,24 +791,23 @@ function cleanPolishText(text) {
 }
 
 function cleanFullPolishAnswer(text) {
-  return String(text || "")
+  const out = String(text || "")
     .replace(/\*\*(.*?)\*\*/g, "$1")
     .replace(/<[^>]+>/g, "")
     .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim()
-    .slice(0, 5200);
+    .replace(/^#{1,6}\s+\d+\.\s*Conclusion\s*$/gim, "## Conclusion");
+  return alignDiagramIndentation(normalizeFenceBlocks(fenceDiagrams(collapseOutsideCodeFences(out)))).slice(0, 5200);
 }
 
 function cleanReplacementText(text) {
-  return String(text || "")
+  const out = String(text || "")
     .replace(/<[^>]+>/g, "")
     .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
-    .trim()
-    .slice(0, 360);
+    .trim();
+  return alignDiagramIndentation(normalizeFenceBlocks(fenceDiagrams(collapseOutsideCodeFences(out)))).slice(0, 360);
 }
 
 function hasRequiredHeadings(text) {
@@ -756,106 +1014,6 @@ function getSearchTerms(question) {
     .slice(0, 8);
 }
 
-async function queryPostgresChunks({ question, maxChunks, sourceFilter }) {
-  const limit = Math.max(maxChunks * 15, 50);
-  const searchQuestion = getSearchTerms(question).join(" ") || question;
-
-  const hasFilter = sourceFilter && sourceFilter.length > 0;
-
-  try {
-    let query, params;
-    if (hasFilter) {
-      const filterClauses = sourceFilter.map((_, i) => `source_file ILIKE $${i + 3}`);
-      query = `
-        SELECT
-          id,
-          chunk,
-          topic,
-          difficulty,
-          source_file,
-          chunk_index,
-          ts_rank(search_vector, plainto_tsquery('english', $1)) AS score
-        FROM upsc_chunks
-        WHERE search_vector @@ plainto_tsquery('english', $1)
-          AND (${filterClauses.join(" OR ")})
-        ORDER BY score DESC, created_at DESC
-        LIMIT $2
-      `;
-      params = [searchQuestion, limit, ...sourceFilter.map((f) => `%${f}%`)];
-    } else {
-      query = `
-        SELECT
-          id,
-          chunk,
-          topic,
-          difficulty,
-          source_file,
-          chunk_index,
-          ts_rank(search_vector, plainto_tsquery('english', $1)) AS score
-        FROM upsc_chunks
-        WHERE search_vector @@ plainto_tsquery('english', $1)
-        ORDER BY score DESC, created_at DESC
-        LIMIT $2
-      `;
-      params = [searchQuestion, limit];
-    }
-
-    const ranked = await pool.query(query, params);
-
-    let rows = ranked.rows;
-
-    if (rows.length === 0) {
-      const terms = getSearchTerms(question);
-
-      if (terms.length === 0) return [];
-
-      let fallbackQuery, fallbackParams;
-      const termClauses = terms.map((_, i) => `chunk ILIKE $${i + 1}`).join(" OR ");
-
-      if (hasFilter) {
-        const filterClauses = sourceFilter.map((_, i) => `source_file ILIKE $${terms.length + 1 + i}`);
-        fallbackQuery = `
-          SELECT id, chunk, topic, difficulty, source_file, chunk_index
-          FROM upsc_chunks
-          WHERE (${termClauses})
-            AND (${filterClauses.join(" OR ")})
-          ORDER BY created_at DESC
-          LIMIT $${terms.length + sourceFilter.length + 1}
-        `;
-        fallbackParams = [...terms.map((t) => `%${t}%`), ...sourceFilter.map((f) => `%${f}%`), limit];
-      } else {
-        fallbackQuery = `
-          SELECT id, chunk, topic, difficulty, source_file, chunk_index
-          FROM upsc_chunks
-          WHERE ${termClauses}
-          ORDER BY created_at DESC
-          LIMIT $${terms.length + 1}
-        `;
-        fallbackParams = [...terms.map((t) => `%${t}%`), limit];
-      }
-
-      const fallback = await pool.query(fallbackQuery, fallbackParams);
-      rows = fallback.rows;
-    }
-
-    return rows.map((row) => ({
-      id: row.id,
-      text: cleanChunkText(row.chunk),
-      metadata: {
-        topic: row.topic,
-        difficulty: row.difficulty,
-        source_file: row.source_file,
-        chunk_index: row.chunk_index,
-        source: "postgres",
-        search_score: Number(row.score || 0),
-      },
-    }));
-  } catch (err) {
-    console.warn("PostgreSQL chunk fallback failed:", err.message);
-    return [];
-  }
-}
-
 async function queryPostgresSourceFileChunks({ sourceFile, maxChunks }) {
   if (!sourceFile) return [];
 
@@ -889,7 +1047,7 @@ async function queryPostgresSourceFileChunks({ sourceFile, maxChunks }) {
 
     return result.rows.map((row) => ({
       id: row.id,
-      text: cleanChunkText(row.chunk),
+      text: cleanDisplayText(row.chunk),
       metadata: {
         topic: row.topic,
         difficulty: row.difficulty,
@@ -938,7 +1096,7 @@ async function queryPostgresExpandedChunks({ question, maxChunks, sourceFiles, s
 
     return result.rows.map((row) => ({
       id: row.id,
-      text: cleanChunkText(row.chunk),
+      text: cleanDisplayText(row.chunk),
       metadata: {
         topic: row.topic,
         difficulty: row.difficulty,
@@ -1000,26 +1158,37 @@ export async function getMobileRagContext(req, res) {
     const folderPatterns = subject ? (SUBJECT_FOLDER_MAP[subject] || [subject]) : null;
     const broadCoverage = isBroadCoverageQuestion(question, subject);
 
-    const [pgChunks, chromaChunks] = await Promise.all([
-      queryPostgresChunks({
-        question,
-        maxChunks: requestedMaxChunks,
-        sourceFilter: folderPatterns,
-      }),
-      queryChroma({
-        prompt: question,
-        topK: requestedMaxChunks,
-        topic: subject || undefined,
-      }),
-    ]);
+    const vectorChunks = await queryVector({
+      prompt: question,
+      topK: requestedMaxChunks * 3,
+      skipRerank: false,
+      subjectIds: folderPatterns?.map((f) => f.toLowerCase()),
+    });
 
-    let usefulChunks = [...pgChunks, ...chromaChunks]
+    const pgChunks = Array.isArray(vectorChunks)
+      ? vectorChunks.map((c) => ({
+          id: c.id,
+          text: c.text,
+          metadata: {
+            topic: c.metadata?.topic || "",
+            difficulty: c.metadata?.difficulty || "",
+            source_file: c.metadata?.source_file || "",
+            chunk_index: c.metadata?.chunk_index || 0,
+            heading_hierarchy: c.metadata?.heading_hierarchy || [],
+            source: "vector_server",
+            vector_score: c.vector_score ?? 0,
+            rerank_score: c.rerank_score ?? null,
+          },
+        }))
+      : [];
+
+    let usefulChunks = pgChunks
       .reduce((map, chunk) => {
         const id = chunk.id || chunk.chunk_id;
         if (!map.has(id)) {
           map.set(id, {
             id,
-            text: cleanChunkText(chunk.text || chunk.content || chunk.chunk_text || ""),
+            text: cleanDisplayText(chunk.text || chunk.content || chunk.chunk_text || ""),
             metadata: chunk.metadata || {},
           });
         }
@@ -1071,10 +1240,12 @@ export async function getMobileRagContext(req, res) {
     const targetTokens =
       mode === "limited" && retrievalMode === "ranked" ? 800 : 3000;
 
-    const budgetedChunks =
+    const rawBudgetedChunks =
       retrievalMode === "ranked"
         ? budgetChunksFairly(limitedChunks, contextBudget, question)
         : budgetChunksForCoverage(limitedChunks, contextBudget);
+    const scoredContext = withNormalizedChunkScores(rawBudgetedChunks);
+    const budgetedChunks = scoredContext.chunks;
     const sourceAssessment = assessSourceSufficiency(
       question,
       budgetedChunks
@@ -1084,6 +1255,7 @@ export async function getMobileRagContext(req, res) {
       question,
       subject,
       chunks: budgetedChunks,
+      chunkScores: scoredContext.chunkScores,
       chunkCount: budgetedChunks.length,
       mode,
       retrievalMode,

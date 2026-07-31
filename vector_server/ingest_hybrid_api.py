@@ -10,7 +10,7 @@ import hmac
 import hashlib
 import time
 import uuid
-import torch
+import asyncio
 import logging
 import threading
 import unicodedata
@@ -18,12 +18,11 @@ import unicodedata
 from typing import List, Dict, Optional
 from collections import OrderedDict
 
-import chromadb
 import psycopg2
 import numpy as np
+import torch
 import redis
-
-from chromadb.config import Settings
+import httpx
 
 from fastapi import (
     FastAPI,
@@ -39,22 +38,8 @@ from fastapi.middleware.gzip import GZipMiddleware
 from psycopg2.pool import SimpleConnectionPool
 from psycopg2.extras import RealDictCursor
 
-from sentence_transformers import SentenceTransformer
-
-from optimum.onnxruntime import (
-    ORTModelForSequenceClassification
-)
-
-from transformers import AutoTokenizer
-
 from starlette.concurrency import run_in_threadpool
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
-
-# ==========================================================
-# TORCH OPTIMIZATION
-# ==========================================================
-
-torch.set_grad_enabled(False)
 
 # ==========================================================
 # LOGGING
@@ -71,27 +56,13 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # ==========================================================
 
-APP_VERSION = "15.0.0"
+APP_VERSION = "16.0.0"
 
 
 ENVIRONMENT = os.getenv(
     "ENVIRONMENT",
     "development"
 ).lower()
-
-COLLECTION_NAME = os.getenv(
-    "CHROMA_COLLECTION",
-    "upsc_chunks_v5"
-)
-
-CHROMA_HOST = os.getenv(
-    "CHROMA_HOST",
-    "chromadb"
-)
-
-CHROMA_PORT = int(
-    os.getenv("CHROMA_PORT", "8000")
-)
 
 MAX_QUERY_LENGTH = int(
     os.getenv(
@@ -141,28 +112,33 @@ TRUST_PROXY_HEADERS = os.getenv(
 # DEVICE
 # ==========================================================
 
-DEVICE = (
-    "cuda"
-    if torch.cuda.is_available()
-    else "cpu"
-)
+DEVICE = "cpu"
 
 logger.info(
-    f"🧠 Device: {DEVICE}"
+    f"Embedding provider: Gemini API (text-embedding-004)"
 )
 
 # ==========================================================
-# EMBEDDING MODEL
+# EMBEDDING MODEL (local sentence-transformers)
 # ==========================================================
+
+EMBED_PROVIDER = "local"
 
 EMBED_MODEL = os.getenv(
     "EMBED_MODEL",
-    "BAAI/bge-base-en-v1.5"
+    "gemini-embedding-001"
 )
 
+EMBEDDING_RETRIES = int(
+    os.getenv("EMBEDDING_RETRIES", "3")
+)
+
+EMBEDDING_RETRY_DELAY = float(
+    os.getenv("EMBEDDING_RETRY_DELAY", "2")
+)
 
 EMBED_DIM = int(
-    os.getenv("EMBED_DIM", "768")
+    os.getenv("EMBED_DIM", "3072")
 )
 
 # ==========================================================
@@ -171,7 +147,7 @@ EMBED_DIM = int(
 
 RERANK_MODEL = os.getenv(
     "RERANK_MODEL",
-    "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    "BAAI/bge-reranker-base"
 )
 
 ENABLE_RERANK = os.getenv(
@@ -193,6 +169,10 @@ MAX_TOP_K = int(
 
 VECTOR_CANDIDATES = int(
     os.getenv("VECTOR_CANDIDATES", "40")
+)
+
+HNSW_EF_SEARCH = int(
+    os.getenv("HNSW_EF_SEARCH", "80")
 )
 
 BM25_CANDIDATES = int(
@@ -337,20 +317,71 @@ CACHE_MISSES = Counter(
     "Total cache misses"
 )
 
-CHROMA_DOCS = Gauge(
-    "hybrid_api_chroma_documents",
-    "Documents in Chroma collection"
+PGVECTOR_DOCS = Gauge(
+    "hybrid_api_pgvector_documents",
+    "Documents with embeddings in PostgreSQL pgvector"
 )
 
 # ==========================================================
-# LOAD EMBEDDING MODEL
+# GEMINI API EMBEDDING
 # ==========================================================
 
-embedder = None
+import requests as _requests
 
-logger.info(
-    "Model loading deferred until first retrieval request"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_EMBED_URL = (
+    "https://generativelanguage.googleapis.com/v1/"
+    "models/gemini-embedding-001:batchEmbedContents"
 )
+GEMINI_EMBED_BATCH = int(
+    os.getenv("GEMINI_EMBED_BATCH", "20")
+)
+GEMINI_EMBED_TASK_QUERY = (
+    os.getenv("GEMINI_EMBED_TASK", "RETRIEVAL_QUERY")
+)
+
+_gemini_session = _requests.Session()
+
+
+def _gemini_embed_batch(texts, task_type="RETRIEVAL_QUERY"):
+    """Call Gemini batchEmbedContents API for a list of texts."""
+    payload = {
+        "requests": [
+            {
+                "model": f"models/{EMBED_MODEL}",
+                "content": {"parts": [{"text": t}]},
+            }
+            for t in texts
+        ]
+    }
+    for attempt in range(8):
+        try:
+            resp = _gemini_session.post(
+                f"{GEMINI_EMBED_URL}?key={GEMINI_API_KEY}",
+                json=payload,
+                timeout=90,
+            )
+            if resp.status_code == 429:
+                wait = (2 ** attempt) * 2
+                logger.warning(
+                    f"Gemini embed 429, attempt {attempt+1}/8, retry in {wait}s"
+                )
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            return [
+                e["values"] for e in data["embeddings"]
+            ]
+        except Exception as exc:
+            if attempt == 7:
+                raise
+            wait = (2 ** attempt) * 2
+            logger.warning(
+                f"Gemini embed error ({exc}), attempt {attempt+1}/8, retry in {wait}s"
+            )
+            time.sleep(wait)
+    raise RuntimeError("Failed to embed batch after 8 retries")
 
 # ==========================================================
 # LOAD RERANKER
@@ -361,45 +392,6 @@ rerank_tokenizer = None
 
 model_lock = threading.Lock()
 reranker_load_attempted = False
-
-
-def get_embedder():
-
-    global embedder
-
-    if embedder is not None:
-        return embedder
-
-    with model_lock:
-
-        if embedder is not None:
-            return embedder
-
-        logger.info(
-            f"Loading embed model: {EMBED_MODEL}"
-        )
-
-        loaded = SentenceTransformer(
-            EMBED_MODEL,
-            device=DEVICE
-        )
-
-        actual_embed_dim = loaded.get_sentence_embedding_dimension()
-
-        if actual_embed_dim != EMBED_DIM:
-
-            raise RuntimeError(
-                f"Embedding dimension mismatch: EMBED_DIM={EMBED_DIM}, "
-                f"model {EMBED_MODEL} produces {actual_embed_dim}"
-            )
-
-        embedder = loaded
-
-        logger.info(
-            "Embedding model loaded"
-        )
-
-        return embedder
 
 
 def get_reranker():
@@ -426,6 +418,10 @@ def get_reranker():
 
         try:
 
+            import torch
+            torch.set_grad_enabled(False)
+            from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
             logger.info(
                 f"Loading reranker: {RERANK_MODEL}"
             )
@@ -434,15 +430,12 @@ def get_reranker():
                 RERANK_MODEL
             )
 
-            loaded_model = ORTModelForSequenceClassification.from_pretrained(
+            loaded_model = AutoModelForSequenceClassification.from_pretrained(
                 RERANK_MODEL,
-                export=True,
-                provider=(
-                    "CUDAExecutionProvider"
-                    if DEVICE == "cuda"
-                    else "CPUExecutionProvider"
-                )
+                torch_dtype=torch.float32
             )
+
+            loaded_model.eval()
 
             rerank_tokenizer = loaded_tokenizer
             reranker = loaded_model
@@ -458,6 +451,60 @@ def get_reranker():
             )
 
         return reranker, rerank_tokenizer
+
+def normalize_embedding_matrix(values):
+
+    embeddings = np.asarray(
+        values,
+        dtype=np.float32
+    )
+
+    if embeddings.ndim != 2:
+        raise RuntimeError(
+            "Embedding response did not contain a 2D embedding matrix"
+        )
+
+    if embeddings.shape[1] != EMBED_DIM:
+        raise RuntimeError(
+            f"Embedding dimension mismatch: EMBED_DIM={EMBED_DIM}, "
+            f"returned {embeddings.shape[1]}"
+        )
+
+    norms = np.linalg.norm(
+        embeddings,
+        axis=1,
+        keepdims=True
+    )
+
+    norms[norms == 0] = 1
+
+    return embeddings / norms
+
+
+async def generate_embeddings(texts):
+
+    if not texts:
+        return np.empty(
+            (0, EMBED_DIM),
+            dtype=np.float32
+        )
+
+    def _encode():
+        all_embs = []
+        for i in range(0, len(texts), GEMINI_EMBED_BATCH):
+            sub = texts[i : i + GEMINI_EMBED_BATCH]
+            batch_embs = _gemini_embed_batch(
+                sub, task_type=GEMINI_EMBED_TASK_QUERY
+            )
+            all_embs.extend(batch_embs)
+        return all_embs
+
+    embeddings = await run_in_threadpool(_encode)
+
+    return np.asarray(
+        embeddings,
+        dtype=np.float32
+    )
 
 # ==========================================================
 # POSTGRES POOL
@@ -534,6 +581,14 @@ def ensure_tables():
 
         with conn.cursor() as cur:
 
+            cur.execute(
+                "CREATE EXTENSION IF NOT EXISTS vector;"
+            )
+
+            cur.execute(
+                "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+            )
+
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS api_logs (
                     id BIGSERIAL PRIMARY KEY,
@@ -587,59 +642,77 @@ def ensure_tables():
                 ON api_logs(created_at);
             """)
 
+            cur.execute("""
+                ALTER TABLE IF EXISTS upsc_chunks
+                ADD COLUMN IF NOT EXISTS page_number INTEGER;
+            """)
+
+
+            cur.execute("""
+                ALTER TABLE IF EXISTS upsc_chunks
+                ADD COLUMN IF NOT EXISTS subject_id TEXT;
+            """)
+
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS upsc_chunks (
+                    id TEXT PRIMARY KEY,
+                    chunk TEXT,
+                    topic TEXT,
+                    difficulty TEXT,
+                    source_file TEXT,
+                    file_hash TEXT,
+                    chunk_index INTEGER,
+                    page_number INTEGER,
+                    chunk_version INTEGER DEFAULT 1,
+                    embedding VECTOR({EMBED_DIM}),
+                    search_vector tsvector,
+                    heading_hierarchy jsonb DEFAULT '[]'::jsonb,
+                    parent_chunk TEXT DEFAULT '',
+                    is_parent_chunk boolean DEFAULT false,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+
+            cur.execute(f"""
+                ALTER TABLE upsc_chunks
+                ADD COLUMN IF NOT EXISTS embedding VECTOR({EMBED_DIM});
+            """)
+
+            cur.execute("""
+                ALTER TABLE upsc_chunks
+                ADD COLUMN IF NOT EXISTS search_vector tsvector;
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_topic
+                ON upsc_chunks(topic);
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_search_vector
+                ON upsc_chunks
+                USING GIN(search_vector);
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chunk_trgm
+                ON upsc_chunks
+                USING GIN(chunk gin_trgm_ops);
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_embedding_hnsw
+                ON upsc_chunks
+                USING hnsw (
+                    embedding vector_cosine_ops
+                );
+            """)
+
         conn.commit()
 
     finally:
 
         release_conn(conn)
-
-# ==========================================================
-# CHROMADB CONNECT
-# ==========================================================
-
-def connect_chroma():
-
-    retries = 5
-
-    for attempt in range(retries):
-
-        try:
-
-            client = chromadb.HttpClient(
-                host=CHROMA_HOST,
-                port=CHROMA_PORT,
-                settings=Settings(
-                    anonymized_telemetry=False
-                )
-            )
-
-            collection = client.get_or_create_collection(
-                name=COLLECTION_NAME
-            )
-
-            logger.info(
-                "✅ Chroma connected"
-            )
-
-            return client, collection
-
-        except Exception as e:
-
-            logger.warning(
-                f"Chroma retry {attempt+1}/{retries}: {e}"
-            )
-
-            time.sleep(3)
-
-    raise RuntimeError(
-        "Failed connecting ChromaDB"
-    )
-
-logger.info(
-    "Connecting to ChromaDB..."
-)
-
-chroma_client, collection = connect_chroma()
 
 # ==========================================================
 # NORMALIZE QUERY
@@ -831,69 +904,197 @@ def verify_api_key(x_api_key):
 # VECTOR SEARCH
 # ==========================================================
 
-def chroma_search(
+def pgvector_literal(embedding):
+    values = (
+        embedding.tolist()
+        if hasattr(embedding, "tolist")
+        else list(embedding)
+    )
+
+    return "[" + ",".join(str(float(value)) for value in values) + "]"
+
+def pgvector_search(
     query_embedding,
-    topic=None
+    topic=None,
+    subject_ids=None
 ):
 
+    conn = get_conn()
+    query_vector = pgvector_literal(query_embedding)
+
     try:
-        if hasattr(query_embedding, "tolist"):
-            query_embedding = query_embedding.tolist()
 
-        where_filter = None
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
 
-        if topic:
+            cur.execute("SET LOCAL hnsw.ef_search = %s", (HNSW_EF_SEARCH,))
 
-            where_filter = {
-                "topic": topic
-            }
+            if topic and subject_ids:
 
-        results = collection.query(
-            query_embeddings=[
-                query_embedding
-            ],
-            n_results=VECTOR_CANDIDATES,
-            where=where_filter
-        )
+                cur.execute("""
+                    SELECT
+                        id,
+                        chunk,
+                        topic,
+                        subject_id,
+                        difficulty,
+                        source_file,
+                        chunk_index,
+                        page_number,
+                        heading_hierarchy,
+                        parent_chunk,
+                        is_parent_chunk,
+                        1 - (embedding <=> %s::vector) AS vector_score
+                    FROM upsc_chunks
+                    WHERE embedding IS NOT NULL
+                      AND topic=%s
+                      AND subject_id = ANY(%s::text[])
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                """, (
+                    query_vector,
+                    topic,
+                    subject_ids,
+                    query_vector,
+                    VECTOR_CANDIDATES
+                ))
 
-        docs = results["documents"][0]
-        metas = results["metadatas"][0]
-        ids = results["ids"][0]
-        distances = results["distances"][0]
+            elif topic:
 
-        chunks = []
+                cur.execute("""
+                    SELECT
+                        id,
+                        chunk,
+                        topic,
+                        subject_id,
+                        difficulty,
+                        source_file,
+                        chunk_index,
+                        page_number,
+                        heading_hierarchy,
+                        parent_chunk,
+                        is_parent_chunk,
+                        1 - (embedding <=> %s::vector) AS vector_score
+                    FROM upsc_chunks
+                    WHERE embedding IS NOT NULL
+                      AND topic=%s
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                """, (
+                    query_vector,
+                    topic,
+                    query_vector,
+                    VECTOR_CANDIDATES
+                ))
 
-        for cid, doc, meta, dist in zip(
-            ids,
-            docs,
-            metas,
-            distances
-        ):
+            elif subject_ids:
 
-            score = max(
-                0.0,
-                1.0 - float(dist)
-            )
+                cur.execute("""
+                    SELECT
+                        id,
+                        chunk,
+                        topic,
+                        subject_id,
+                        difficulty,
+                        source_file,
+                        chunk_index,
+                        page_number,
+                        heading_hierarchy,
+                        parent_chunk,
+                        is_parent_chunk,
+                        1 - (embedding <=> %s::vector) AS vector_score
+                    FROM upsc_chunks
+                    WHERE embedding IS NOT NULL
+                      AND subject_id = ANY(%s::text[])
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                """, (
+                    query_vector,
+                    subject_ids,
+                    query_vector,
+                    VECTOR_CANDIDATES
+                ))
 
-            if score < MIN_SIMILARITY_SCORE:
-                continue
+            else:
 
-            chunks.append({
-                "id": cid,
-                "text": doc,
-                "metadata": meta,
-                "vector_score": round(score, 4)
-            })
+                cur.execute("""
+                    SELECT
+                        id,
+                        chunk,
+                        topic,
+                        subject_id,
+                        difficulty,
+                        source_file,
+                        chunk_index,
+                        page_number,
+                        heading_hierarchy,
+                        parent_chunk,
+                        is_parent_chunk,
+                        1 - (embedding <=> %s::vector) AS vector_score
+                    FROM upsc_chunks
+                    WHERE embedding IS NOT NULL
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                """, (
+                    query_vector,
+                    query_vector,
+                    VECTOR_CANDIDATES
+                ))
 
-        return chunks
+            rows = cur.fetchall()
+
+            chunks = []
+
+            for row in rows:
+
+                score = max(
+                    0.0,
+                    float(row["vector_score"] or 0)
+                )
+
+                if score < MIN_SIMILARITY_SCORE:
+                    continue
+
+                # Parent-Child: return parent_chunk for generation context
+                # but keep child chunk for search precision
+                parent_text = row.get("parent_chunk") or ""
+                child_text = row["chunk"]
+                heading_hierarchy = row.get("heading_hierarchy") or []
+
+                # Use parent chunk if available (richer context for Gemini)
+                text_for_generation = parent_text if parent_text else child_text
+
+                chunks.append({
+                    "id": row["id"],
+                    "text": text_for_generation,
+                    "child_text": child_text,
+                    "metadata": {
+                        "subject_id": row.get("subject_id") or "",
+                        "topic": row["topic"],
+                        "difficulty": row["difficulty"],
+                        "source_file": row["source_file"],
+                        "chunk_index": row.get("chunk_index") or 0,
+                        "page_number": row.get("page_number") or 0,
+                        "heading_hierarchy": heading_hierarchy,
+                        "is_parent_chunk": row.get("is_parent_chunk") or False,
+                    },
+                    "vector_score": round(score, 4)
+                })
+
+            return chunks
 
     except Exception as e:
 
         logger.exception(
-            f"❌ Chroma search failed: {e}"
+            f"âŒ pgvector search failed: {e}"
         )
 
         return []
+
+    finally:
+
+        release_conn(conn)
 
 # ==========================================================
 # REQUEST HELPERS
@@ -929,7 +1130,8 @@ def request_bool(
 
 def postgres_bm25_search(
     query,
-    topic=None
+    topic=None,
+    subject_ids=None
 ):
 
     conn = get_conn()
@@ -940,15 +1142,62 @@ def postgres_bm25_search(
             cursor_factory=RealDictCursor
         ) as cur:
 
-            if topic:
+            if topic and subject_ids:
 
                 cur.execute("""
                     SELECT
                         id,
                         chunk,
                         topic,
+                        subject_id,
                         difficulty,
                         source_file,
+                        page_number,
+                        heading_hierarchy,
+                        parent_chunk,
+                        is_parent_chunk,
+                        ts_rank(
+                            search_vector,
+                            plainto_tsquery(
+                                'english',
+                                %s
+                            )
+                        ) AS bm25_score
+
+                    FROM upsc_chunks
+
+                    WHERE
+                        search_vector @@ plainto_tsquery(
+                            'english',
+                            %s
+                        )
+                        AND topic=%s
+                        AND subject_id = ANY(%s::text[])
+
+                    ORDER BY bm25_score DESC
+                    LIMIT %s
+                """, (
+                    query,
+                    query,
+                    topic,
+                    subject_ids,
+                    BM25_CANDIDATES
+                ))
+
+            elif topic:
+
+                cur.execute("""
+                    SELECT
+                        id,
+                        chunk,
+                        topic,
+                        subject_id,
+                        difficulty,
+                        source_file,
+                        page_number,
+                        heading_hierarchy,
+                        parent_chunk,
+                        is_parent_chunk,
                         ts_rank(
                             search_vector,
                             plainto_tsquery(
@@ -975,6 +1224,46 @@ def postgres_bm25_search(
                     BM25_CANDIDATES
                 ))
 
+            elif subject_ids:
+
+                cur.execute("""
+                    SELECT
+                        id,
+                        chunk,
+                        topic,
+                        subject_id,
+                        difficulty,
+                        source_file,
+                        page_number,
+                        heading_hierarchy,
+                        parent_chunk,
+                        is_parent_chunk,
+                        ts_rank(
+                            search_vector,
+                            plainto_tsquery(
+                                'english',
+                                %s
+                            )
+                        ) AS bm25_score
+
+                    FROM upsc_chunks
+
+                    WHERE
+                        search_vector @@ plainto_tsquery(
+                            'english',
+                            %s
+                        )
+                        AND subject_id = ANY(%s::text[])
+
+                    ORDER BY bm25_score DESC
+                    LIMIT %s
+                """, (
+                    query,
+                    query,
+                    subject_ids,
+                    BM25_CANDIDATES
+                ))
+
             else:
 
                 cur.execute("""
@@ -982,8 +1271,13 @@ def postgres_bm25_search(
                         id,
                         chunk,
                         topic,
+                        subject_id,
                         difficulty,
                         source_file,
+                        page_number,
+                        heading_hierarchy,
+                        parent_chunk,
+                        is_parent_chunk,
                         ts_rank(
                             search_vector,
                             plainto_tsquery(
@@ -1014,13 +1308,24 @@ def postgres_bm25_search(
 
             for row in rows:
 
+                parent_text = row.get("parent_chunk") or ""
+                child_text = row["chunk"]
+                heading_hierarchy = row.get("heading_hierarchy") or []
+
+                text_for_generation = parent_text if parent_text else child_text
+
                 results.append({
                     "id": row["id"],
-                    "text": row["chunk"],
+                    "text": text_for_generation,
+                    "child_text": child_text,
                     "metadata": {
+                        "subject_id": row.get("subject_id") or "",
                         "topic": row["topic"],
                         "difficulty": row["difficulty"],
-                        "source_file": row["source_file"]
+                        "source_file": row["source_file"],
+                        "page_number": row.get("page_number") or 0,
+                        "heading_hierarchy": heading_hierarchy,
+                        "is_parent_chunk": row.get("is_parent_chunk") or False,
                     },
                     "bm25_score": float(
                         row["bm25_score"]
@@ -1111,6 +1416,89 @@ def deduplicate_chunks(chunks):
         final.append(chunk)
 
     return final
+
+
+def semantic_deduplicate(chunks, threshold=88):
+
+    if len(chunks) <= 1:
+        return chunks
+
+    try:
+        from rapidfuzz import fuzz
+    except ImportError:
+        return chunks
+
+    chunks.sort(
+        key=lambda x: x.get(
+            "rrf_score",
+            0
+        ),
+        reverse=True
+    )
+
+    kept = []
+    kept_lower = []
+
+    for chunk in chunks:
+        text = chunk.get(
+            "text",
+            ""
+        ).strip()
+        if not text:
+            continue
+
+        text_lower = text.lower()
+        is_dup = False
+
+        for existing_lower in kept_lower:
+            similarity = fuzz.ratio(
+                text_lower,
+                existing_lower
+            )
+            if similarity >= threshold:
+                is_dup = True
+                break
+
+        if not is_dup:
+            kept.append(chunk)
+            kept_lower.append(text_lower)
+
+    return kept
+
+
+def deduplicate_parent_chunks(chunks):
+
+    parent_map = {}
+
+    for chunk in chunks:
+
+        parent_key = (
+            chunk["text"][:300]
+            .strip()
+            .lower()
+        )
+
+        best_score = (
+            chunk.get("rrf_score", 0)
+            + chunk.get("vector_score", 0)
+            + chunk.get("bm25_score", 0)
+        )
+
+        if parent_key not in parent_map:
+            parent_map[parent_key] = {
+                "chunk": chunk,
+                "score": best_score
+            }
+        elif best_score > parent_map[parent_key]["score"]:
+            parent_map[parent_key] = {
+                "chunk": chunk,
+                "score": best_score
+            }
+
+    return [
+        entry["chunk"]
+        for entry in parent_map.values()
+    ]
 
 # ==========================================================
 # DIVERSITY
@@ -1227,11 +1615,12 @@ async def hybrid_retrieval(
     query,
     top_k,
     topic=None,
+    subject_ids=None,
     use_rerank=True
 ):
 
     cache_key = (
-        f"{query}_{topic}_{top_k}_{use_rerank}"
+        f"{query}_{topic}_{subject_ids}_{top_k}_{use_rerank}"
     )
 
     cached = get_cache(cache_key)
@@ -1239,24 +1628,24 @@ async def hybrid_retrieval(
     if cached:
         return cached
 
-    q_emb = await run_in_threadpool(
-        lambda: get_embedder().encode(
-            [query],
-            normalize_embeddings=True,
-            show_progress_bar=False
-        )[0]
-    )
+    q_emb = (
+        await generate_embeddings(
+            [query]
+        )
+    )[0]
 
     vector_results = await run_in_threadpool(
-        chroma_search,
+        pgvector_search,
         q_emb,
-        topic
+        topic,
+        subject_ids
     )
 
     bm25_results = await run_in_threadpool(
         postgres_bm25_search,
         query,
-        topic
+        topic,
+        subject_ids
     )
 
     fused = reciprocal_rank_fusion(
@@ -1266,6 +1655,11 @@ async def hybrid_retrieval(
 
     fused = deduplicate_chunks(
         fused
+    )
+
+    fused = semantic_deduplicate(
+        fused,
+        threshold=88
     )
 
     if use_rerank and ENABLE_RERANK:
@@ -1282,6 +1676,10 @@ async def hybrid_retrieval(
         fused = fused[:top_k]
 
     fused = diversify_chunks(
+        fused
+    )
+
+    fused = deduplicate_parent_chunks(
         fused
     )
 
@@ -1484,6 +1882,28 @@ async def chunks_api(
             None
         )
 
+        subject_id = body.get(
+            "subject_id",
+            None
+        )
+
+        if subject_id:
+            subject_id = subject_id.strip().lower()
+
+        subject_ids = body.get(
+            "subject_ids",
+            None
+        )
+
+        if subject_ids and isinstance(subject_ids, list):
+            subject_ids = [
+                s.strip().lower()
+                for s in subject_ids
+                if s and s.strip()
+            ]
+            if not subject_ids:
+                subject_ids = None
+
         top_k = int(
             body.get(
                 "top_k",
@@ -1543,10 +1963,17 @@ async def chunks_api(
             f"🔎 Query: {query}"
         )
 
+        effective_subject_ids = (
+            subject_ids if subject_ids
+            else [subject_id] if subject_id
+            else None
+        )
+
         chunks = await hybrid_retrieval(
             query=query,
             top_k=top_k,
             topic=topic,
+            subject_ids=effective_subject_ids,
             use_rerank=use_rerank
         )
 
@@ -1661,12 +2088,8 @@ async def verify_faithfulness(
 
     all_texts = sentences + chunk_texts
 
-    embeddings = await run_in_threadpool(
-        lambda: get_embedder().encode(
-            all_texts,
-            normalize_embeddings=True,
-            show_progress_bar=False
-        )
+    embeddings = await generate_embeddings(
+        all_texts
     )
 
     sentence_embs = embeddings[:len(sentences)]
@@ -1718,37 +2141,145 @@ async def verify_faithfulness(
 
 
 # ==========================================================
+# INGESTION ENDPOINTS
+# ==========================================================
+
+@app.post("/ingest-hybrid")
+async def ingest_hybrid_endpoint(
+    request: Request,
+    x_api_key: str = Header(None)
+):
+
+    verify_api_key(x_api_key)
+
+    body = await request.json()
+    folder = body.get(
+        "folder",
+        "/app/data"
+    )
+
+    try:
+        from tasks import ingest_folder_task
+
+        task = ingest_folder_task.delay(folder)
+
+        return {
+            "status": "queued",
+            "job_id": task.id,
+            "folder": folder
+        }
+
+    except Exception as e:
+
+        logger.exception(
+            f"Failed to queue ingestion: {e}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to queue ingestion: {str(e)}"
+        )
+
+
+@app.post("/ingest-file")
+async def ingest_file_endpoint(
+    request: Request,
+    x_api_key: str = Header(None)
+):
+
+    verify_api_key(x_api_key)
+
+    body = await request.json()
+    file_path = body.get(
+        "file_path",
+        None
+    )
+
+    if not file_path:
+
+        raise HTTPException(
+            status_code=400,
+            detail="file_path is required"
+        )
+
+    try:
+        from tasks import ingest_file_task
+
+        if not file_path.startswith("/"):
+            file_path = f"/app/data/{file_path}"
+
+        task = ingest_file_task.delay(file_path)
+
+        return {
+            "status": "queued",
+            "job_id": task.id,
+            "file": file_path
+        }
+
+    except Exception as e:
+
+        logger.exception(
+            f"Failed to queue file ingestion: {e}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to queue ingestion: {str(e)}"
+        )
+
+
+@app.get("/ingest-status/{job_id}")
+async def ingest_status(
+    job_id: str,
+    x_api_key: str = Header(None)
+):
+
+    verify_api_key(x_api_key)
+
+    try:
+        from celery_app import celery as celery_app
+
+        result = celery_app.AsyncResult(job_id)
+
+        return {
+            "job_id": job_id,
+            "status": result.status,
+            "result": result.result if result.ready() else None
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get status: {str(e)}"
+        )
+
+
+# ==========================================================
 # HEALTH
 # ==========================================================
 
 @app.get("/health")
 def health():
 
-    chroma_ok = False
-    chroma_count = 0
-
     postgres_ok = False
+    pgvector_count = 0
 
     try:
-
-        chroma_count = collection.count()
-
-        CHROMA_DOCS.set(chroma_count)
-
-        chroma_ok = True
-
-    except:
-        chroma_ok = False
-
-    try:
-
         conn = get_conn()
 
         with conn.cursor() as cur:
 
             cur.execute("SELECT 1")
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM upsc_chunks
+                WHERE embedding IS NOT NULL
+            """)
+            pgvector_count = int(cur.fetchone()[0])
 
         postgres_ok = True
+        PGVECTOR_DOCS.set(pgvector_count)
 
     except:
         postgres_ok = False
@@ -1765,15 +2296,15 @@ def health():
         "version": APP_VERSION,
         "device": DEVICE,
         "postgres": postgres_ok,
-        "chromadb": chroma_ok,
-        "collection": COLLECTION_NAME,
+        "vector_store": "postgres_pgvector",
+        "embedding_provider": EMBED_PROVIDER,
         "embedding_model": EMBED_MODEL,
-        "embedding_model_loaded": embedder is not None,
+        "local_embedding": True,
         "reranker_model": RERANK_MODEL,
         "reranker_model_loaded": reranker is not None,
         "cache_entries": len(query_cache),
         "rate_limit_per_minute": RATE_LIMIT_PER_MINUTE,
-        "chroma_documents": chroma_count
+        "pgvector_documents": pgvector_count
     }
 
 # ==========================================================
@@ -1800,6 +2331,7 @@ def root():
         "status": "running",
         "version": APP_VERSION,
         "gpu": DEVICE == "cuda",
+        "vector_store": "postgres_pgvector",
         "hybrid_retrieval": True,
         "mobile_rag_optimized": True,
         "production_ready": True

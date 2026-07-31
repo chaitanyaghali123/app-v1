@@ -2,11 +2,16 @@ type RagChunk = {
   text?: string;
   content?: string;
   source?: string;
+  score?: number;
+  vector_score?: number;
+  rerank_score?: number;
+  relevanceScore?: number;
   metadata?: Record<string, unknown>;
 };
 
 type RagContextResponse = {
   chunks?: RagChunk[];
+  chunkScores?: number[];
   chunkCount?: number;
   sourceSufficient?: boolean;
   sourceIssue?: string | null;
@@ -29,6 +34,65 @@ function countWords(text: string): number {
   return text.match(/\b[\w'-]+\b/g)?.length || 0;
 }
 
+function numericValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function extractRawChunkScore(chunk: RagChunk): number | null {
+  const candidates = [
+    chunk.score,
+    chunk.relevanceScore,
+    chunk.vector_score,
+    chunk.rerank_score,
+    chunk.metadata?.relevance_score,
+    chunk.metadata?.score,
+    chunk.metadata?.vector_score,
+    chunk.metadata?.search_score,
+    chunk.metadata?.similarity,
+  ];
+
+  for (const candidate of candidates) {
+    const score = numericValue(candidate);
+    if (score !== null) return score;
+  }
+
+  return null;
+}
+
+function normalizeChunkScores(chunks: RagChunk[], explicitScores?: number[]): number[] {
+  const hasUsefulExplicitScore = explicitScores?.some((score) => {
+    const value = numericValue(score);
+    return value !== null && value > 0;
+  }) ?? false;
+  const rawScores = chunks.map((chunk, index) => {
+    const explicit = hasUsefulExplicitScore
+      ? numericValue(explicitScores?.[index])
+      : null;
+    return explicit ?? extractRawChunkScore(chunk);
+  });
+  const validScores = rawScores.filter((score): score is number =>
+    score !== null && Number.isFinite(score) && score >= 0
+  );
+
+  if (validScores.length === 0) return [];
+  if (rawScores.some((score) => score === null)) return [];
+
+  const maxScore = Math.max(...validScores);
+  if (maxScore <= 0) return [];
+  return rawScores.map((score) => {
+    if (score === null || !Number.isFinite(score) || score < 0) return 0;
+    const normalized = maxScore > 1 ? score / maxScore : score;
+    return Math.max(0, Math.min(1, normalized));
+  });
+}
+
 export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
   let response;
   try {
@@ -40,8 +104,8 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
       body: JSON.stringify({
         question: options.question,
         subject: options.subject,
-        maxChunks: options.maxChunks ?? 8,
-        maxContextChars: options.maxContextChars ?? 12000,
+        maxChunks: options.maxChunks ?? 25,
+        maxContextChars: options.maxContextChars ?? 40000,
         targetTokens: options.targetTokens ?? 3000,
       }),
     });
@@ -68,7 +132,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
       tokenCount: 0,
       generatedByLlm: false,
       generationReason: "no_chunks",
-      runtime: "gemini-2.5-flash-strict-rag",
+      runtime: "gemini-3.5-flash-strict-rag",
     };
   }
 
@@ -83,20 +147,20 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
       chunkCount: ragContext.chunkCount ?? chunks.length,
       tokenCount: countWords(answer),
       sentenceScores: [],
-      chunkScores: new Array(chunks.length).fill(0),
+      chunkScores: normalizeChunkScores(chunks, ragContext.chunkScores),
       generatedByLlm: false,
       generationReason: "strict_rag_insufficient",
-      runtime: "gemini-2.5-flash-strict-rag",
+      runtime: "gemini-3.5-flash-strict-rag",
     };
   }
 
   const { generateWithGemini, getOrCreateDeviceId } = await import("./gemini");
 
-  options.onStatus?.("Sending retrieved chunks to Gemini 2.5 Flash...");
+  options.onStatus?.("Sending retrieved chunks to Gemini 3.5 Flash...");
 
   const generation = await generateWithGemini({
     backendUrl: options.backendUrl,
-    deviceId: getOrCreateDeviceId(),
+    deviceId: await getOrCreateDeviceId(),
     question: options.question,
     chunks: chunks
       .map((chunk) => ({
@@ -129,9 +193,12 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
     chunkCount: ragContext.chunkCount ?? chunks.length,
     tokenCount: generation.tokenCount ?? 0,
     sentenceScores: generation.sentenceScores ?? [],
-    chunkScores: generation.chunkScores ?? [],
+    chunkScores: normalizeChunkScores(
+      chunks,
+      generation.chunkScores?.length ? generation.chunkScores : ragContext.chunkScores
+    ),
     generatedByLlm: true,
     generationReason: "gemini_proxy_strict_rag",
-    runtime: "gemini-2.5-flash-strict-rag",
+      runtime: "gemini-3.5-flash-strict-rag",
   };
 }

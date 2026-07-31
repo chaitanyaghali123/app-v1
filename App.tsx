@@ -44,6 +44,10 @@ async function hasStoredKeyMarker(): Promise<boolean> {
 import { answerUpscQuestionFromChunks } from "./mobile/upscRagAnswer";
 import { storeApiKeyOnBackend } from "./mobile/gemini";
 import Dashboard from "./mobile/Dashboard";
+import MarkdownAnswer from "./mobile/MarkdownAnswer";
+import QueryHistory from "./mobile/QueryHistory";
+import { saveQuery, getQueries, clearQueries } from "./mobile/queryStorage";
+import type { QueryRecord } from "./mobile/queryStorage";
 
 const DEFAULT_BACKEND_URL = Platform.OS === "web" ? window.location.origin : "http://192.168.29.61:3000";
 const SECURE_STORE_KEY = "upsc_gemini_api_key";
@@ -52,6 +56,10 @@ const STORED_KEY_MARKER = "stored";
 type ChunkPreview = {
   text?: string;
   content?: string;
+  score?: number;
+  vector_score?: number;
+  rerank_score?: number;
+  relevanceScore?: number;
   metadata?: Record<string, unknown>;
 };
 
@@ -100,19 +108,95 @@ function ActionButton({
   );
 }
 
+const MOJIBAKE_REPLACEMENTS: Array<[string, string]> = [
+  ["â€”", "—"],
+  ["â€“", "–"],
+  ["â€˜", "‘"],
+  ["â€™", "’"],
+  ["â€œ", "“"],
+  ["â€", "”"],
+  ["â€¦", "…"],
+  ["â†", "←"],
+  ["â–¼", "▼"],
+  ["â–¶", "▶"],
+  ["â–ˆ", "█"],
+  ["â–‘", "░"],
+  ["â‚¹", "₹"],
+  ["ðŸ“œ", "📜"],
+  ["ðŸŒ", "🌍"],
+];
+
+function repairMojibake(text: string): string {
+  let repaired = String(text || "");
+  for (const [broken, fixed] of MOJIBAKE_REPLACEMENTS) {
+    repaired = repaired.split(broken).join(fixed);
+  }
+  return repaired;
+}
+
 function formatAnswer(text: string): string {
-  return text
+  return repairMojibake(text)
     .replace(/<[^>]+>/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
+function formatChunkText(text: string): string {
+  return repairMojibake(text)
+    .replace(/<[^>]+>/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function numericValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function normalizeUiScore(value: unknown): number | null {
+  const score = numericValue(value);
+  if (score === null || score < 0) return null;
+  if (score <= 1) return score;
+  if (score <= 100) return score / 100;
+  return null;
+}
+
+function resolveChunkScore(chunk: ChunkPreview, explicitScore: unknown): number | null {
+  const candidates = [
+    explicitScore,
+    chunk.score,
+    chunk.relevanceScore,
+    chunk.vector_score,
+    chunk.rerank_score,
+    chunk.metadata?.relevance_score,
+    chunk.metadata?.score,
+    chunk.metadata?.vector_score,
+    chunk.metadata?.search_score,
+    chunk.metadata?.similarity,
+  ];
+  const scores: number[] = [];
+
+  for (const candidate of candidates) {
+    const score = normalizeUiScore(candidate);
+    if (score !== null) scores.push(Math.max(0, Math.min(1, score)));
+  }
+
+  return scores.find((score) => score > 0) ?? null;
+}
+
 export default function App() {
-  const [route, setRoute] = useState<"dashboard" | "qa">("dashboard");
+  const [route, setRoute] = useState<"dashboard" | "qa" | "history">("dashboard");
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
   const [apiKey, setApiKey] = useState("");
   const [hasSavedApiKey, setHasSavedApiKey] = useState(false);
   const [activeSubject, setActiveSubject] = useState<Subject | null>(null);
+  const [queries, setQueries] = useState<QueryRecord[]>([]);
   const [question, setQuestion] = useState("");
   const [status, setStatus] = useState("");
   const [answer, setAnswer] = useState("");
@@ -196,6 +280,45 @@ export default function App() {
     setChunkScores([]);
   }, []);
 
+  const handleHistoryPress = useCallback(() => {
+    if (!activeSubject) return;
+    setQueries(getQueries(activeSubject.id));
+    setRoute("history");
+  }, [activeSubject]);
+
+  const handleSelectQuery = useCallback((record: QueryRecord) => {
+    setQuestion(record.question);
+    setAnswer(formatAnswer(record.answer));
+    setChunks([]);
+    setChunkScores([]);
+    setTokenCount(record.tokenCount);
+    setChunkCount(record.chunkCount);
+    setHasAsked(true);
+    setRoute("qa");
+  }, []);
+
+  const handleBackFromHistory = useCallback(() => {
+    setRoute("qa");
+  }, []);
+
+  const handleNewQueryFromHistory = useCallback(() => {
+    setQuestion("");
+    setAnswer("");
+    setChunks([]);
+    setChunkScores([]);
+    setTokenCount(0);
+    setChunkCount(0);
+    setHasAsked(false);
+    setRoute("qa");
+  }, []);
+
+  const handleClearHistory = useCallback(() => {
+    if (activeSubject) {
+      clearQueries(activeSubject.id);
+      setQueries([]);
+    }
+  }, [activeSubject]);
+
   const askQuestion = useCallback(async () => {
     if (!canAsk || !activeSubject) return;
 
@@ -221,17 +344,30 @@ export default function App() {
         targetTokens: 3000,
         onStatus: setStatus,
         onToken: (token) => {
-          setAnswer(token);
+          setAnswer(repairMojibake(token));
         },
       });
 
-      setAnswer(result.answer.trim());
+      const cleanAnswer = formatAnswer(result.answer);
+      setAnswer(cleanAnswer);
       setChunks(result.chunks);
       setChunkScores(result.chunkScores ?? []);
       setChunkCount(result.chunkCount);
       setTokenCount(result.tokenCount ?? 0);
       setElapsedSeconds((Date.now() - startedAt) / 1000);
       setStatus("");
+      if (activeSubject) {
+        saveQuery({
+          id: `${startedAt}-${Math.random().toString(36).slice(2, 8)}`,
+          subjectId: activeSubject.id,
+          subjectName: activeSubject.name,
+          question: cleanQuestion,
+          answer: cleanAnswer,
+          tokenCount: result.tokenCount ?? 0,
+          chunkCount: result.chunkCount,
+          timestamp: startedAt,
+        });
+      }
     } catch (error) {
       setAnswer("");
       setChunks([]);
@@ -260,6 +396,23 @@ export default function App() {
             setApiKey("");
             setShowApiInput((v) => !v);
           }}
+        />
+      </SafeAreaView>
+    );
+  }
+
+  if (route === "history" && activeSubject) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar barStyle="dark-content" backgroundColor="#f8f9ff" />
+        <QueryHistory
+          subjectName={activeSubject.name}
+          subjectIcon={activeSubject.icon}
+          queries={queries}
+          onSelectQuery={handleSelectQuery}
+          onNewQuery={handleNewQueryFromHistory}
+          onBack={handleBackFromHistory}
+          onClearHistory={handleClearHistory}
         />
       </SafeAreaView>
     );
@@ -297,6 +450,18 @@ export default function App() {
             >
               <Text style={styles.subjectTagIcon}>{activeSubject?.icon}</Text>
               <Text style={styles.subjectTagName}>{activeSubject?.name}</Text>
+            </Pressable>
+            <View style={styles.topBarSpacer} />
+            <Pressable
+              accessibilityRole="button"
+              onPress={handleHistoryPress}
+              style={({ pressed }) => [
+                styles.historyBtn,
+                pressed && styles.historyBtnPressed,
+              ]}
+            >
+              <Text style={styles.historyBtnIcon}>📜</Text>
+              <Text style={styles.historyBtnLabel}>Chat History</Text>
             </Pressable>
           </View>
 
@@ -347,8 +512,7 @@ export default function App() {
 
           {answer.length > 0 && (
             <View style={styles.answerCard}>
-              <Text style={styles.answerTitle}>Answer</Text>
-              <Text style={styles.answerText}>{formatAnswer(answer)}</Text>
+              <MarkdownAnswer text={formatAnswer(answer)} />
             </View>
           )}
 
@@ -366,30 +530,29 @@ export default function App() {
                   {showChunks ? "Hide" : "Show"} Evidence ({chunks.length})
                 </Text>
                 <Text style={styles.chunksToggleArrow}>
-                  {showChunks ? "▼" : "▶"}
+                  {showChunks ? "v" : ">"}
                 </Text>
               </Pressable>
               {showChunks &&
                 chunks.map((chunk, i) => {
-                  const score = chunkScores[i] ?? 0;
-                  const barLen = Math.round(score * 10);
-                  const bar = "█".repeat(Math.max(0, barLen)) + "░".repeat(Math.max(0, 10 - barLen));
-                  const scoreColor = score >= 0.7 ? "#22c55e" : score >= 0.45 ? "#eab308" : "#ef4444";
+                  const score = resolveChunkScore(chunk, chunkScores[i]);
+                  const hasScore = score !== null;
+                  const scoreColor = !hasScore ? "#9ca3af" : score >= 0.7 ? "#22c55e" : score >= 0.45 ? "#eab308" : "#ef4444";
                   return (
                     <View key={i} style={styles.chunkItem}>
                       <View style={styles.chunkHeader}>
                         <Text style={styles.chunkIndex}>Chunk {i + 1}</Text>
                         <Text style={[styles.chunkScoreBar, { color: scoreColor }]}>
-                          {bar} {Math.round(score * 100)}%
+                          {hasScore ? `Score ${Math.round(score * 100)}%` : "Score unavailable"}
                         </Text>
                       </View>
                       {typeof chunk.metadata?.source_file === "string" && (
                         <Text style={styles.chunkSource}>
-                          {chunk.metadata.source_file}
+                          {formatChunkText(chunk.metadata.source_file)}
                         </Text>
                       )}
                       <Text style={styles.chunkText}>
-                        {chunk.text ?? chunk.content ?? ""}
+                        {formatChunkText(chunk.text ?? chunk.content ?? "")}
                       </Text>
                     </View>
                   );
@@ -440,6 +603,31 @@ const styles = StyleSheet.create({
     color: "#4f46e5",
     fontSize: 14,
     fontWeight: "700",
+  },
+  historyBtn: {
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 2,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: "#fffbeb",
+    borderWidth: 1,
+    borderColor: "#fde68a",
+  },
+  historyBtnPressed: {
+    backgroundColor: "#fef3c7",
+  },
+  historyBtnIcon: {
+    fontSize: 14,
+  },
+  historyBtnLabel: {
+    color: "#92400e",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  topBarSpacer: {
+    flex: 1,
   },
   subjectTag: {
     flexDirection: "row",

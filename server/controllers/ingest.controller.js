@@ -3,8 +3,23 @@
 import path from "path";
 import axios from "axios";
 import FormData from "form-data";
+import {
+  enqueueDocumentIngest,
+  enqueueFileIngest,
+  getIngestJobStatus,
+  isIngestQueueEnabled,
+} from "../services/ingest-queue.service.js";
 
 const BASE = process.env.FASTAPI_URL || process.env.VECTOR_API;
+
+function jobResponse(req, job) {
+  return {
+    queued: true,
+    jobId: job.id,
+    status: job.status,
+    statusUrl: `${req.baseUrl}/jobs/${job.id}`,
+  };
+}
 
 /**
  * POST /ingest
@@ -31,6 +46,11 @@ export const handleIngest = async (req, res) => {
     // Forward document only (no subjectId)
     const payload = { document };
 
+    if (isIngestQueueEnabled()) {
+      const job = await enqueueDocumentIngest(document);
+      return res.status(202).json(jobResponse(req, job));
+    }
+
     const resp = await axios.post(`${BASE}/ingest-hybrid`, payload);
 
     res.json({
@@ -56,6 +76,11 @@ export const handleIngestFile = async (req, res) => {
   }
 
   try {
+    if (isIngestQueueEnabled()) {
+      const job = await enqueueFileIngest(file);
+      return res.status(202).json(jobResponse(req, job));
+    }
+
     const form = new FormData();
     form.append("file", file.buffer, {
       filename: path.basename(file.originalname),
@@ -78,3 +103,21 @@ export const handleIngestFile = async (req, res) => {
   }
 };
 
+export const handleIngestJobStatus = async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    if (!jobId || typeof jobId !== "string") {
+      return res.status(400).json({ error: "jobId is required" });
+    }
+
+    const job = await getIngestJobStatus(jobId);
+    if (!job) {
+      return res.status(404).json({ error: "Ingestion job not found" });
+    }
+
+    return res.json(job);
+  } catch (err) {
+    console.error("[handleIngestJobStatus] error:", err.message);
+    return res.status(500).json({ error: "Failed to read ingestion job status" });
+  }
+};

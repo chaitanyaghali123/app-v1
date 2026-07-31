@@ -4,12 +4,12 @@ import axios from "axios";
 
 const BASE = process.env.FASTAPI_URL || process.env.VECTOR_API;
 const API_KEY = process.env.VECTOR_API_KEY || process.env.API_KEY;
-const VECTOR_TIMEOUT_MS = Number(process.env.VECTOR_API_TIMEOUT_MS || 15000);
+const VECTOR_TIMEOUT_MS = Number(process.env.VECTOR_API_TIMEOUT_MS || 60000);
 
 /**
- * 🔍 Query ChromaDB
+ * Query PostgreSQL pgvector retrieval API.
  */
-export async function queryChroma({ prompt, topK, skipRerank = false, topic }) {
+export async function queryVector({ prompt, topK, skipRerank = false, subjectIds }) {
   try {
     const body = {
       query: prompt,
@@ -23,8 +23,8 @@ export async function queryChroma({ prompt, topK, skipRerank = false, topic }) {
       body.skip_rerank = true;
     }
 
-    if (topic) {
-      body.topic = topic;
+    if (subjectIds && subjectIds.length > 0) {
+      body.subject_ids = subjectIds;
     }
 
     const resp = await axios.post(`${BASE}/chunks`, body, {
@@ -33,7 +33,7 @@ export async function queryChroma({ prompt, topK, skipRerank = false, topic }) {
     });
     return resp.data.chunks || [];
   } catch (err) {
-    console.error("❌ queryChroma failed:", err.message);
+    console.error("Vector retrieval failed:", err.message);
     return [];
   }
 }

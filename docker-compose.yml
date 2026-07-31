@@ -13,6 +13,7 @@ services:
       - ./server:/app
       - ./server/uploads:/app/uploads
       - ./dist:/app/dist
+      - ./diagram-assets:/app/diagram-assets
       
       
     ports:
@@ -31,10 +32,14 @@ services:
       - FRONTEND_URL=http://localhost:4173
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - FASTAPI_URL=http://aryabhata-ingestor:7860
+      - VECTOR_API=http://aryabhata-ingestor:7860
+      - INGEST_ASYNC_ENABLED=true
+      - INGEST_JOB_TTL_SECONDS=604800
+      - GEMINI_KEY_VAULT_PROVIDER=${GEMINI_KEY_VAULT_PROVIDER:-local-envelope}
+      - GEMINI_KMS_KEY_ID=${GEMINI_KMS_KEY_ID:-}
     depends_on:
       postgres:
-        condition: service_healthy
-      chromadb:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -49,6 +54,35 @@ services:
       timeout: 5s
       retries: 5
 
+  semantic-ingest-worker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: semantic-ingest-worker
+    working_dir: /app
+    command: node workers/ingest.worker.js
+    volumes:
+      - ./server:/app
+      - ./server/uploads:/app/uploads
+      - ./diagram-assets:/app/diagram-assets
+    env_file:
+      - ./server/.env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - FASTAPI_URL=http://aryabhata-ingestor:7860
+      - VECTOR_API=http://aryabhata-ingestor:7860
+      - INGEST_WORKER_CONCURRENCY=${INGEST_WORKER_CONCURRENCY:-2}
+      - INGEST_JOB_TTL_SECONDS=604800
+    depends_on:
+      redis:
+        condition: service_healthy
+      ingestor:
+        condition: service_started
+    restart: always
+    networks:
+      - sambit-net
+
   
   ingestor:
     build:
@@ -61,15 +95,16 @@ services:
       - "7860:7860"
     volumes:
       - ./vector_server:/app
-     
+      - ./diagram-assets:/app/diagram-assets
+      - hf_cache:/root/.cache/huggingface
       
     env_file:
       - ./vector_server/.env
- 
+    environment:
+      - EMBED_PROVIDER=gemini
+
 
     depends_on:
-      chromadb:
-        condition: service_healthy
       postgres:
         condition: service_healthy
     restart: unless-stopped
@@ -81,19 +116,39 @@ services:
       context: ./vector_server
       dockerfile: Dockerfile
     working_dir: /app
-    command: python ingest_hybrid.py --folder /app/data/geography
+    command: python ingest_hybrid.py --folder /app/data
     volumes:
       - ./vector_server:/app
+      - ./diagram-assets:/app/diagram-assets
     env_file:
       - ./vector_server/.env
     depends_on:
-      chromadb:
-        condition: service_healthy
       postgres:
         condition: service_healthy
     restart: "no"
     profiles:
       - ingest
+    networks:
+      - sambit-net
+
+  celery-worker:
+    image: app-v1-ingestor
+    container_name: aryabhata-celery
+    working_dir: /app
+    command: celery -A celery_app worker -l info -c 4
+    volumes:
+      - ./vector_server:/app
+      - ./diagram-assets:/app/diagram-assets
+    env_file:
+      - ./vector_server/.env
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
     networks:
       - sambit-net
 
@@ -118,21 +173,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  chromadb:
-    image: chromadb/chroma:0.5.5
-    container_name: aryabhata-chromadb
-    ports:
-      - "8000:8000"
-    volumes:
-      - chroma_data:/chroma/chroma
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    networks:
-      - sambit-net
 
   redis:
     image: redis:7-alpine
@@ -183,8 +223,8 @@ volumes:
 
   postgres:
   pgadmin:
-  chroma_data:
   redis_data:
+  hf_cache:
 
 networks:
   sambit-net:

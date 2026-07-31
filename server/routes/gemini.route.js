@@ -1,6 +1,6 @@
 import express from "express";
 import {
-  decrypt,
+  decryptGeminiApiKeyRecord,
   encrypt,
   fingerprintGeminiApiKey,
   proxyGeminiCall,
@@ -30,8 +30,8 @@ import { isDistributedCacheEnabled } from "../config/redis.js";
 
 const router = express.Router();
 
-const MAX_GEMINI_CHUNKS = Number(process.env.GEMINI_MAX_CHUNKS || 8);
-const MAX_GEMINI_CONTEXT_CHARS = Number(process.env.GEMINI_MAX_CONTEXT_CHARS || 12000);
+const MAX_GEMINI_CHUNKS = Number(process.env.GEMINI_MAX_CHUNKS || 25);
+const MAX_GEMINI_CONTEXT_CHARS = Number(process.env.GEMINI_MAX_CONTEXT_CHARS || 40000);
 const MAX_GEMINI_TARGET_TOKENS = Number(process.env.GEMINI_MAX_TARGET_TOKENS || 4096);
 
 const deviceKey = (req) => req.body?.deviceId || req.ip;
@@ -234,7 +234,7 @@ router.post(
         });
       }
 
-      const apiKey = decrypt(keyRecord.encrypted_key);
+      const apiKey = await decryptGeminiApiKeyRecord(keyRecord);
       keyHash = keyRecord.key_hash || fingerprintGeminiApiKey(apiKey);
 
       await enforceGeminiAbusePolicy({
@@ -247,9 +247,12 @@ router.post(
 
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
       });
+
+      if (req.socket) req.socket.setNoDelay(true);
 
       const result = await proxyGeminiCall(apiKey, {
         question,
@@ -258,9 +261,11 @@ router.post(
         mode,
         onToken: (token) => {
           res.write(`data: ${JSON.stringify({ type: "token", text: token })}\n\n`);
+          if (typeof res.flush === "function") res.flush();
         },
         onStatus: (status) => {
           res.write(`data: ${JSON.stringify({ type: "status", status })}\n\n`);
+          if (typeof res.flush === "function") res.flush();
         },
       });
 

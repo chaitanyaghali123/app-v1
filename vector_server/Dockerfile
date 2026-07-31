@@ -21,7 +21,9 @@ RUN apt-get update && \
 RUN pip install --force-reinstall --no-cache-dir pysqlite3-binary
 
 # ✅ Install native dependencies
-RUN pip install hnswlib==0.7.0 chromadb==0.4.22
+
+# ✅ Install CPU-only PyTorch (avoid CUDA which is massive)
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch>=2.1.0
 
 # ✅ Copy dependency files first (cache layer)
 COPY requirements.txt .

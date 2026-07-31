@@ -148,4 +148,8 @@ export function isDistributedCacheEnabled() {
   return Boolean(redis && redisReady);
 }
 
+export function getRedisClient() {
+  return redis;
+}
+
 export default cache;
