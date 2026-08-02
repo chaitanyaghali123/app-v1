@@ -15,6 +15,8 @@ import logging
 import threading
 import unicodedata
 
+from pathlib import Path
+
 from typing import List, Dict, Optional
 from collections import OrderedDict
 
@@ -350,6 +352,8 @@ def _gemini_embed_batch(texts, task_type="RETRIEVAL_QUERY"):
             {
                 "model": f"models/{EMBED_MODEL}",
                 "content": {"parts": [{"text": t}]},
+                "taskType": task_type,
+                "outputDimensionality": EMBED_DIM,
             }
             for t in texts
         ]
@@ -420,6 +424,18 @@ def get_reranker():
 
             import torch
             torch.set_grad_enabled(False)
+
+            num_threads = int(
+                os.getenv(
+                    "RERANKER_NUM_THREADS",
+                    "6"
+                )
+            )
+
+            torch.set_num_threads(
+                max(1, num_threads)
+            )
+
             from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
             logger.info(
@@ -684,29 +700,31 @@ def ensure_tables():
             """)
 
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_topic
+                CREATE INDEX IF NOT EXISTS idx_topic_partitioned
                 ON upsc_chunks(topic);
             """)
 
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_search_vector
+                CREATE INDEX IF NOT EXISTS idx_gin_searchvec_partitioned
                 ON upsc_chunks
                 USING GIN(search_vector);
             """)
 
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_chunk_trgm
+                CREATE INDEX IF NOT EXISTS idx_gin_trgm_partitioned
                 ON upsc_chunks
                 USING GIN(chunk gin_trgm_ops);
             """)
 
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_embedding_hnsw
-                ON upsc_chunks
-                USING hnsw (
-                    embedding vector_cosine_ops
-                );
-            """)
+            if EMBED_DIM <= 2000:
+
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_hnsw_v_partitioned
+                    ON upsc_chunks
+                    USING hnsw (
+                        embedding vector_cosine_ops
+                    );
+                """)
 
         conn.commit()
 
@@ -1062,12 +1080,9 @@ def pgvector_search(
                 child_text = row["chunk"]
                 heading_hierarchy = row.get("heading_hierarchy") or []
 
-                # Use parent chunk if available (richer context for Gemini)
-                text_for_generation = parent_text if parent_text else child_text
-
                 chunks.append({
                     "id": row["id"],
-                    "text": text_for_generation,
+                    "text": child_text,
                     "child_text": child_text,
                     "metadata": {
                         "subject_id": row.get("subject_id") or "",
@@ -1078,6 +1093,7 @@ def pgvector_search(
                         "page_number": row.get("page_number") or 0,
                         "heading_hierarchy": heading_hierarchy,
                         "is_parent_chunk": row.get("is_parent_chunk") or False,
+                        "parent_text": parent_text,
                     },
                     "vector_score": round(score, 4)
                 })
@@ -1312,11 +1328,9 @@ def postgres_bm25_search(
                 child_text = row["chunk"]
                 heading_hierarchy = row.get("heading_hierarchy") or []
 
-                text_for_generation = parent_text if parent_text else child_text
-
                 results.append({
                     "id": row["id"],
-                    "text": text_for_generation,
+                    "text": child_text,
                     "child_text": child_text,
                     "metadata": {
                         "subject_id": row.get("subject_id") or "",
@@ -1326,6 +1340,7 @@ def postgres_bm25_search(
                         "page_number": row.get("page_number") or 0,
                         "heading_hierarchy": heading_hierarchy,
                         "is_parent_chunk": row.get("is_parent_chunk") or False,
+                        "parent_text": parent_text,
                     },
                     "bm25_score": float(
                         row["bm25_score"]
@@ -1804,6 +1819,14 @@ def startup():
 
     ensure_tables()
 
+    def _preload_reranker():
+        get_reranker()
+
+    threading.Thread(
+        target=_preload_reranker,
+        daemon=True
+    ).start()
+
 
 @app.middleware("http")
 async def security_headers(request, call_next):
@@ -2202,18 +2225,29 @@ async def ingest_file_endpoint(
             detail="file_path is required"
         )
 
+    subject_id = str(
+        body.get("subject_id") or "general"
+    ).strip().lower()
+
+    if not re.match(r"^[a-z0-9_-]+$", subject_id):
+        subject_id = "general"
+
     try:
         from tasks import ingest_file_task
 
         if not file_path.startswith("/"):
             file_path = f"/app/data/{file_path}"
 
-        task = ingest_file_task.delay(file_path)
+        task = ingest_file_task.delay(
+            file_path,
+            subject_id=subject_id
+        )
 
         return {
             "status": "queued",
             "job_id": task.id,
-            "file": file_path
+            "file": file_path,
+            "subject_id": subject_id
         }
 
     except Exception as e:
@@ -2225,6 +2259,87 @@ async def ingest_file_endpoint(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to queue ingestion: {str(e)}"
+        )
+
+
+@app.post("/ingest-text")
+async def ingest_text_endpoint(
+    request: Request,
+    x_api_key: str = Header(None)
+):
+
+    verify_api_key(x_api_key)
+
+    body = await request.json()
+
+    text = (body.get("text") or "").strip()
+
+    if not text:
+
+        raise HTTPException(
+            status_code=400,
+            detail="text is required"
+        )
+
+    metadata = body.get("metadata") or {}
+
+    subject_id = str(
+        body.get("subject_id") or metadata.get("subject_id") or "general"
+    ).strip().lower()
+
+    if not re.match(r"^[a-z0-9_-]+$", subject_id):
+        subject_id = "general"
+
+    filename = str(
+        body.get("filename") or metadata.get("source") or f"doc_{uuid.uuid4().hex[:8]}"
+    ).strip()
+
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", filename).strip("._") or "doc.txt"
+
+    if not safe.lower().endswith((".txt", ".docx", ".pdf")):
+        safe = f"{safe}.txt"
+
+    data_dir = Path("/app/data")
+    subject_dir = data_dir / subject_id
+    subject_dir.mkdir(parents=True, exist_ok=True)
+    target = subject_dir / safe
+
+    try:
+
+        target.write_text(
+            text,
+            encoding="utf-8"
+        )
+
+        def _run():
+
+            import ingest_hybrid
+
+            ingest_hybrid.root_folder = data_dir
+
+            ingest_hybrid.ensure_tables()
+
+            ingest_hybrid.process_file(target)
+
+            return True
+
+        await run_in_threadpool(_run)
+
+        return {
+            "status": "indexed",
+            "file": f"{subject_id}/{safe}",
+            "subject_id": subject_id
+        }
+
+    except Exception as e:
+
+        logger.exception(
+            f"Failed to ingest text: {e}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to ingest text: {str(e)}"
         )
 
 

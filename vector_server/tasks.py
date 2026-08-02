@@ -50,8 +50,9 @@ def ingest_folder_task(self, folder_path):
     acks_late=True,
     track_started=True
 )
-def ingest_file_task(self, file_path):
+def ingest_file_task(self, file_path, subject_id=None):
     from ingest_hybrid import process_file, ensure_tables
+    import os as _os
 
     logger.info(
         f"Celery task started: ingest_file {file_path}"
@@ -60,11 +61,29 @@ def ingest_file_task(self, file_path):
     try:
         ensure_tables()
 
-        process_file(Path(file_path))
+        process_file(Path(file_path), subject_id=subject_id)
 
         logger.info(
             f"Celery task completed: ingest_file {file_path}"
         )
+
+        uploaded_path = Path(file_path)
+
+        if uploaded_path.is_absolute() and uploaded_path.exists():
+
+            try:
+
+                _os.remove(uploaded_path)
+
+                logger.info(
+                    f"Cleaned up uploaded file: {file_path}"
+                )
+
+            except Exception as cleanup_exc:
+
+                logger.warning(
+                    f"Failed to clean up {file_path}: {cleanup_exc}"
+                )
 
         return {
             "status": "completed",

@@ -34,8 +34,6 @@ services:
       - REDIS_PORT=6379
       - FASTAPI_URL=http://aryabhata-ingestor:7860
       - VECTOR_API=http://aryabhata-ingestor:7860
-      - INGEST_ASYNC_ENABLED=true
-      - INGEST_JOB_TTL_SECONDS=604800
       - GEMINI_KEY_VAULT_PROVIDER=${GEMINI_KEY_VAULT_PROVIDER:-local-envelope}
       - GEMINI_KMS_KEY_ID=${GEMINI_KMS_KEY_ID:-}
     depends_on:
@@ -54,36 +52,6 @@ services:
       timeout: 5s
       retries: 5
 
-  semantic-ingest-worker:
-    build:
-      context: ./server
-      dockerfile: Dockerfile
-    container_name: semantic-ingest-worker
-    working_dir: /app
-    command: node workers/ingest.worker.js
-    volumes:
-      - ./server:/app
-      - ./server/uploads:/app/uploads
-      - ./diagram-assets:/app/diagram-assets
-    env_file:
-      - ./server/.env
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - FASTAPI_URL=http://aryabhata-ingestor:7860
-      - VECTOR_API=http://aryabhata-ingestor:7860
-      - INGEST_WORKER_CONCURRENCY=${INGEST_WORKER_CONCURRENCY:-2}
-      - INGEST_JOB_TTL_SECONDS=604800
-    depends_on:
-      redis:
-        condition: service_healthy
-      ingestor:
-        condition: service_started
-    restart: always
-    networks:
-      - sambit-net
-
-  
   ingestor:
     build:
       context: ./vector_server
@@ -95,6 +63,7 @@ services:
       - "7860:7860"
     volumes:
       - ./vector_server:/app
+      - ./server/uploads:/app/uploads
       - ./diagram-assets:/app/diagram-assets
       - hf_cache:/root/.cache/huggingface
       
@@ -138,6 +107,7 @@ services:
     command: celery -A celery_app worker -l info -c 4
     volumes:
       - ./vector_server:/app
+      - ./server/uploads:/app/uploads
       - ./diagram-assets:/app/diagram-assets
     env_file:
       - ./vector_server/.env

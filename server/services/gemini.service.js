@@ -635,19 +635,21 @@ WORKFLOW — FOLLOW THESE TWO STEPS IN ORDER:
 STEP 1 (EXTRACT): Read EVERY evidence chunk, one by one. From each chunk, extract a complete list of facts: names, dates, definitions, concepts, examples, and key points. Do this for ALL chunks INCLUDING the later ones — never stop at the first chunks. Silently build this fact list (do not output it).
 STEP 2 (WRITE): Using ONLY the facts extracted in Step 1, write the final answer. Every sentence must trace back to a fact from Step 1. Structure the answer as:
   - **Introduction**: \`## **Introduction**\` heading, states the question's theme using extracted facts.
-  - **Body**: numbered bold major subheadings \`## **1. <Theme>**\`, \`## **2. <Theme>**\`, \`## **3. <Theme>**\` (with \`### **<Sub-theme>**\` sub-sections that are NOT numbered) created ONLY from themes present in the evidence. Under each, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets (never numbered lists, never invent bold sub-labels inside bullets); write evidence prose as plain paragraphs without bullets.
+  - **Body**: bold major subheadings \`## **<Theme>**\` created ONLY from themes present in the evidence — copy each section heading VERBATIM from the evidence but STRIP any leading numbering (e.g. "10.4.3 💵💵Paper Money" becomes "💵💵Paper Money", "1. Physical Geography" becomes "Physical Geography") and adding NO numbers of your own. Sub-sections use \`### **<Sub-theme>**\` and are NOT numbered. Under each, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets (never numbered lists, never invent bold sub-labels inside bullets); write evidence prose as plain paragraphs without bullets.
   - **Conclusion**: \`## **Conclusion**\` heading, restates the key extracted points.
 Cover ALL evidence chunks, including the LATER sections — the answer must not stop early or omit the final chunks' content.
 
 FORMATTING RULES:
-1. Use Markdown ATX headers with the heading text BOLDED inside the header: \`## **Introduction**\`, \`## **1. <Theme>**\`, \`## **2. <Theme>**\`, and \`## **Conclusion**\` for major sections; use \`### **<Sub-theme>**\` for sub-sections. Number ONLY the major section headings (1., 2., 3.); do NOT number the sub-sections (no 1.1, 2.1 prefixes). NEVER use plain unbolded headers (e.g. \`## 1. ...\` or \`## Introduction\`), and NEVER use a bold line without a Markdown \`#\` header as a heading. Do NOT write literal "Introduction:", "Body:", "Conclusion:" labels.
+1. Use Markdown ATX headers with the heading text BOLDED inside the header: \`## **Introduction**\`, \`## **<Section Theme>**\`, and \`## **Conclusion**\` for major sections; use \`### **<Sub-theme>**\` for sub-sections. COPY every section heading VERBATIM from the evidence but STRIP any leading number (e.g. evidence heading \`## 1. Physical Geography\` becomes \`## **Physical Geography**\`, evidence heading \`## 10.4.3 💵💵Paper Money\` becomes \`## **💵💵Paper Money**\`). NEVER keep source numbers in headings, NEVER add numbers to headings that are unnumbered in the evidence, NEVER renumber or reorder sections, and NEVER number the sub-sections (no 1.1, 2.1 prefixes). NEVER use plain unbolded headers (e.g. \`## 1. ...\` or \`## Introduction\`), and NEVER use a bold line without a Markdown \`#\` header as a heading. Do NOT write literal "Introduction:", "Body:", "Conclusion:" labels.
 2. Use Markdown blockquotes (> ) only for direct quotes or definitions from the evidence. Never use blockquotes for generic summaries or takeaway callouts.
 3. Do NOT add citations of any kind — no [EVIDENCE X], no [1]/[2], no footnotes. Write facts as plain sentences.
 4. Bold key terms and keywords essential for UPSC answers.
 5. Use bullet points (lines starting with \`* \`) ONLY for content that is a bulleted list in the evidence — for those, never use numbered lists (1., 2., 3.). When the evidence presents content as plain prose/paragraphs, write it as plain sentences and paragraphs — do NOT turn prose into bullets.
 6. If the evidence contains an ASCII/box diagram (usually inside a \`\`\`text block), COPY it character-for-character into a \`\`\`text block in your answer. Reproduce EVERY character EXACTLY: all box-drawing characters (─, │, ┌, ┐, └, ┘, ├, ┤, ▼), the leading indentation/spaces, the inner padding/spacing, and the labels. Do NOT re-indent, re-center, re-pad, trim spaces, or reformat the diagram in any way. Place the diagram as a STANDALONE block: leave a blank line before the opening \`\`\`text fence, put the opening fence on its own line, the diagram lines after it, then the closing \`\`\` fence on its own line followed by a blank line. Do NOT attach the fence to a bullet, heading, sentence, or citation.
 7. Body subheadings MUST be created ONLY from themes that are actually present in the evidence chunks (e.g. topics listed in the chunk summaries above). NEVER invent headings like "Limitations", "Challenges", "Future Scope", "Way Forward", "Government Initiatives", "Impact", "Criticism", etc., unless that theme explicitly appears in the evidence. If the evidence does not contain a theme, do NOT create a heading for it.
-8. NEVER create any sub-heading on your own. \`### **<Sub-theme>**\` sub-sections may ONLY be created from headings that literally appear in the evidence (e.g. "Physical Geography", "Human Geography", "Sustainable Resource Management", "Disaster Risk Reduction", "Urban Sprawl and Migration" when present in the evidence). NEVER create sub-subheadings or bold label prefixes inside bullets (e.g. "Resource Mapping:", "Policy Application:", "Hazard vs. Disaster:", "Urbanization Challenges:") unless the evidence literally contains such a label. Write bullet content as plain sentences. Use at most two heading levels (## and ###) — never a third level, and never turn bullet text into heading-like bold labels. Each distinct major section from the evidence must appear as its own numbered \`##\` section in order — never fold a major evidence section inside another section as a sub-section.
+8. NEVER create any sub-heading on your own. \`### **<Sub-theme>**\` sub-sections may ONLY be created from headings that literally appear in the evidence (e.g. "Physical Geography", "Human Geography", "Sustainable Resource Management", "Disaster Risk Reduction", "Urban Sprawl and Migration" when present in the evidence). When reusing an evidence heading as a sub-section heading, copy it VERBATIM but STRIP any leading number (e.g. evidence heading \`### 10.5.1 Iran\` becomes \`### **Iran**\`), never keep a source number in the heading, and never combine it with a number of your own (never "2. Iran"). NEVER create sub-subheadings or bold label prefixes inside bullets (e.g. "Resource Mapping:", "Policy Application:", "Hazard vs. Disaster:", "Urbanization Challenges:") unless the evidence literally contains such a label. Write bullet content as plain sentences. Use at most two heading levels (## and ###) — never a third level, and never turn bullet text into heading-like bold labels. Each distinct major section from the evidence must appear as its own \`##\` section in order — never fold a major evidence section inside another section as a sub-section.
+9. NEVER use LaTeX math syntax for code, HTML tags, or any content — never output \`$$\` or \`\$\$...\$\$\`, \`\\(...\\)\`, \`\\text{...}\`, \`\\langle\`, \`\\rangle\`, \`\\longrightarrow\`, or any other LaTeX command. Write HTML tags, code, and symbols as plain text (e.g. write \`<ol><li>Item</li></ol>\` directly) or inside \`\`\` code fences. If you need arrows, write →; if you need math symbols, use Unicode (×, ≤, ≥, ≈, ≠).
+10. Separate every heading and paragraph with a blank line. Every heading (\`##\`/\`###\`), bullet (\`* \`), numbered item (\`1. \`), and code fence must begin on its own fresh line — never run a heading or list item directly onto the end of the previous paragraph.
 
 MANDATORY COVERAGE — YOU MUST INCLUDE CONTENT FROM EVERY EVIDENCE CHUNK:
 ${chunkSummaries}
@@ -719,7 +721,37 @@ function fenceDiagrams(text) {
   return out.join("\n");
 }
 
+function sanitizeLatexArtifacts(text) {
+  return String(text || "")
+    .replace(/\\\$/g, "$")
+    .replace(/\$\$\s*([\s\S]*?)\s*\$\$/g, "$1")
+    .replace(/\\\[([\s\S]*?)\\\]/g, "$1")
+    .replace(/\\\(([\s\S]*?)\\\)/g, "$1")
+    .replace(/\\text\{([^{}]*)\}/g, "$1")
+    .replace(/\\langle/g, "<")
+    .replace(/\\rangle/g, ">")
+    .replace(/\\longrightarrow/g, "\u2192")
+    .replace(/\\rightarrow/g, "\u2192")
+    .replace(/\\Rightarrow/g, "\u21D2")
+    .replace(/\\times/g, "\u00D7")
+    .replace(/\\leq/g, "\u2264")
+    .replace(/\\geq/g, "\u2265")
+    .replace(/\\approx/g, "\u2248")
+    .replace(/\\neq/g, "\u2260")
+    .replace(/\\cdots/g, "\u2026")
+    .replace(/\\ldots/g, "\u2026")
+    .replace(/\\bullet/g, "\u2022")
+    .replace(/\\%/g, "%")
+    .replace(/\\&/g, "&")
+    .replace(/\\([a-zA-Z]+)/g, "$1")
+    .replace(/\{\s*|\s*\}/g, " ");
+}
+
 function collapseOutsideDiagrams(seg) {
+  seg = sanitizeLatexArtifacts(seg)
+    .replace(/([^\n#])(#{2,6}\s+)/g, "$1\n\n$2")
+    .replace(/([^\n*])(\*\s+)/g, "$1\n$2")
+    .replace(/(?<![#\d*\n])(?<![#*\d][ \t])(\d{1,2}\.\s+)/g, "\n$1");
   const lines = seg.split("\n");
   const isRegion = new Array(lines.length).fill(false);
   for (let i = 0; i < lines.length; i++) {
@@ -782,7 +814,9 @@ function cleanModelOutput(text) {
     .replace(/\n{3,}/g, "\n\n")
     .trim()
     .replace(/^#{1,6}\s+\*\*\s*\d+\.\s*Conclusion\s*\*\*\s*$/gim, "## **Conclusion**")
-    .replace(/^#{1,6}\s+\d+\.\s*Conclusion\s*$/gim, "## **Conclusion**");
+    .replace(/^#{1,6}\s+\d+\.\s*Conclusion\s*$/gim, "## **Conclusion**")
+    .replace(/^#{1,6}\s+\*\*\s*\d+\.\s*\d+\.\s+([^*\n]+?)\s*\*\*\s*$/gim, "### **$1**")
+    .replace(/^#{1,6}\s+\d+\.\s*\d+\.\s+([^\n]+?)\s*$/gim, "### $1");
 
   const isFullyFenced = /^```[\w-]*\s*[\s\S]*?```$/i.test(out);
   if (isFullyFenced) {
@@ -795,6 +829,60 @@ function cleanModelOutput(text) {
     return collapseOutsideDiagrams(seg);
   });
   return alignDiagramIndentation(normalizeFenceBlocks(fenceDiagrams(cleaned.join("```"))).trim());
+}
+
+function diceCoefficient(a, b) {
+  if (a.length < 2 || b.length < 2) return a === b ? 1 : 0;
+  if (a === b) return 1;
+  const bigrams = new Map();
+  for (let i = 0; i < a.length - 1; i++) {
+    const bg = a.slice(i, i + 2);
+    bigrams.set(bg, (bigrams.get(bg) || 0) + 1);
+  }
+  let overlap = 0;
+  for (let i = 0; i < b.length - 1; i++) {
+    const bg = b.slice(i, i + 2);
+    const n = bigrams.get(bg) || 0;
+    if (n > 0) {
+      bigrams.set(bg, n - 1);
+      overlap++;
+    }
+  }
+  return (2 * overlap) / (a.length - 1 + b.length - 1);
+}
+
+function extractTextFenceBlocks(text) {
+  const blocks = [];
+  const re = /```text\s*\n([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(text))) blocks.push(m[1]);
+  return blocks;
+}
+
+function restoreExactDiagrams(answer, chunks) {
+  const text = String(answer || "");
+  if (!text.includes("```text") || !chunks?.length) return text;
+  const sources = [];
+  for (const chunk of chunks) {
+    for (const b of extractTextFenceBlocks(String(chunk?.text || chunk?.content || ""))) {
+      sources.push({ content: b.replace(/\r\n/g, "\n"), key: b.replace(/\s+/g, "") });
+    }
+  }
+  if (sources.length === 0) return text;
+
+  const re = /```text\s*\n([\s\S]*?)```/g;
+  return text.replace(re, (match, content) => {
+    const aKey = content.replace(/\s+/g, "");
+    let best = null;
+    for (const s of sources) {
+      const sim = diceCoefficient(aKey, s.key);
+      if (sim >= 0.85 && (best === null || sim > best.sim)) best = { sim, content: s.content };
+    }
+    if (best && best.content !== content.replace(/\r\n/g, "\n")) {
+      return "```text\n" + best.content + "```";
+    }
+    return match;
+  });
 }
 
 export async function proxyGeminiCall(apiKey, options) {
@@ -821,7 +909,7 @@ export async function proxyGeminiCall(apiKey, options) {
       method: "POST",
       body: JSON.stringify({
         systemInstruction: {
-          parts: [{ text: "You are a STRICT RAG answer engine. WORKFLOW: STEP 1 (EXTRACT) — read EVERY evidence chunk and extract all facts (names, dates, definitions, concepts, examples) from ALL chunks INCLUDING the later ones; never stop at the first chunks. STEP 2 (WRITE) — using ONLY the extracted facts, write the answer as: \`## **Introduction**\` (Markdown header with bold text inside), numbered bold major headings \`## **1. <Theme>**\`, \`## **2. <Theme>**\`, etc. for the Body created ONLY from themes present in the evidence, and \`## **Conclusion**\`. Number ONLY the major section headings (1., 2., 3.); never number the sub-sections — sub-sections use \`### **<Sub-theme>**\` with no 1.1, 2.1 prefixes. Inside sections, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets — never numbered lists (1., 2., 3.) — and write evidence prose as plain paragraphs without bullets. Cover EVERY chunk including the later sections — do not stop early. RULES: 1) NEVER use external knowledge. 2) EVERY fact MUST come from evidence chunks. 3) Do NOT add citations of any kind — no [EVIDENCE X], no [1]/[2], no footnotes; write facts as plain sentences. 4) You MUST cover ALL chunks — the prompt lists what each chunk contains. 5) If any chunk is missing from your answer, it is INVALID. 6) Never guess or infer. 7) If evidence is insufficient, say 'Insufficient evidence.' 8) Body subheadings MUST come ONLY from themes present in the evidence — NEVER invent 'Limitations', 'Challenges', 'Future Scope', 'Way Forward', 'Government Initiatives', 'Impact', 'Criticism' unless explicitly in the evidence. NEVER create any sub-heading on your own: ### sub-sections may only come from headings that literally appear in the evidence, never create bold label prefixes inside bullets (like 'Resource Mapping:', 'Policy Application:') unless the evidence literally contains them — write bullets as plain sentences. Use at most two heading levels (## and ###). Each distinct major section from the evidence must appear as its own numbered ## section — never fold a major evidence section inside another as a sub-section. 9) If the evidence contains an ASCII/box diagram inside a ```text block, COPY it character-for-character into a ```text block in your answer — reproduce EVERY character EXACTLY: every box-drawing character (─, │, ┌, ┐, └, ┘, ├, ┤, ▼), the leading indentation/spaces, inner padding, and labels. Do NOT re-indent, re-center, re-pad, trim spaces, or reformat. Place it as a STANDALONE block: blank line before the opening fence, opening \`\`\`text fence on its own line, diagram lines, closing \`\`\` fence on its own line, blank line after. Do NOT attach the fence to a bullet, heading, sentence, or citation. Before finishing, mentally check each EVIDENCE N was covered." }],
+          parts: [{ text: "You are a STRICT RAG answer engine. WORKFLOW: STEP 1 (EXTRACT) — read EVERY evidence chunk and extract all facts (names, dates, definitions, concepts, examples) from ALL chunks INCLUDING the later ones; never stop at the first chunks. STEP 2 (WRITE) — using ONLY the extracted facts, write the answer as: \`## **Introduction**\` (Markdown header with bold text inside), bold major headings \`## **<Theme>**\` for the Body created ONLY from themes present in the evidence — copy each heading VERBATIM from the evidence, STRIPPING any leading number (e.g. '10.4.3 💵💵Paper Money' becomes '💵💵Paper Money', '1. Physical Geography' becomes 'Physical Geography') and never adding numbers of your own — and \`## **Conclusion**\`. Never number the sub-sections — sub-sections use \`### **<Sub-theme>**\` with no 1.1, 2.1 prefixes. Inside sections, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets — never numbered lists (1., 2., 3.) — and write evidence prose as plain paragraphs without bullets. Cover EVERY chunk including the later sections — do not stop early. RULES: 1) NEVER use external knowledge. 2) EVERY fact MUST come from evidence chunks. 3) Do NOT add citations of any kind — no [EVIDENCE X], no [1]/[2], no footnotes; write facts as plain sentences. 4) You MUST cover ALL chunks — the prompt lists what each chunk contains. 5) If any chunk is missing from your answer, it is INVALID. 6) Never guess or infer. 7) If evidence is insufficient, say 'Insufficient evidence.' 8) Body subheadings MUST come ONLY from themes present in the evidence — NEVER invent 'Limitations', 'Challenges', 'Future Scope', 'Way Forward', 'Government Initiatives', 'Impact', 'Criticism' unless explicitly in the evidence. NEVER create any sub-heading on your own: ### sub-sections may only come from headings that literally appear in the evidence; when reusing an evidence heading, copy it VERBATIM but STRIP any leading number (e.g. '10.5.1 Iran' becomes 'Iran', '1. Physical Geography' becomes 'Physical Geography') — never keep a source number and never add a number of your own (never '## **2. 1. Physical Geography**'). Never create bold label prefixes inside bullets (like 'Resource Mapping:', 'Policy Application:') unless the evidence literally contains them — write bullets as plain sentences. Use at most two heading levels (## and ###). Each distinct major section from the evidence must appear as its own numbered ## section — never fold a major evidence section inside another as a sub-section. 9) If the evidence contains an ASCII/box diagram inside a ```text block, COPY it character-for-character into a ```text block in your answer — reproduce EVERY character EXACTLY: every box-drawing character (─, │, ┌, ┐, └, ┘, ├, ┤, ▼), the leading indentation/spaces, inner padding, and labels. Do NOT re-indent, re-center, re-pad, trim spaces, or reformat. Place it as a STANDALONE block: blank line before the opening fence, opening \`\`\`text fence on its own line, diagram lines, closing \`\`\` fence on its own line, blank line after. Do NOT attach the fence to a bullet, heading, sentence, or citation. Before finishing, mentally check each EVIDENCE N was covered. NEVER use LaTeX math syntax (\`$$\` or \`$$...$$\`, \`\\(...\\)\`, \`\\text{...}\`, \`\\langle\`, \`\\rangle\`, \`\\longrightarrow\`) for code or HTML — write HTML tags and code as plain text, e.g. <ol><li>Item</li></ol>. Separate every heading and paragraph with a blank line; every heading, bullet (*), numbered item (1.), and code fence must begin on its own fresh line." }],
         },
         safetySettings: [
           { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
@@ -865,7 +953,7 @@ export async function proxyGeminiCall(apiKey, options) {
       const text = parts.map((part) => part?.text || "").join("");
       if (text) {
         fullText += text;
-        onToken?.(cleanModelOutput(fullText));
+        onToken?.(restoreExactDiagrams(cleanModelOutput(fullText), chunks));
       }
       const usage = data?.usageMetadata || {};
       if (usage.candidatesTokenCount) {
@@ -911,7 +999,7 @@ export async function proxyGeminiCall(apiKey, options) {
     throw new Error("Gemini returned an empty response.");
   }
 
-  const cleaned = cleanModelOutput(fullText);
+  const cleaned = restoreExactDiagrams(cleanModelOutput(fullText), chunks);
 
   if (finishReason && finishReason !== "STOP") {
     if (finishReason === "MAX_TOKENS" && cleaned.length > 0) {

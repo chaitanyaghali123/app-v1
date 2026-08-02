@@ -3,6 +3,7 @@ import { queryVector } from "../services/vector.service.js";
 import { proxyGeminiCall } from "../services/gemini.service.js";
 import { getGeminiKeyRecord, pool } from "../services/db.service.js";
 import { decryptGeminiApiKeyRecord } from "../services/gemini.service.js";
+import { isThinEvidence } from "../controllers/mobile.controller.js";
 
 const router = Router();
 
@@ -79,11 +80,22 @@ async function handleStream(req, res) {
       subjectIds: subjectFilter,
     });
 
-    const baseChunks = (Array.isArray(vectorChunks) ? vectorChunks : []).map((c) => ({
+    const rawBaseChunks = (Array.isArray(vectorChunks) ? vectorChunks : []).map((c) => ({
       text: c.text || "",
       source: c.metadata?.source_file || "",
       topic: c.metadata?.topic || "",
+      vectorScore: c.vector_score ?? null,
+      rerankScore: c.rerank_score ?? null,
     }));
+    let baseChunks = rawBaseChunks.filter(
+      (c) => c.rerankScore === null || c.rerankScore >= 0
+    );
+    if (baseChunks.length === 0 && rawBaseChunks.length > 0) {
+      const best = [...rawBaseChunks].sort(
+        (a, b) => (b.rerankScore ?? -Infinity) - (a.rerankScore ?? -Infinity)
+      )[0];
+      baseChunks = [{ text: best.text, source: best.source, topic: best.topic }];
+    }
 
     // Expand to ALL chunks of the matched source file(s) so later sections
     // are always covered, ordered by chunk_index.
@@ -91,6 +103,13 @@ async function handleStream(req, res) {
 
     if (chunks.length === 0) {
       res.write(`data: ${JSON.stringify({ type: "done", answer: "No relevant source material found for this question.", tokenCount: 0, chunks: [] })}\n\n`);
+      res.end();
+      return;
+    }
+
+    const thinEvidence = isThinEvidence(chunks);
+    if (thinEvidence.thin) {
+      res.write(`data: ${JSON.stringify({ type: "done", answer: "No relevant evidence found for this question in the retrieved source notes.", tokenCount: 0, chunks: [] })}\n\n`);
       res.end();
       return;
     }

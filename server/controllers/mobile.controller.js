@@ -110,15 +110,30 @@ function repairMojibake(text) {
 }
 
 function cleanDisplayText(text) {
-  return repairMojibake(text)
+  const lines = repairMojibake(text)
     .replace(/\u0000/g, "")
     .replace(/\u00a0/g, " ")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
-    .replace(/[ \t]+/g, " ")
-    .replace(/[ \t]*\n[ \t]*/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .trim()
+    .split("\n");
+  const inDiagram = new Array(lines.length).fill(false);
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes("┌")) {
+      let end = i;
+      for (let j = i; j < lines.length; j++) {
+        if (lines[j].includes("└") || lines[j].includes("┘")) end = j;
+      }
+      for (let k = i; k <= end; k++) inDiagram[k] = true;
+      i = end;
+    }
+  }
+  return lines
+    .map((ln, idx) =>
+      inDiagram[idx] ? ln : ln.replace(/[ \t]+/g, " ").replace(/^[ \t]+/, "").replace(/[ \t]+$/, "")
+    )
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n");
 }
 
 function cleanChunkText(text) {
@@ -313,6 +328,29 @@ function assessSourceSufficiency(question, chunks) {
   return { sufficient: true, issue: null };
 }
 
+const THIN_EVIDENCE_MESSAGE =
+  "No relevant evidence found for this question in the retrieved source notes.";
+
+export function isThinEvidence(chunks) {
+  const text = (chunks || [])
+    .map((c) => c.text || c.chunk || c.content || "")
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  if (!text) return { thin: true, reason: "no-evidence" };
+
+  const words = (text.match(/[A-Za-z0-9][A-Za-z0-9'-]*/g) || []).length;
+  if (words < 150) return { thin: true, reason: "tiny-evidence" };
+
+  const sentenceEndings = (text.match(/[a-z]{2}\.\s+[A-Z]/g) || []).filter(
+    (m) => !/^(etc|e\.g|i\.e|vs)\.\s+[A-Z]/.test(m)
+  ).length;
+  if (sentenceEndings === 0 && words < 400) {
+    return { thin: true, reason: "outline-only" };
+  }
+  return { thin: false, reason: null };
+}
+
 function relevantChunkWindow(text, question, maxChars) {
   if (text.length <= maxChars) return text;
 
@@ -388,6 +426,15 @@ function isBroadCoverageQuestion(question, subject) {
     .split(/[\s-]+/)
     .filter((term) => term.length > 2);
 
+  const subjectTermSet = new Set(subjectTerms);
+  if (
+    subjectTermSet.size > 0 &&
+    terms.length > 0 &&
+    terms.every((term) => subjectTermSet.has(term))
+  ) {
+    return true;
+  }
+
   const hasBroadIntent =
     /\b(explain|describe|discuss|overview|introduction|meaning|notes?|short\s+note|write\s+(?:about|on)|what\s+(?:is|are))\b/i.test(
       normalized
@@ -395,9 +442,21 @@ function isBroadCoverageQuestion(question, subject) {
   if (!hasBroadIntent) return false;
   if (terms.length <= 2) return true;
 
-  const subjectTermSet = new Set(subjectTerms);
   const nonSubjectTerms = terms.filter((term) => !subjectTermSet.has(term));
   return nonSubjectTerms.length <= 1;
+}
+
+function filterRelevantChunks(chunks) {
+  const scored = chunks.map((chunk) => ({
+    chunk,
+    rr: numericValue(chunk.metadata?.rerank_score),
+  }));
+  const kept = scored.filter(({ rr }) => rr === null || rr >= 0);
+  if (kept.length > 0) return kept.map(({ chunk }) => chunk);
+  const ranked = [...scored].sort(
+    (a, b) => (b.rr ?? -Infinity) - (a.rr ?? -Infinity)
+  );
+  return ranked.length > 0 ? [ranked[0].chunk] : [];
 }
 
 function getChunkSourceFile(chunk) {
@@ -612,19 +671,21 @@ WORKFLOW — FOLLOW THESE TWO STEPS IN ORDER:
 STEP 1 (EXTRACT): Read EVERY reference chunk, one by one. From each chunk, extract a complete list of facts: names, dates, definitions, concepts, examples, and key points. Do this for ALL chunks INCLUDING the later ones — never stop at the first chunks. Silently build this fact list (do not output it).
 STEP 2 (WRITE): Using ONLY the facts extracted in Step 1, write the final answer. Structure it as:
   - **Introduction**: \`## **Introduction**\` heading stating the theme using extracted facts.
-  - **Body**: numbered bold major subheadings \`## **1. <Theme>**\`, \`## **2. <Theme>**\`, \`## **3. <Theme>**\` (with \`### **<Sub-theme>**\` sub-sections that are NOT numbered) created ONLY from themes present in the chunks. Under each, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets (never numbered lists, never invent bold sub-labels inside bullets); write evidence prose as plain paragraphs without bullets.
+  - **Body**: bold major subheadings \`## **<Theme>**\` created ONLY from themes present in the chunks — copy each section heading VERBATIM from the chunks, but STRIP any leading numbering (e.g. "10.4.3 💵💵Paper Money" becomes "💵💵Paper Money", "1. Physical Geography" becomes "Physical Geography") and adding NO numbers of your own. Sub-sections use \`### **<Sub-theme>**\` and are NOT numbered. Under each, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets (never numbered lists, never invent bold sub-labels inside bullets); write evidence prose as plain paragraphs without bullets.
   - **Conclusion**: \`## **Conclusion**\` heading restating the key extracted points.
 Cover ALL reference chunks, including the LATER sections — the answer must not stop early or omit the final chunks' content.
 
 FORMATTING RULES:
-1. Use Markdown ATX headers with the heading text BOLDED inside the header: \`## **Introduction**\`, \`## **1. <Theme>**\`, \`## **2. <Theme>**\`, and \`## **Conclusion**\` for major sections; use \`### **<Sub-theme>**\` for sub-sections. Number ONLY the major section headings (1., 2., 3.); do NOT number the sub-sections (no 1.1, 2.1 prefixes). NEVER use plain unbolded headers (e.g. \`## 1. ...\` or \`## Introduction\`), and NEVER use a bold line without a Markdown \`#\` header as a heading. Do NOT write literal "Introduction:", "Body:", "Conclusion:" labels.
+1. Use Markdown ATX headers with the heading text BOLDED inside the header: \`## **Introduction**\`, \`## **<Section Theme>**\`, and \`## **Conclusion**\` for major sections; use \`### **<Sub-theme>**\` for sub-sections. COPY every section heading VERBATIM from the evidence but STRIP any leading number (e.g. evidence heading \`## 1. Physical Geography\` becomes \`## **Physical Geography**\`, evidence heading \`## 10.4.3 💵💵Paper Money\` becomes \`## **💵💵Paper Money**\`). NEVER keep source numbers in headings, NEVER add numbers to headings that are unnumbered in the evidence, NEVER renumber or reorder sections, and NEVER number the sub-sections (no 1.1, 2.1 prefixes). NEVER use plain unbolded headers (e.g. \`## 1. ...\` or \`## Introduction\`), and NEVER use a bold line without a Markdown \`#\` header as a heading. Do NOT write literal "Introduction:", "Body:", "Conclusion:" labels.
 2. Use Markdown blockquotes (> ) for key definitions, exam-takeaway callouts, or important UPSC-relevant summaries.
 3. Do NOT add citations of any kind — no [EVIDENCE X], no [1]/[2], no footnotes. Write facts as plain sentences.
 4. Bold key terms and keywords essential for UPSC answers.
 5. Use bullet points (lines starting with \`* \`) ONLY for content that is a bulleted list in the evidence — for those, never use numbered lists (1., 2., 3.). When the evidence presents content as plain prose/paragraphs, write it as plain sentences and paragraphs — do NOT turn prose into bullets.
 6. If a reference chunk contains an ASCII/box diagram (usually inside a \`\`\`text block), COPY it character-for-character into a \`\`\`text block in your answer. Reproduce EVERY character EXACTLY: all box-drawing characters (─, │, ┌, ┐, └, ┘, ├, ┤, ▼), the leading indentation/spaces, the inner padding/spacing, and the labels. Do NOT re-indent, re-center, re-pad, trim spaces, or reformat the diagram in any way. Place the diagram as a STANDALONE block: leave a blank line before the opening \`\`\`text fence, put the opening fence on its own line, the diagram lines after it, then the closing \`\`\` fence on its own line followed by a blank line. Do NOT attach the fence to a bullet, heading, sentence, or citation.
 7. Body subheadings MUST be created ONLY from themes that are actually present in the reference chunks. NEVER invent headings like "Limitations", "Challenges", "Future Scope", "Way Forward", "Government Initiatives", "Impact", "Criticism", etc., unless that theme explicitly appears in the chunks. If the chunks do not contain a theme, do NOT create a heading for it.
-8. NEVER create any sub-heading on your own. \`### **<Sub-theme>**\` sub-sections may ONLY be created from headings that literally appear in the evidence (e.g. "Physical Geography", "Human Geography", "Sustainable Resource Management", "Disaster Risk Reduction", "Urban Sprawl and Migration" when present in the evidence). NEVER create sub-subheadings or bold label prefixes inside bullets (e.g. "Resource Mapping:", "Policy Application:", "Hazard vs. Disaster:", "Urbanization Challenges:") unless the evidence literally contains such a label. Write bullet content as plain sentences. Use at most two heading levels (## and ###) — never a third level, and never turn bullet text into heading-like bold labels. Each distinct major section from the evidence must appear as its own numbered \`##\` section in order — never fold a major evidence section inside another section as a sub-section.
+8. NEVER create any sub-heading on your own. \`### **<Sub-theme>**\` sub-sections may ONLY be created from headings that literally appear in the evidence (e.g. "Physical Geography", "Human Geography", "Sustainable Resource Management", "Disaster Risk Reduction", "Urban Sprawl and Migration" when present in the evidence). When reusing an evidence heading as a sub-section heading, copy it VERBATIM but STRIP any leading number (e.g. evidence heading \`### 10.5.1 Iran\` becomes \`### **Iran**\`), never keep a source number in the heading, and never combine it with a number of your own (never "2. Iran"). NEVER create sub-subheadings or bold label prefixes inside bullets (e.g. "Resource Mapping:", "Policy Application:", "Hazard vs. Disaster:", "Urbanization Challenges:") unless the evidence literally contains such a label. Write bullet content as plain sentences. Use at most two heading levels (## and ###) — never a third level, and never turn bullet text into heading-like bold labels. Each distinct major section from the evidence must appear as its own \`##\` section in order — never fold a major evidence section inside another section as a sub-section.
+9. NEVER use LaTeX math syntax for code, HTML tags, or any content — never output \`$$\` or \`\$\$...\$\$\`, \`\\(...\\)\`, \`\\text{...}\`, \`\\langle\`, \`\\rangle\`, \`\\longrightarrow\`, or any other LaTeX command. Write HTML tags, code, and symbols as plain text (e.g. write \`<ol><li>Item</li></ol>\` directly) or inside \`\`\` code fences. If you need arrows, write →; if you need math symbols, use Unicode (×, ≤, ≥, ≈, ≠).
+10. Separate every heading and paragraph with a blank line. Every heading (\`##\`/\`###\`), bullet (\`* \`), numbered item (\`1. \`), and code fence must begin on its own fresh line — never run a heading or list item directly onto the end of the previous paragraph.
 
 ${lengthInstruction}
 
@@ -666,7 +727,37 @@ function collapseOutsideCodeFences(text) {
     .join("```");
 }
 
+function sanitizeLatexArtifacts(text) {
+  return String(text || "")
+    .replace(/\\\$/g, "$")
+    .replace(/\$\$\s*([\s\S]*?)\s*\$\$/g, "$1")
+    .replace(/\\\[([\s\S]*?)\\\]/g, "$1")
+    .replace(/\\\(([\s\S]*?)\\\)/g, "$1")
+    .replace(/\\text\{([^{}]*)\}/g, "$1")
+    .replace(/\\langle/g, "<")
+    .replace(/\\rangle/g, ">")
+    .replace(/\\longrightarrow/g, "\u2192")
+    .replace(/\\rightarrow/g, "\u2192")
+    .replace(/\\Rightarrow/g, "\u21D2")
+    .replace(/\\times/g, "\u00D7")
+    .replace(/\\leq/g, "\u2264")
+    .replace(/\\geq/g, "\u2265")
+    .replace(/\\approx/g, "\u2248")
+    .replace(/\\neq/g, "\u2260")
+    .replace(/\\cdots/g, "\u2026")
+    .replace(/\\ldots/g, "\u2026")
+    .replace(/\\bullet/g, "\u2022")
+    .replace(/\\%/g, "%")
+    .replace(/\\&/g, "&")
+    .replace(/\\([a-zA-Z]+)/g, "$1")
+    .replace(/\{\s*|\s*\}/g, " ");
+}
+
 function collapseOutsideDiagrams(seg) {
+  seg = sanitizeLatexArtifacts(seg)
+    .replace(/([^\n#])(#{2,6}\s+)/g, "$1\n\n$2")
+    .replace(/([^\n*])(\*\s+)/g, "$1\n$2")
+    .replace(/(?<![#\d*\n])(?<![#*\d][ \t])(\d{1,2}\.\s+)/g, "\n$1");
   const lines = seg.split("\n");
   const isRegion = new Array(lines.length).fill(false);
   for (let i = 0; i < lines.length; i++) {
@@ -1133,6 +1224,61 @@ const SUBJECT_FOLDER_MAP = {
   optional: ["optional"],
 };
 
+function levenshtein(a, b) {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = new Array(n + 1);
+  let cur = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, cur] = [cur, prev];
+  }
+  return prev[n];
+}
+
+function subjectNameWords(subject) {
+  const raw = [
+    String(subject || ""),
+    ...(SUBJECT_FOLDER_MAP[subject] || []),
+  ];
+  const words = new Set();
+  for (const part of raw) {
+    for (const word of String(part)
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)) {
+      if (word.length > 2) words.add(word);
+    }
+  }
+  return [...words];
+}
+
+export function correctSubjectTypo(question, subject) {
+  const canonical = subjectNameWords(subject);
+  if (canonical.length === 0) return null;
+  const original = String(question || "");
+  const corrected = original.replace(/[a-z0-9]{3,}/gi, (word) => {
+    const lower = word.toLowerCase();
+    let best = null;
+    for (const c of canonical) {
+      if (lower === c) return word;
+      const d = levenshtein(lower, c);
+      if (d > 0 && d <= 2 && (best === null || d < best.d)) {
+        best = { c, d };
+      }
+    }
+    return best ? best.c : word;
+  });
+  return corrected === original ? null : corrected;
+}
+
 export async function getMobileRagContext(req, res) {
   try {
     const {
@@ -1156,10 +1302,11 @@ export async function getMobileRagContext(req, res) {
     );
 
     const folderPatterns = subject ? (SUBJECT_FOLDER_MAP[subject] || [subject]) : null;
-    const broadCoverage = isBroadCoverageQuestion(question, subject);
+    const resolvedQuestion = correctSubjectTypo(question, subject) || question;
+    const broadCoverage = isBroadCoverageQuestion(resolvedQuestion, subject);
 
     const vectorChunks = await queryVector({
-      prompt: question,
+      prompt: resolvedQuestion,
       topK: requestedMaxChunks * 3,
       skipRerank: false,
       subjectIds: folderPatterns?.map((f) => f.toLowerCase()),
@@ -1197,6 +1344,7 @@ export async function getMobileRagContext(req, res) {
       .values();
     usefulChunks = Array.from(usefulChunks)
       .filter((chunk) => chunk.text.length >= MIN_USEFUL_CHUNK_CHARS);
+    usefulChunks = filterRelevantChunks(usefulChunks);
 
     let limitedChunks = [];
     let sourceFile = null;
@@ -1204,7 +1352,7 @@ export async function getMobileRagContext(req, res) {
     let retrievalMode = "ranked";
 
     if (broadCoverage) {
-      sourceFile = pickBestSourceFile(usefulChunks, question);
+      sourceFile = pickBestSourceFile(usefulChunks, resolvedQuestion);
       const sourceChunks = await queryPostgresSourceFileChunks({
         sourceFile,
         maxChunks: MAX_FILE_COVERAGE_SOURCE_CHUNKS,
@@ -1213,8 +1361,8 @@ export async function getMobileRagContext(req, res) {
 
       if (sourceChunks.length > 0) {
         limitedChunks = tagEvidenceFacets(
-          pickCoverageChunks(sourceChunks, requestedMaxChunks, question),
-          question
+          pickCoverageChunks(sourceChunks, requestedMaxChunks, resolvedQuestion),
+          resolvedQuestion
         );
         retrievalMode =
           sourceChunks.length <= requestedMaxChunks
@@ -1226,9 +1374,19 @@ export async function getMobileRagContext(req, res) {
     if (limitedChunks.length === 0) {
       limitedChunks = selectBalancedChunks(
         usefulChunks,
-        question,
+        resolvedQuestion,
         requestedMaxChunks
       );
+    }
+
+    if (limitedChunks.length === 0 && usefulChunks.length > 0) {
+      limitedChunks = [...usefulChunks]
+        .sort(
+          (a, b) =>
+            (numericValue(b.metadata?.rerank_score) ?? -Infinity) -
+            (numericValue(a.metadata?.rerank_score) ?? -Infinity)
+        )
+        .slice(0, requestedMaxChunks);
     }
 
     const mode =
@@ -1242,14 +1400,19 @@ export async function getMobileRagContext(req, res) {
 
     const rawBudgetedChunks =
       retrievalMode === "ranked"
-        ? budgetChunksFairly(limitedChunks, contextBudget, question)
+        ? budgetChunksFairly(limitedChunks, contextBudget, resolvedQuestion)
         : budgetChunksForCoverage(limitedChunks, contextBudget);
     const scoredContext = withNormalizedChunkScores(rawBudgetedChunks);
     const budgetedChunks = scoredContext.chunks;
     const sourceAssessment = assessSourceSufficiency(
-      question,
+      resolvedQuestion,
       budgetedChunks
     );
+    const thinAssessment = isThinEvidence(budgetedChunks);
+    const sufficient = sourceAssessment.sufficient && !thinAssessment.thin;
+    const sourceIssue = thinAssessment.thin
+      ? THIN_EVIDENCE_MESSAGE
+      : sourceAssessment.issue;
 
     return res.json({
       question,
@@ -1262,12 +1425,12 @@ export async function getMobileRagContext(req, res) {
       sourceFile,
       sourceChunkCount,
       strictRag: true,
-      sourceSufficient: sourceAssessment.sufficient,
-      sourceIssue: sourceAssessment.issue,
+      sourceSufficient: sufficient,
+      sourceIssue,
       suggestedSubject: null,
       targetTokens,
       prompt: buildChunkAnswerPrompt({
-        question,
+        question: resolvedQuestion,
         chunks: budgetedChunks,
         targetTokens,
         mode,

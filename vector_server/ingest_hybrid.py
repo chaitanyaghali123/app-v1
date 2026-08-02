@@ -150,6 +150,10 @@ EMBED_DIM = int(
     os.getenv("EMBED_DIM", "3072")
 )
 
+HEADING_PREFIX_MAX_LEVELS = int(
+    os.getenv("HEADING_PREFIX_MAX_LEVELS", "2")
+)
+
 # ==========================================================
 # CHUNKING
 # ==========================================================
@@ -348,6 +352,8 @@ def _gemini_embed_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
             {
                 "model": f"models/{EMBED_MODEL}",
                 "content": {"parts": [{"text": t}]},
+                "taskType": task_type,
+                "outputDimensionality": EMBED_DIM,
             }
             for t in texts
         ]
@@ -554,6 +560,10 @@ def ensure_tables():
                     "Migrated existing upsc_chunks to upsc_chunks_legacy"
                 )
 
+                cur.execute("""
+                    DROP TABLE IF EXISTS upsc_chunks_legacy CASCADE
+                """)
+
                 # Drop and recreate partitioned table to ensure correct schema
                 cur.execute("""
                     DROP TABLE IF EXISTS upsc_chunks CASCADE
@@ -604,12 +614,12 @@ def ensure_tables():
             # ==================================================
 
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_topic
+                CREATE INDEX IF NOT EXISTS idx_topic_partitioned
                 ON upsc_chunks(topic);
             """)
 
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_file_hash
+                CREATE INDEX IF NOT EXISTS idx_file_hash_partitioned
                 ON upsc_chunks(file_hash);
             """)
 
@@ -619,13 +629,13 @@ def ensure_tables():
             """)
 
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_search_vector
+                CREATE INDEX IF NOT EXISTS idx_gin_searchvec_partitioned
                 ON upsc_chunks
                 USING GIN(search_vector);
             """)
 
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_chunk_trgm
+                CREATE INDEX IF NOT EXISTS idx_gin_trgm_partitioned
                 ON upsc_chunks
                 USING GIN(chunk gin_trgm_ops);
             """)
@@ -634,13 +644,15 @@ def ensure_tables():
             # HNSW INDEX
             # ==================================================
 
-            cur.execute(f"""
-                CREATE INDEX IF NOT EXISTS idx_embedding_hnsw
-                ON upsc_chunks
-                USING hnsw (
-                    embedding vector_cosine_ops
-                );
-            """)
+            if EMBED_DIM <= 2000:
+
+                cur.execute(f"""
+                    CREATE INDEX IF NOT EXISTS idx_hnsw_v_partitioned
+                    ON upsc_chunks
+                    USING hnsw (
+                        embedding vector_cosine_ops
+                    );
+                """)
 
         conn.commit()
 
@@ -1050,21 +1062,48 @@ def extract_page_images_base64(page, max_images=3, min_size_bytes=5000):
 
 
 def extract_tables_markdown(page):
-    """Extract tables from a PDF page as Markdown strings."""
+    """Extract tables from a PDF page as Markdown strings.
+    Filters out text-box misdetections (single-column), header-only tables,
+    and empty-header tables that PyMuPDF's find_tables() sometimes returns.
+    """
     tables = []
     try:
         for table in page.find_tables():
             data = table.extract()
             if not data or len(data) < 2:
                 continue
-            # Header row
+
+            # Normalize cells: None -> ""
+            data = [[str(c or "") for c in row] for row in data]
+
+            # Drop fully-empty leading/trailing columns so the table is tight.
+            ncols = max(len(row) for row in data)
+            data = [row + [""] * (ncols - len(row)) for row in data]
+            col_has_content = [
+                any(row[c].strip() for row in data)
+                for c in range(ncols)
+            ]
+            if not any(col_has_content):
+                continue
+            first = col_has_content.index(True)
+            last = len(col_has_content) - 1 - col_has_content[::-1].index(True)
+            data = [[row[c] for c in range(first, last + 1)] for row in data]
+
+            # Require a real multi-column table; single-column "tables" are
+            # usually side-note text boxes, not tabular data.
+            if len(data[0]) < 2:
+                continue
+
+            # Require a non-empty header row.
+            if not any(data[0][c].strip() for c in range(len(data[0]))):
+                continue
+
             header = data[0]
             md_rows = []
-            md_rows.append("| " + " | ".join(str(c or "") for c in header) + " |")
+            md_rows.append("| " + " | ".join(header) + " |")
             md_rows.append("| " + " | ".join("---" for _ in header) + " |")
-            # Data rows
             for row in data[1:]:
-                md_rows.append("| " + " | ".join(str(c or "") for c in row) + " |")
+                md_rows.append("| " + " | ".join(row) + " |")
             tables.append("\n".join(md_rows))
     except Exception as e:
         logger.warning(f"Failed to extract tables: {e}")
@@ -1314,9 +1353,23 @@ def clean_ascii_diagrams(text):
     keeps them intact and LLMs recognize them as structured diagrams, not noise."""
     BOX_DRAWING_RE = re.compile(r"[\u2500-\u257F]")
     DIAGRAM_ARROW_RE = re.compile(r"[\u2190-\u21FF\u25B2\u25B3\u25BC\u25BD\u25B6\u25B7\u25C0\u25C1\u2B06\u2B07\u2B05\u2B08]")
+    # Arrow used as a bullet/list marker (e.g. "⇒ Iron Nails, ...") is NOT a diagram.
+    ARROW_BULLET_RE = re.compile(
+        r"^\s*[\u2190-\u21FF\u25B2\u25B3\u25BC\u25BD\u25B6\u25B7\u25C0\u25C1\u2B06\u2B07\u2B05\u2B08]+\s+\S"
+    )
+
+    # If the document has no actual box-drawing characters anywhere, arrow lines
+    # are almost certainly bullets/flow text, not diagrams — do not fence them.
+    has_any_box = bool(BOX_DRAWING_RE.search(text))
 
     def is_diagram_line(line):
-        return bool(BOX_DRAWING_RE.search(line) or DIAGRAM_ARROW_RE.search(line))
+        if BOX_DRAWING_RE.search(line):
+            return True
+        if not has_any_box:
+            return False
+        if ARROW_BULLET_RE.match(line):
+            return False
+        return bool(DIAGRAM_ARROW_RE.search(line))
 
     lines = text.split("\n")
     has_box = [is_diagram_line(line) for line in lines]
@@ -1596,6 +1649,8 @@ def _prefix_headings(hierarchy, text):
     if not hierarchy:
         return text
     clean_parts = [part.replace("#", "").strip() for part in hierarchy]
+    if HEADING_PREFIX_MAX_LEVELS > 0:
+        clean_parts = clean_parts[-HEADING_PREFIX_MAX_LEVELS:]
     prefix = " > ".join(clean_parts)
     return f"[Context: {prefix}]\n\n{text}"
 
@@ -2021,10 +2076,13 @@ def insert_postgres_rows(rows):
 
 root_folder = None
 
-def process_file(file):
+def process_file(file, subject_id=None):
 
     global root_folder
-    if root_folder:
+    if subject_id:
+        subject_id = str(subject_id).strip().lower()
+        fname = f"{subject_id}/{file.name}"
+    elif root_folder:
         try:
             rel = file.relative_to(root_folder)
             fname = str(rel)
