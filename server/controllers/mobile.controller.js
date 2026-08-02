@@ -16,14 +16,6 @@ const MOBILE_GEMINI_MAX_CONTEXT_CHARS = Math.max(
 );
 const MAX_FILE_COVERAGE_SOURCE_CHUNKS = 240;
 const MIN_USEFUL_CHUNK_CHARS = 20;
-const MOBILE_MODEL_DIR = path.resolve("mobile-models");
-const MOBILE_MODEL_FILES = new Set([
-  "llama3_2_1b_instruct_vulkan_8w_fp16_et11.pte",
-  "llama3_2_1b_tokenizer.json",
-  "llama3_2_1b_tokenizer_config.json",
-  "tokenizer.json",
-  "tokenizer_config.json",
-]);
 const SEARCH_STOP_WORDS = new Set([
   "about",
   "define",
@@ -1446,23 +1438,4 @@ export async function getMobileRagContext(req, res) {
     console.error("Mobile RAG context error:", err.message);
     return res.status(500).json({ error: "Failed to prepare mobile context" });
   }
-}
-
-export function getMobileModelArtifact(req, res) {
-  const fileName = path.basename(String(req.params.file || ""));
-  if (!MOBILE_MODEL_FILES.has(fileName)) {
-    return res.status(404).json({ error: "Mobile model file not found" });
-  }
-
-  const filePath = path.join(MOBILE_MODEL_DIR, fileName);
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: "Mobile model file not available" });
-  }
-
-  if (fileName.endsWith(".json")) {
-    res.type("application/json");
-  } else {
-    res.type("application/octet-stream");
-  }
-  return res.sendFile(filePath);
 }

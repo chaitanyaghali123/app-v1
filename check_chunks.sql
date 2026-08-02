@@ -1,1 +1,0 @@
-SELECT source_file, COUNT(*) as chunk_count FROM upsc_chunks WHERE source_file ILIKE '%geography%' GROUP BY source_file ORDER BY chunk_count DESC;

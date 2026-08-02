@@ -1,8 +1,6 @@
 # Dependency directories
 node_modules
 .model-cache/
-artifacts/mobile/*.pte
-server/mobile-models/
 dist
 
 # OS-specific files
