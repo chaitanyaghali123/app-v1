@@ -66,6 +66,8 @@ from psycopg2.extras import execute_batch
 
 from rapidfuzz import fuzz
 
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 # ==========================================================
 # GEMINI API EMBEDDINGS
 # ==========================================================
@@ -162,6 +164,12 @@ CHUNK_SIZE = int(
 )
 CHUNK_OVERLAP = int(
     os.getenv("CHUNK_OVERLAP", "256")
+)
+# Fractional tolerance above the target chunk size before splitting is forced.
+# Kept as a code constant (algorithmic behavior, not an operational setting).
+CHUNK_SIZE_TOLERANCE = 0.15
+CHUNK_SIZE_TOLERANT = int(
+    round(CHUNK_SIZE * (1.0 + CHUNK_SIZE_TOLERANCE))
 )
 
 MIN_CHUNK_TOKENS = int(
@@ -1416,6 +1424,51 @@ def clean_ascii_diagrams(text):
     return "\n".join(result)
 
 
+def _split_parent_heading_aware(parent_text, parent_hierarchy):
+    """Split an oversized parent into heading-delimited sub-segments.
+
+    Returns a list of (hierarchy, text) tuples. Each sub-segment's hierarchy
+    is the full ancestral chain (parent ancestors + the sub-headings it
+    contains), deduplicated against the parent chain.
+    """
+    lines = parent_text.split("\n")
+    heading_stack = []  # [(level, heading_text), ...]
+    segments = []  # [(hierarchy, text), ...]
+    current_lines = []
+    parent_hier = list(parent_hierarchy or [])
+
+    def flush():
+        if not current_lines:
+            return
+        hier = list(parent_hier)
+        for _, htext in heading_stack:
+            if hier and hier[-1] == htext:
+                continue
+            hier.append(htext)
+        seg_text = "\n".join(current_lines).strip()
+        if seg_text:
+            segments.append((hier, seg_text))
+        current_lines.clear()
+
+    for line in lines:
+        stripped = line.strip()
+        m = re.match(r"^(#{1,6})\s+(.+)", stripped)
+        if m:
+            flush()
+            level = len(m.group(1))
+            heading_text = m.group(2).strip()
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            heading_stack.append((level, heading_text))
+        current_lines.append(line)
+
+    flush()
+
+    if not segments:
+        return [(list(parent_hier), parent_text)]
+    return segments
+
+
 def chunk_text(text):
     # ======================================================
     # GEMINI RAG CHUNKING — Layout-Aware with Ancestral
@@ -1492,7 +1545,7 @@ def chunk_text(text):
     buf_hierarchy = []
 
     for pc in parent_chunks:
-        if buf_tokens + pc["tokens"] <= CHUNK_SIZE:
+        if buf_tokens + pc["tokens"] <= CHUNK_SIZE_TOLERANT:
             buf_text.append(pc["text"])
             buf_tokens += pc["tokens"]
             if not buf_hierarchy:
@@ -1517,13 +1570,20 @@ def chunk_text(text):
 
     # --- Phase 3: Create child chunks from parent chunks ---
     results = []
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+        length_function=token_count,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+
     for parent in merged_parents:
         parent_text = parent["text"]
         parent_hierarchy = parent["heading_hierarchy"]
         parent_tk = parent["tokens"]
 
-        # If parent fits in one chunk, it's both parent and child
-        if parent_tk <= CHUNK_SIZE:
+        # If parent fits (within tolerance), it's both parent and child
+        if parent_tk <= CHUNK_SIZE_TOLERANT:
             prefixed = _prefix_headings(parent_hierarchy, parent_text)
             results.append({
                 "chunk_text": prefixed,
@@ -1533,77 +1593,54 @@ def chunk_text(text):
             })
             continue
 
-        # Split parent into child chunks with overlap
-        paragraphs = re.split(r"\n\s*\n", parent_text)
-        para_tuples = []
-        for p in paragraphs:
-            p = p.strip()
-            if not p:
-                continue
-            tk = token_count(p)
-            if tk < 5:
-                continue
-            if tk > MODEL_MAX_TOKENS:
-                sentences = re.split(r"(?<=[.!?])\s+", p)
-                for s in sentences:
-                    s = s.strip()
-                    if not s:
-                        continue
-                    stk = token_count(s)
-                    if stk < 5:
-                        continue
-                    if stk > MODEL_MAX_TOKENS:
-                        s = s[:4000] if len(s) > 4000 else s
-                        stk = token_count(s)
-                    para_tuples.append((s, stk))
+        # Split parent into heading-delimited sub-segments (### -> ## -> #)
+        heading_segments = _split_parent_heading_aware(
+            parent_text,
+            parent_hierarchy
+        )
+
+        # Greedily merge adjacent small sub-segments up to the tolerant bound
+        merged_segments = []
+        buf_hierarchy = []
+        buf_text = []
+        buf_tokens = 0
+
+        for seg_hierarchy, seg_text in heading_segments:
+            seg_tokens = token_count(seg_text)
+            if buf_tokens + seg_tokens <= CHUNK_SIZE_TOLERANT:
+                if not buf_hierarchy:
+                    buf_hierarchy = seg_hierarchy
+                buf_text.append(seg_text)
+                buf_tokens += seg_tokens
             else:
-                para_tuples.append((p, tk))
+                if buf_text:
+                    merged_segments.append((buf_hierarchy, "\n\n".join(buf_text)))
+                buf_hierarchy = seg_hierarchy
+                buf_text = [seg_text]
+                buf_tokens = seg_tokens
 
-        if not para_tuples:
-            continue
+        if buf_text:
+            merged_segments.append((buf_hierarchy, "\n\n".join(buf_text)))
 
-        # Guaranteed-correct sliding window — no index mutation inside inner loops
-        idx = 0
-        while idx < len(para_tuples):
-            chunk_paras = []
-            chunk_tokens = 0
-            cursor = idx
-
-            while cursor < len(para_tuples):
-                p_text, p_tokens = para_tuples[cursor]
-                if chunk_tokens + p_tokens > CHUNK_SIZE and chunk_paras:
-                    break
-                chunk_paras.append(para_tuples[cursor])
-                chunk_tokens += p_tokens
-                cursor += 1
-
-            # Safety: oversized single paragraph — take it anyway
-            if not chunk_paras and cursor < len(para_tuples):
-                chunk_paras = [para_tuples[cursor]]
-                chunk_tokens = para_tuples[cursor][1]
-                cursor += 1
-
-            child_text = "\n\n".join(t[0] for t in chunk_paras)
-            prefixed = _prefix_headings(parent_hierarchy, child_text)
-            results.append({
-                "chunk_text": prefixed,
-                "parent_text": parent_text,
-                "heading_hierarchy": parent_hierarchy,
-                "is_parent_chunk": False,
-            })
-
-            # Calculate overlap from the tail of the current chunk
-            overlap_tokens = 0
-            overlap_count = 0
-            for k in range(len(chunk_paras) - 1, -1, -1):
-                if overlap_tokens + chunk_paras[k][1] > CHUNK_OVERLAP:
-                    break
-                overlap_tokens += chunk_paras[k][1]
-                overlap_count += 1
-
-            # Advance by at least 1 to guarantee termination
-            advance = max(1, len(chunk_paras) - overlap_count)
-            idx += advance
+        # Each merged segment becomes a child chunk; only a segment that still
+        # exceeds the tolerant bound falls back to paragraph/sentence/token split.
+        for seg_hierarchy, seg_text in merged_segments:
+            seg_tokens = token_count(seg_text)
+            if seg_tokens <= CHUNK_SIZE_TOLERANT:
+                pieces = [seg_text]
+            else:
+                pieces = splitter.split_text(seg_text)
+            for piece in pieces:
+                piece = piece.strip()
+                if not piece:
+                    continue
+                prefixed = _prefix_headings(seg_hierarchy, piece)
+                results.append({
+                    "chunk_text": prefixed,
+                    "parent_text": parent_text,
+                    "heading_hierarchy": seg_hierarchy,
+                    "is_parent_chunk": False,
+                })
 
     # ======================================================
     # DEDUP
