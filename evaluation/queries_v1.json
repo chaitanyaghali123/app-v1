@@ -1,0 +1,74 @@
+[
+  {
+    "id": "gis",
+    "query": "What is GIS and how is it used in modern geography?",
+    "expected_section": "Modern Tools and the Digital Revolution",
+    "expected_source": "geography/main_geo.txt"
+  },
+  {
+    "id": "disaster",
+    "query": "How do geographers help reduce disaster risk from natural hazards like earthquakes and tsunamis?",
+    "expected_section": "Disaster Risk Reduction",
+    "expected_source": "geography/main_geo.txt"
+  },
+  {
+    "id": "climate_refugees",
+    "query": "What are climate refugees and how does migration relate to rapid urbanization?",
+    "expected_section": "Urban Sprawl and Migration",
+    "expected_source": "geography/main_geo.txt"
+  },
+  {
+    "id": "water_scarcity",
+    "query": "Which regions face water scarcity and how can sustainable resource management address it?",
+    "expected_section": "Sustainable Resource Management",
+    "expected_source": "geography/main_geo.txt"
+  },
+  {
+    "id": "physical_geography",
+    "query": "What does physical geography study and what are its sub-fields?",
+    "expected_section": "1. Physical Geography",
+    "expected_source": "geography/main_geo.txt"
+  },
+  {
+    "id": "human_geography",
+    "query": "What is human geography and what topics does it focus on?",
+    "expected_section": "2. Human Geography",
+    "expected_source": "geography/main_geo.txt"
+  },
+  {
+    "id": "global_challenges",
+    "query": "How does a geographical lens help address the defining crises of the twenty-first century?",
+    "expected_section": "Global Challenges through a Geographical Lens",
+    "expected_source": "geography/main_geo.txt"
+  },
+  {
+    "id": "definition_geography",
+    "query": "Define geography as a bridge between physical and social sciences.",
+    "expected_section": "The Dynamic Earth",
+    "expected_source": "geography/main_geo.txt"
+  },
+  {
+    "id": "commodity_money",
+    "query": "What is commodity money and how does it differ from fiat money?",
+    "expected_section": "Commodity Money",
+    "expected_source": "Money_Barter_to_Bitcoins"
+  },
+  {
+    "id": "crypto_currency",
+    "query": "Explain crypto currency and blockchain technology.",
+    "expected_section": "Crypto-Currency",
+    "expected_source": "Money_Barter_to_Bitcoins"
+  },
+  {
+    "id": "npci",
+    "query": "What is the role of the National Payment Corporation of India in the payments system?",
+    "expected_section": "National Payment Corporation",
+    "expected_source": "Money_Barter_to_Bitcoins"
+  },
+  {
+    "id": "urbanization",
+    "query": "What challenges does rapid urbanization create in cities like housing and congestion?",
+    "expected_section": "Urban Sprawl and Migration",
+    "expected_source": "geography/main_geo.txt"
+  }
+]

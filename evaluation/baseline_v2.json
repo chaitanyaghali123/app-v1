@@ -1,0 +1,156 @@
+{
+  "generated_at": "2026-08-05T07:09:39Z",
+  "top_k": 20,
+  "endpoint": "http://localhost:7860/chunks",
+  "queries": [
+    {
+      "id": "gis",
+      "query": "What is GIS and how is it used in modern geography?",
+      "expected_section": "Modern Tools and the Digital Revolution",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "Modern Tools and the Digital Revolution"
+      ],
+      "matched_id": "f13ee33d8f3c76a2b266d0f703a47185fec8248ab16b8532c2164df71e21e9f3",
+      "snippet": "[Context: Modern Tools and the Digital Revolution] ## Modern Tools and the Digital Revolution The stereotype of a geogra"
+    },
+    {
+      "id": "disaster",
+      "query": "How do geographers help reduce disaster risk from natural hazards like earthquakes and tsunamis?",
+      "expected_section": "Disaster Risk Reduction",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "Modern Tools and the Digital Revolution"
+      ],
+      "matched_id": "f13ee33d8f3c76a2b266d0f703a47185fec8248ab16b8532c2164df71e21e9f3",
+      "snippet": "[Context: Modern Tools and the Digital Revolution] ## Modern Tools and the Digital Revolution The stereotype of a geogra"
+    },
+    {
+      "id": "climate_refugees",
+      "query": "What are climate refugees and how does migration relate to rapid urbanization?",
+      "expected_section": "Urban Sprawl and Migration",
+      "rank": 3,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "Modern Tools and the Digital Revolution"
+      ],
+      "matched_id": "f13ee33d8f3c76a2b266d0f703a47185fec8248ab16b8532c2164df71e21e9f3",
+      "snippet": "[Context: Modern Tools and the Digital Revolution] ## Modern Tools and the Digital Revolution The stereotype of a geogra"
+    },
+    {
+      "id": "water_scarcity",
+      "query": "Which regions face water scarcity and how can sustainable resource management address it?",
+      "expected_section": "Sustainable Resource Management",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "Modern Tools and the Digital Revolution"
+      ],
+      "matched_id": "f13ee33d8f3c76a2b266d0f703a47185fec8248ab16b8532c2164df71e21e9f3",
+      "snippet": "[Context: Modern Tools and the Digital Revolution] ## Modern Tools and the Digital Revolution The stereotype of a geogra"
+    },
+    {
+      "id": "physical_geography",
+      "query": "What does physical geography study and what are its sub-fields?",
+      "expected_section": "1. Physical Geography",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "The Dynamic Earth: Bridging Physical Landscapes and Human Societies",
+        "Introduction"
+      ],
+      "matched_id": "d6aeea753238d537eb0d7d566c79352fc29610c8437fcd5e519a42f67e467213",
+      "snippet": "[Context: The Dynamic Earth: Bridging Physical Landscapes and Human Societies > Introduction] ## The Dynamic Earth: Brid"
+    },
+    {
+      "id": "human_geography",
+      "query": "What is human geography and what topics does it focus on?",
+      "expected_section": "2. Human Geography",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "The Dynamic Earth: Bridging Physical Landscapes and Human Societies",
+        "Introduction"
+      ],
+      "matched_id": "d6aeea753238d537eb0d7d566c79352fc29610c8437fcd5e519a42f67e467213",
+      "snippet": "[Context: The Dynamic Earth: Bridging Physical Landscapes and Human Societies > Introduction] ## The Dynamic Earth: Brid"
+    },
+    {
+      "id": "global_challenges",
+      "query": "How does a geographical lens help address the defining crises of the twenty-first century?",
+      "expected_section": "Global Challenges through a Geographical Lens",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "Modern Tools and the Digital Revolution"
+      ],
+      "matched_id": "f13ee33d8f3c76a2b266d0f703a47185fec8248ab16b8532c2164df71e21e9f3",
+      "snippet": "[Context: Modern Tools and the Digital Revolution] ## Modern Tools and the Digital Revolution The stereotype of a geogra"
+    },
+    {
+      "id": "definition_geography",
+      "query": "Define geography as a bridge between physical and social sciences.",
+      "expected_section": "The Dynamic Earth",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "The Dynamic Earth: Bridging Physical Landscapes and Human Societies",
+        "Introduction"
+      ],
+      "matched_id": "d6aeea753238d537eb0d7d566c79352fc29610c8437fcd5e519a42f67e467213",
+      "snippet": "[Context: The Dynamic Earth: Bridging Physical Landscapes and Human Societies > Introduction] ## The Dynamic Earth: Brid"
+    },
+    {
+      "id": "commodity_money",
+      "query": "What is commodity money and how does it differ from fiat money?",
+      "expected_section": "Commodity Money",
+      "rank": 1,
+      "matched_source": "history/EF1A1_HDT_Money_Barter_to_Bitcoins_PCB4.docx",
+      "matched_hierarchy": [],
+      "matched_id": "4cb42de1801b412cb87f823bb517d0fe8e3323fdd15f889fbe6f2af9ed510e74",
+      "snippet": "10.20 ✍Essay: Cashless Economy- Charms and Challenges..................................................................."
+    },
+    {
+      "id": "crypto_currency",
+      "query": "Explain crypto currency and blockchain technology.",
+      "expected_section": "Crypto-Currency",
+      "rank": 1,
+      "matched_source": "history/EF1A1_HDT_Money_Barter_to_Bitcoins_PCB4.docx",
+      "matched_hierarchy": [],
+      "matched_id": "a457856eb05e2693ce7581c4838e0a681608d6e25130b69c250e4a1369d52de1",
+      "snippet": "10.12.2 ����(Proposed) Payment Regulatory Board (PRB) ⇒ 1998: Narsimham-II Committee on Banking Reforms suggested regula"
+    },
+    {
+      "id": "npci",
+      "query": "What is the role of the National Payment Corporation of India in the payments system?",
+      "expected_section": "National Payment Corporation",
+      "rank": 2,
+      "matched_source": "history/EF1A1_HDT_Money_Barter_to_Bitcoins_PCB4.docx",
+      "matched_hierarchy": [],
+      "matched_id": "888d6f642f986022a32e09f5140d42a628a21430d13ef8f522d70f0c1bba54b6",
+      "snippet": "10.8 �National Payment Corporation of India(NPCi)......................................................................."
+    },
+    {
+      "id": "urbanization",
+      "query": "What challenges does rapid urbanization create in cities like housing and congestion?",
+      "expected_section": "Urban Sprawl and Migration",
+      "rank": 4,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "Modern Tools and the Digital Revolution"
+      ],
+      "matched_id": "f13ee33d8f3c76a2b266d0f703a47185fec8248ab16b8532c2164df71e21e9f3",
+      "snippet": "[Context: Modern Tools and the Digital Revolution] ## Modern Tools and the Digital Revolution The stereotype of a geogra"
+    }
+  ],
+  "summary": {
+    "total": 12,
+    "found": 12,
+    "not_found": [],
+    "avg_rank_found": 1.5,
+    "median_rank_found": 1,
+    "best_rank_found": 1
+  }
+}

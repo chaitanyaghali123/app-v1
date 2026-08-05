@@ -1,0 +1,151 @@
+{
+  "generated_at": "2026-08-05T06:59:10Z",
+  "top_k": 20,
+  "endpoint": "http://localhost:7860/chunks",
+  "queries": [
+    {
+      "id": "gis",
+      "query": "What is GIS and how is it used in modern geography?",
+      "expected_section": "Modern Tools and the Digital Revolution",
+      "rank": null,
+      "matched_source": null,
+      "matched_hierarchy": null,
+      "matched_id": null
+    },
+    {
+      "id": "disaster",
+      "query": "How do geographers help reduce disaster risk from natural hazards like earthquakes and tsunamis?",
+      "expected_section": "Disaster Risk Reduction",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "Disaster Risk Reduction"
+      ],
+      "matched_id": "8bc0a6a155693bc099b1012a6dc0fb9fa7704f38a030d51de3a47014389b4808",
+      "snippet": "[Context: Disaster Risk Reduction] ## Disaster Risk Reduction Natural hazards like earthquakes, tsunamis, hurricanes, an"
+    },
+    {
+      "id": "climate_refugees",
+      "query": "What are climate refugees and how does migration relate to rapid urbanization?",
+      "expected_section": "Urban Sprawl and Migration",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "Disaster Risk Reduction"
+      ],
+      "matched_id": "8bc0a6a155693bc099b1012a6dc0fb9fa7704f38a030d51de3a47014389b4808",
+      "snippet": "[Context: Disaster Risk Reduction] ## Disaster Risk Reduction Natural hazards like earthquakes, tsunamis, hurricanes, an"
+    },
+    {
+      "id": "water_scarcity",
+      "query": "Which regions face water scarcity and how can sustainable resource management address it?",
+      "expected_section": "Sustainable Resource Management",
+      "rank": null,
+      "matched_source": null,
+      "matched_hierarchy": null,
+      "matched_id": null
+    },
+    {
+      "id": "physical_geography",
+      "query": "What does physical geography study and what are its sub-fields?",
+      "expected_section": "1. Physical Geography",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "The Dynamic Earth: Bridging Physical Landscapes and Human Societies",
+        "Introduction"
+      ],
+      "matched_id": "d6aeea753238d537eb0d7d566c79352fc29610c8437fcd5e519a42f67e467213",
+      "snippet": "[Context: The Dynamic Earth: Bridging Physical Landscapes and Human Societies > Introduction] ## The Dynamic Earth: Brid"
+    },
+    {
+      "id": "human_geography",
+      "query": "What is human geography and what topics does it focus on?",
+      "expected_section": "2. Human Geography",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "The Dynamic Earth: Bridging Physical Landscapes and Human Societies",
+        "Introduction"
+      ],
+      "matched_id": "d6aeea753238d537eb0d7d566c79352fc29610c8437fcd5e519a42f67e467213",
+      "snippet": "[Context: The Dynamic Earth: Bridging Physical Landscapes and Human Societies > Introduction] ## The Dynamic Earth: Brid"
+    },
+    {
+      "id": "global_challenges",
+      "query": "How does a geographical lens help address the defining crises of the twenty-first century?",
+      "expected_section": "Global Challenges through a Geographical Lens",
+      "rank": null,
+      "matched_source": null,
+      "matched_hierarchy": null,
+      "matched_id": null
+    },
+    {
+      "id": "definition_geography",
+      "query": "Define geography as a bridge between physical and social sciences.",
+      "expected_section": "The Dynamic Earth",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "The Dynamic Earth: Bridging Physical Landscapes and Human Societies",
+        "Introduction"
+      ],
+      "matched_id": "d6aeea753238d537eb0d7d566c79352fc29610c8437fcd5e519a42f67e467213",
+      "snippet": "[Context: The Dynamic Earth: Bridging Physical Landscapes and Human Societies > Introduction] ## The Dynamic Earth: Brid"
+    },
+    {
+      "id": "commodity_money",
+      "query": "What is commodity money and how does it differ from fiat money?",
+      "expected_section": "Commodity Money",
+      "rank": 1,
+      "matched_source": "history/EF1A1_HDT_Money_Barter_to_Bitcoins_PCB4.docx",
+      "matched_hierarchy": [],
+      "matched_id": "4cb42de1801b412cb87f823bb517d0fe8e3323fdd15f889fbe6f2af9ed510e74",
+      "snippet": "10.20 ✍Essay: Cashless Economy- Charms and Challenges..................................................................."
+    },
+    {
+      "id": "crypto_currency",
+      "query": "Explain crypto currency and blockchain technology.",
+      "expected_section": "Crypto-Currency",
+      "rank": 1,
+      "matched_source": "history/EF1A1_HDT_Money_Barter_to_Bitcoins_PCB4.docx",
+      "matched_hierarchy": [],
+      "matched_id": "a457856eb05e2693ce7581c4838e0a681608d6e25130b69c250e4a1369d52de1",
+      "snippet": "⇒ If matter > ₹ 20 lakh, then matter outside his jurisdiction. Victim has to approach court. (20 लाख से अ�धक रकम का मामल"
+    },
+    {
+      "id": "npci",
+      "query": "What is the role of the National Payment Corporation of India in the payments system?",
+      "expected_section": "National Payment Corporation",
+      "rank": 2,
+      "matched_source": "history/EF1A1_HDT_Money_Barter_to_Bitcoins_PCB4.docx",
+      "matched_hierarchy": [],
+      "matched_id": "126f0e724be0886eb5cbeb67c37a6aa43c226f2cd3157975b8501ce68b9fbaa7",
+      "snippet": "(Batch:PCB4) Mrunal’s Economy Pillar#1A1 Money: Barter to Bitcoins → Page 13 ⇒ This is an obstacle to ‘cashless-economy’"
+    },
+    {
+      "id": "urbanization",
+      "query": "What challenges does rapid urbanization create in cities like housing and congestion?",
+      "expected_section": "Urban Sprawl and Migration",
+      "rank": 1,
+      "matched_source": "geography/main_geo.txt",
+      "matched_hierarchy": [
+        "Disaster Risk Reduction"
+      ],
+      "matched_id": "8bc0a6a155693bc099b1012a6dc0fb9fa7704f38a030d51de3a47014389b4808",
+      "snippet": "[Context: Disaster Risk Reduction] ## Disaster Risk Reduction Natural hazards like earthquakes, tsunamis, hurricanes, an"
+    }
+  ],
+  "summary": {
+    "total": 12,
+    "found": 9,
+    "not_found": [
+      "gis",
+      "water_scarcity",
+      "global_challenges"
+    ],
+    "avg_rank_found": 1.11,
+    "median_rank_found": 1,
+    "best_rank_found": 1
+  }
+}
