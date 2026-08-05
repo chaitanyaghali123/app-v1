@@ -9,7 +9,7 @@ const VECTOR_TIMEOUT_MS = Number(process.env.VECTOR_API_TIMEOUT_MS || 60000);
 /**
  * Query PostgreSQL pgvector retrieval API.
  */
-export async function queryVector({ prompt, topK, skipRerank = false, subjectIds }) {
+export async function queryVector({ prompt, topK, skipRerank = false, subjectIds, apiKey }) {
   try {
     const body = {
       query: prompt,
@@ -25,6 +25,11 @@ export async function queryVector({ prompt, topK, skipRerank = false, subjectIds
 
     if (subjectIds && subjectIds.length > 0) {
       body.subject_ids = subjectIds;
+    }
+
+    // Per-user Gemini API key for question embedding (BYOK).
+    if (apiKey) {
+      body.api_key = apiKey;
     }
 
     const resp = await axios.post(`${BASE}/chunks`, body, {

@@ -78,6 +78,7 @@ async function handleStream(req, res) {
       topK: 25,
       skipRerank: false,
       subjectIds: subjectFilter,
+      apiKey,
     });
 
     const rawBaseChunks = (Array.isArray(vectorChunks) ? vectorChunks : []).map((c) => ({

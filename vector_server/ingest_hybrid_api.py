@@ -345,8 +345,13 @@ GEMINI_EMBED_TASK_QUERY = (
 _gemini_session = _requests.Session()
 
 
-def _gemini_embed_batch(texts, task_type="RETRIEVAL_QUERY"):
-    """Call Gemini batchEmbedContents API for a list of texts."""
+def _gemini_embed_batch(texts, task_type="RETRIEVAL_QUERY", api_key=None):
+    """Call Gemini batchEmbedContents API for a list of texts.
+
+    Uses the supplied per-user api_key when available (question embedding
+    billed to the end user), otherwise falls back to the server key.
+    """
+    effective_key = (api_key or "").strip() or GEMINI_API_KEY
     payload = {
         "requests": [
             {
@@ -361,7 +366,7 @@ def _gemini_embed_batch(texts, task_type="RETRIEVAL_QUERY"):
     for attempt in range(8):
         try:
             resp = _gemini_session.post(
-                f"{GEMINI_EMBED_URL}?key={GEMINI_API_KEY}",
+                f"{GEMINI_EMBED_URL}?key={effective_key}",
                 json=payload,
                 timeout=90,
             )
@@ -372,11 +377,18 @@ def _gemini_embed_batch(texts, task_type="RETRIEVAL_QUERY"):
                 )
                 time.sleep(wait)
                 continue
+            # 4xx other than 429 = permanent (bad/expired key) — fail fast.
+            if 400 <= resp.status_code < 500:
+                raise RuntimeError(
+                    f"Gemini embed client error {resp.status_code}: {resp.text[:300]}"
+                )
             resp.raise_for_status()
             data = resp.json()
             return [
                 e["values"] for e in data["embeddings"]
             ]
+        except RuntimeError:
+            raise
         except Exception as exc:
             if attempt == 7:
                 raise
@@ -497,7 +509,7 @@ def normalize_embedding_matrix(values):
     return embeddings / norms
 
 
-async def generate_embeddings(texts):
+async def generate_embeddings(texts, api_key=None):
 
     if not texts:
         return np.empty(
@@ -510,7 +522,7 @@ async def generate_embeddings(texts):
         for i in range(0, len(texts), GEMINI_EMBED_BATCH):
             sub = texts[i : i + GEMINI_EMBED_BATCH]
             batch_embs = _gemini_embed_batch(
-                sub, task_type=GEMINI_EMBED_TASK_QUERY
+                sub, task_type=GEMINI_EMBED_TASK_QUERY, api_key=api_key
             )
             all_embs.extend(batch_embs)
         return all_embs
@@ -1631,7 +1643,8 @@ async def hybrid_retrieval(
     top_k,
     topic=None,
     subject_ids=None,
-    use_rerank=True
+    use_rerank=True,
+    api_key=None
 ):
 
     cache_key = (
@@ -1645,7 +1658,8 @@ async def hybrid_retrieval(
 
     q_emb = (
         await generate_embeddings(
-            [query]
+            [query],
+            api_key=api_key
         )
     )[0]
 
@@ -1918,6 +1932,19 @@ async def chunks_api(
             None
         )
 
+        # Optional per-user Gemini API key for question embedding (BYOK).
+        # Falls back to the server key when absent.
+        api_key = body.get(
+            "api_key",
+            None
+        ) or body.get(
+            "gemini_api_key",
+            None
+        )
+
+        if api_key and not isinstance(api_key, str):
+            api_key = None
+
         if subject_ids and isinstance(subject_ids, list):
             subject_ids = [
                 s.strip().lower()
@@ -1997,7 +2024,8 @@ async def chunks_api(
             top_k=top_k,
             topic=topic,
             subject_ids=effective_subject_ids,
-            use_rerank=use_rerank
+            use_rerank=use_rerank,
+            api_key=api_key
         )
 
         latency = round(

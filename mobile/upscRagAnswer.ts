@@ -96,6 +96,7 @@ function normalizeChunkScores(chunks: RagChunk[], explicitScores?: number[]): nu
 export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
   let response;
   try {
+    const { getOrCreateDeviceId } = await import("./gemini");
     response = await fetch(`${options.backendUrl}/api/mobile/rag-context`, {
       method: "POST",
       headers: {
@@ -107,6 +108,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
         maxChunks: options.maxChunks ?? 25,
         maxContextChars: options.maxContextChars ?? 40000,
         targetTokens: options.targetTokens ?? 3000,
+        deviceId: await getOrCreateDeviceId(),
       }),
     });
   } catch (fetchError) {

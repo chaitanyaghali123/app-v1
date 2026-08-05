@@ -1,5 +1,7 @@
 import { queryVector } from "../services/vector.service.js";
 import { pool } from "../services/db.service.js";
+import { getGeminiKeyRecord } from "../services/db.service.js";
+import { decryptGeminiApiKeyRecord } from "../services/gemini.service.js";
 
 import fs from "fs";
 import path from "path";
@@ -1278,10 +1280,23 @@ export async function getMobileRagContext(req, res) {
       subject,
       maxChunks = DEFAULT_MAX_CHUNKS,
       maxContextChars = DEFAULT_MAX_CONTEXT_CHARS,
+      deviceId,
     } = req.body || {};
 
     if (!question || typeof question !== "string") {
       return res.status(400).json({ error: "question is required" });
+    }
+
+    let userApiKey = null;
+    if (deviceId && typeof deviceId === "string" && deviceId.length >= 8) {
+      try {
+        const keyRecord = await getGeminiKeyRecord(deviceId);
+        if (keyRecord?.encrypted_key) {
+          userApiKey = await decryptGeminiApiKeyRecord(keyRecord);
+        }
+      } catch (keyErr) {
+        console.warn("Mobile rag-context: failed to resolve user API key:", keyErr.message);
+      }
     }
 
     const requestedMaxChunks = Math.max(
@@ -1302,6 +1317,7 @@ export async function getMobileRagContext(req, res) {
       topK: requestedMaxChunks * 3,
       skipRerank: false,
       subjectIds: folderPatterns?.map((f) => f.toLowerCase()),
+      apiKey: userApiKey,
     });
 
     const pgChunks = Array.isArray(vectorChunks)

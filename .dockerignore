@@ -42,9 +42,6 @@ yarn-error.log
 
 # Local data and ingestion artifacts
 vector_server/data/
-vector_server/chroma/__pycache__/
-vector_server/chroma/*.log
-vector_server/chroma/*.tmp
 
 # Build artifacts
 *.egg-info/
