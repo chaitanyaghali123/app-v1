@@ -4,6 +4,15 @@ import { proxyGeminiCall } from "../services/gemini.service.js";
 import { getGeminiKeyRecord, pool } from "../services/db.service.js";
 import { decryptGeminiApiKeyRecord } from "../services/gemini.service.js";
 import { isThinEvidence } from "../controllers/mobile.controller.js";
+import { GS_PAPER_FOLDER_MAP } from "../controllers/gsMapping.js";
+
+const GS_PAPER_SUBJECT_IDS = {
+  gs1: ["history", "art-culture", "indian-society", "geography"],
+  gs2: ["polity-governance", "constitution", "social-justice", "international-relations"],
+  gs3: ["economy", "environment", "disaster-management", "internal-security", "science-tech", "agriculture"],
+  gs4: ["ethics"],
+  essay: ["essay", "current-affairs"],
+};
 
 const router = Router();
 
@@ -69,17 +78,38 @@ async function handleStream(req, res) {
 
     res.write(`data: ${JSON.stringify({ type: "status", status: "Searching knowledge base..." })}\n\n`);
 
-    const subjectFilter = subject
-      ? [String(subject).toLowerCase()]
-      : undefined;
+    const rawSubject = subject ? String(subject).toLowerCase() : null;
+    let subjectFilter;
+    if (rawSubject && GS_PAPER_SUBJECT_IDS[rawSubject]) {
+      subjectFilter = GS_PAPER_SUBJECT_IDS[rawSubject];
+    } else if (rawSubject) {
+      subjectFilter = [rawSubject];
+    }
 
-    const vectorChunks = await queryVector({
-      prompt,
-      topK: 25,
-      skipRerank: false,
-      subjectIds: subjectFilter,
-      apiKey,
-    });
+    let vectorChunks;
+    try {
+      vectorChunks = await queryVector({
+        prompt,
+        topK: 25,
+        skipRerank: false,
+        subjectIds: subjectFilter,
+        apiKey,
+      });
+    } catch (retrievalErr) {
+      res.write(
+        `data: ${JSON.stringify({
+          type: "error",
+          error: retrievalErr.message || "Retrieval failed.",
+          code: retrievalErr.code || "RETRIEVAL_FAILED",
+        })}\n\n`
+      );
+      res.end();
+      console.error(
+        `RAG stream retrieval failed (${retrievalErr.code || "unknown"}):`,
+        retrievalErr.message
+      );
+      return;
+    }
 
     const rawBaseChunks = (Array.isArray(vectorChunks) ? vectorChunks : []).map((c) => ({
       text: c.text || "",

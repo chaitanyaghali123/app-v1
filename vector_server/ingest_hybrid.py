@@ -193,7 +193,7 @@ MAX_WORKERS = int(
 )
 
 PDF_PAGE_BATCH_SIZE = int(
-    os.getenv("PDF_PAGE_BATCH_SIZE", "50")
+    os.getenv("PDF_PAGE_BATCH_SIZE", "5")
 )
 
 PDF_PARSE_TIMEOUT_SECONDS = int(
@@ -595,6 +595,8 @@ def ensure_tables():
                     heading_hierarchy jsonb DEFAULT '[]'::jsonb,
                     parent_chunk TEXT DEFAULT '',
                     is_parent_chunk boolean DEFAULT false,
+                    diagram_url TEXT,
+                    gs_paper TEXT DEFAULT 'general',
                     created_at TIMESTAMP DEFAULT NOW(),
                     PRIMARY KEY (id, subject_id)
                 ) PARTITION BY LIST (subject_id);
@@ -606,16 +608,27 @@ def ensure_tables():
 
             partition_subjects = [
                 'polity', 'history', 'economy', 'geography',
-                'environment', 'science', 'ethics', 'general'
+                'environment', 'science', 'ethics', 'general',
+                'culture', 'governance', 'internal-security',
+                'disaster-management', 'international-relations',
+                'constitution', 'science-tech', 'disaster',
+                'heritage', 'international', 'society',
+                'social-justice', 'current-affairs', 'essay',
+                'optional', 'agriculture', 'indian-society',
+                'gs1', 'gs2', 'gs3', 'gs4',
             ]
 
             for subj in partition_subjects:
 
-                cur.execute(f"""
-                    CREATE TABLE IF NOT EXISTS upsc_chunks_{subj}
-                    PARTITION OF upsc_chunks
-                    FOR VALUES IN ('{subj}');
-                """)
+                try:
+                    cur.execute(f"""
+                        CREATE TABLE IF NOT EXISTS "upsc_chunks_{subj}"
+                        PARTITION OF upsc_chunks
+                        FOR VALUES IN ('{subj}');
+                    """)
+                except Exception:
+                    conn.rollback()
+                    continue
 
             # ==================================================
             # INDEXES on partitioned parent
@@ -2043,7 +2056,9 @@ def insert_postgres_rows(rows):
                         search_vector,
                         heading_hierarchy,
                         parent_chunk,
-                        is_parent_chunk
+                        is_parent_chunk,
+                        diagram_url,
+                        gs_paper
                     )
                     VALUES (
                         %s,
@@ -2062,6 +2077,8 @@ def insert_postgres_rows(rows):
                             %s
                         ),
                         %s::jsonb,
+                        %s,
+                        %s,
                         %s,
                         %s
                     )
@@ -2082,7 +2099,9 @@ def insert_postgres_rows(rows):
                         search_vector=EXCLUDED.search_vector,
                         heading_hierarchy=EXCLUDED.heading_hierarchy,
                         parent_chunk=EXCLUDED.parent_chunk,
-                        is_parent_chunk=EXCLUDED.is_parent_chunk
+                        is_parent_chunk=EXCLUDED.is_parent_chunk,
+                        diagram_url=EXCLUDED.diagram_url,
+                        gs_paper=EXCLUDED.gs_paper
                     """,
                     rows,
                     page_size=BATCH_SIZE
@@ -2111,6 +2130,24 @@ def insert_postgres_rows(rows):
 # PROCESS FILE
 # ==========================================================
 
+# GS Paper → folder mapping for ingestion
+GS_FOLDER_MAP = {
+    'history': 'gs1', 'culture': 'gs1', 'heritage': 'gs1',
+    'art-culture': 'gs1', 'geography': 'gs1', 'society': 'gs1',
+    'indian-society': 'gs1',
+    'polity': 'gs2', 'governance': 'gs2', 'constitution': 'gs2',
+    'social-justice': 'gs2', 'international': 'gs2',
+    'international-relations': 'gs2',
+    'economy': 'gs3', 'environment': 'gs3', 'ecology': 'gs3',
+    'disaster': 'gs3', 'disaster-management': 'gs3',
+    'internal-security': 'gs3', 'security': 'gs3',
+    'science': 'gs3', 'technology': 'gs3', 'science-tech': 'gs3',
+    'agriculture': 'gs3',
+    'ethics': 'gs4', 'integrity': 'gs4',
+    'essay': 'essay', 'current-affairs': 'essay',
+    'optional': 'optional',
+}
+
 root_folder = None
 
 def process_file(file, subject_id=None):
@@ -2133,6 +2170,8 @@ def process_file(file, subject_id=None):
     else:
         fname = file.name
         subject_id = "general"
+
+    gs_paper = GS_FOLDER_MAP.get(subject_id, subject_id)
 
     suffix = file.suffix.lower()
 
@@ -2177,6 +2216,8 @@ def process_file(file, subject_id=None):
         page_records = []
 
         if suffix == ".pdf":
+
+            page_urls = render_pdf_visual_pages(file, file_hash)
 
             all_chunks = []
             all_ids = []
@@ -2223,6 +2264,7 @@ def process_file(file, subject_id=None):
 
                             all_metas.append({
                                 "subject_id": subject_id,
+                                "gs_paper": gs_paper,
                                 "topic": detect_topic(chunk["chunk_text"]),
                                 "difficulty": detect_difficulty(chunk["chunk_text"]),
                                 "source_file": fname,
@@ -2234,6 +2276,7 @@ def process_file(file, subject_id=None):
                                 "heading_hierarchy": chunk.get("heading_hierarchy", []),
                                 "parent_text": chunk.get("parent_text", ""),
                                 "is_parent_chunk": chunk.get("is_parent_chunk", False),
+                                "diagram_url": page_urls.get(page_number or 0),
                             })
 
                             global_chunk_index += 1
@@ -2273,6 +2316,7 @@ def process_file(file, subject_id=None):
 
                         all_metas.append({
                             "subject_id": subject_id,
+                            "gs_paper": gs_paper,
                             "topic": detect_topic(chunk["chunk_text"]),
                             "difficulty": detect_difficulty(chunk["chunk_text"]),
                             "source_file": fname,
@@ -2284,6 +2328,7 @@ def process_file(file, subject_id=None):
                             "heading_hierarchy": chunk.get("heading_hierarchy", []),
                             "parent_text": chunk.get("parent_text", ""),
                             "is_parent_chunk": chunk.get("is_parent_chunk", False),
+                            "diagram_url": page_urls.get(page_number or 0),
                         })
 
                         global_chunk_index += 1
@@ -2332,6 +2377,8 @@ def process_file(file, subject_id=None):
                     json.dumps(meta.get("heading_hierarchy", [])),
                     meta.get("parent_text", ""),
                     meta.get("is_parent_chunk", False),
+                    meta.get("diagram_url"),
+                    meta.get("gs_paper", "general"),
                 ))
 
             insert_postgres_rows(rows)
@@ -2465,6 +2512,7 @@ def process_file(file, subject_id=None):
                 json.dumps(meta.get("heading_hierarchy", [])),
                 meta.get("parent_text", ""),
                 meta.get("is_parent_chunk", False),
+                meta.get("gs_paper", "general"),
             ))
 
         insert_postgres_rows(rows)
@@ -2547,6 +2595,25 @@ def ingest_folder(folder):
     folder_path = Path(folder)
     root_folder = folder_path
     folder_name = folder_path.name
+
+    try:
+        from r2_store import r2_enabled, sync_r2_to_local
+
+        if r2_enabled():
+            sync_stats = sync_r2_to_local(folder_path)
+            logger.info(
+                f"☁️  R2 sync: {len(sync_stats['downloaded'])} downloaded, "
+                f"{len(sync_stats['removed'])} removed, "
+                f"{sync_stats['unchanged']} unchanged"
+            )
+        else:
+            logger.info(
+                "☁️  R2 not configured — ingesting from local data dir"
+            )
+    except Exception as r2_exc:
+        logger.warning(
+            f"R2 sync failed, continuing with local data: {r2_exc}"
+        )
 
     total_files = 0
 

@@ -586,4 +586,46 @@ export async function getUserSubscriptionStatus(userId) {
   }
 }
 
+export async function ensurePyqsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS upsc_pyqs (
+      id SERIAL PRIMARY KEY,
+      paper TEXT NOT NULL,
+      year INTEGER,
+      title TEXT NOT NULL,
+      pdf_url TEXT NOT NULL UNIQUE,
+      source TEXT DEFAULT 'UPSC',
+      scraped_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_upsc_pyqs_paper_year
+    ON upsc_pyqs(paper, year DESC);
+  `);
+}
+
+export async function ensureCurrentAffairsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS current_affairs (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      title TEXT NOT NULL,
+      summary TEXT,
+      source_url TEXT UNIQUE,
+      source_name TEXT DEFAULT 'PIB',
+      paper_type TEXT NOT NULL,
+      topics TEXT[] DEFAULT '{}',
+      published_date DATE,
+      source_tier TEXT DEFAULT 'primary',
+      scraped_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_ca_paper_date
+    ON current_affairs(paper_type, published_date DESC);
+  `);
+  await pool.query(`
+    ALTER TABLE current_affairs ADD COLUMN IF NOT EXISTS source_tier TEXT DEFAULT 'primary';
+  `);
+}
+
 export { pool };

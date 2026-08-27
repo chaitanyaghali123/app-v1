@@ -26,3 +26,6 @@ venv310/
 
 
 
+
+# R2 sync mirror (rebuilt from Cloudflare R2 on every ingestion run)
+vector_server/data/

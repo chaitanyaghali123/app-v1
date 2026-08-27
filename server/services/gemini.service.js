@@ -630,6 +630,8 @@ CRITICAL RULES - VIOLATION IS FORBIDDEN:
 6. If you are uncertain about any detail, omit it or state the uncertainty.
 7. NEVER add generic summary sections like "Summary of ..." or "Overview of ...".
 8. NEVER add blockquote callouts like "> UPSC Mains Takeaway" or "> UPSC Exam Takeaway". Answer directly without generic wrapper sections.
+9. ORIGINALITY: Rephrase ALL explanatory prose in your own words. NEVER copy sentences from the evidence word-for-word; paraphrase sentence structures freely while keeping every fact, date, name, and figure EXACTLY as stated in the evidence. Short technical terms and standard definitions may match, but full sentences must not.
+10. Copying exceptions to rule 9: section headings (per FORMATTING RULES), tables, blockquoted definitions/direct quotes, and ASCII/box diagrams MUST still be reproduced exactly as they appear in the evidence.
 
 WORKFLOW — FOLLOW THESE TWO STEPS IN ORDER:
 STEP 1 (EXTRACT): Read EVERY evidence chunk, one by one. From each chunk, extract a complete list of facts: names, dates, definitions, concepts, examples, and key points. Do this for ALL chunks INCLUDING the later ones — never stop at the first chunks. Silently build this fact list (do not output it).
@@ -909,7 +911,7 @@ export async function proxyGeminiCall(apiKey, options) {
       method: "POST",
       body: JSON.stringify({
         systemInstruction: {
-          parts: [{ text: "You are a STRICT RAG answer engine. WORKFLOW: STEP 1 (EXTRACT) — read EVERY evidence chunk and extract all facts (names, dates, definitions, concepts, examples) from ALL chunks INCLUDING the later ones; never stop at the first chunks. STEP 2 (WRITE) — using ONLY the extracted facts, write the answer as: \`## **Introduction**\` (Markdown header with bold text inside), bold major headings \`## **<Theme>**\` for the Body created ONLY from themes present in the evidence — copy each heading VERBATIM from the evidence, STRIPPING any leading number (e.g. '10.4.3 💵💵Paper Money' becomes '💵💵Paper Money', '1. Physical Geography' becomes 'Physical Geography') and never adding numbers of your own — and \`## **Conclusion**\`. Never number the sub-sections — sub-sections use \`### **<Sub-theme>**\` with no 1.1, 2.1 prefixes. Inside sections, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets — never numbered lists (1., 2., 3.) — and write evidence prose as plain paragraphs without bullets. Cover EVERY chunk including the later sections — do not stop early. RULES: 1) NEVER use external knowledge. 2) EVERY fact MUST come from evidence chunks. 3) Do NOT add citations of any kind — no [EVIDENCE X], no [1]/[2], no footnotes; write facts as plain sentences. 4) You MUST cover ALL chunks — the prompt lists what each chunk contains. 5) If any chunk is missing from your answer, it is INVALID. 6) Never guess or infer. 7) If evidence is insufficient, say 'Insufficient evidence.' 8) Body subheadings MUST come ONLY from themes present in the evidence — NEVER invent 'Limitations', 'Challenges', 'Future Scope', 'Way Forward', 'Government Initiatives', 'Impact', 'Criticism' unless explicitly in the evidence. NEVER create any sub-heading on your own: ### sub-sections may only come from headings that literally appear in the evidence; when reusing an evidence heading, copy it VERBATIM but STRIP any leading number (e.g. '10.5.1 Iran' becomes 'Iran', '1. Physical Geography' becomes 'Physical Geography') — never keep a source number and never add a number of your own (never '## **2. 1. Physical Geography**'). Never create bold label prefixes inside bullets (like 'Resource Mapping:', 'Policy Application:') unless the evidence literally contains them — write bullets as plain sentences. Use at most two heading levels (## and ###). Each distinct major section from the evidence must appear as its own numbered ## section — never fold a major evidence section inside another as a sub-section. 9) If the evidence contains an ASCII/box diagram inside a ```text block, COPY it character-for-character into a ```text block in your answer — reproduce EVERY character EXACTLY: every box-drawing character (─, │, ┌, ┐, └, ┘, ├, ┤, ▼), the leading indentation/spaces, inner padding, and labels. Do NOT re-indent, re-center, re-pad, trim spaces, or reformat. Place it as a STANDALONE block: blank line before the opening fence, opening \`\`\`text fence on its own line, diagram lines, closing \`\`\` fence on its own line, blank line after. Do NOT attach the fence to a bullet, heading, sentence, or citation. Before finishing, mentally check each EVIDENCE N was covered. NEVER use LaTeX math syntax (\`$$\` or \`$$...$$\`, \`\\(...\\)\`, \`\\text{...}\`, \`\\langle\`, \`\\rangle\`, \`\\longrightarrow\`) for code or HTML — write HTML tags and code as plain text, e.g. <ol><li>Item</li></ol>. Separate every heading and paragraph with a blank line; every heading, bullet (*), numbered item (1.), and code fence must begin on its own fresh line." }],
+          parts: [{ text: "You are a STRICT RAG answer engine. WORKFLOW: STEP 1 (EXTRACT) — read EVERY evidence chunk and extract all facts (names, dates, definitions, concepts, examples) from ALL chunks INCLUDING the later ones; never stop at the first chunks. STEP 2 (WRITE) — using ONLY the extracted facts, write the answer as: \`## **Introduction**\` (Markdown header with bold text inside), bold major headings \`## **<Theme>**\` for the Body created ONLY from themes present in the evidence — copy each heading VERBATIM from the evidence, STRIPPING any leading number (e.g. '10.4.3 💵💵Paper Money' becomes '💵💵Paper Money', '1. Physical Geography' becomes 'Physical Geography') and never adding numbers of your own — and \`## **Conclusion**\`. Never number the sub-sections — sub-sections use \`### **<Sub-theme>**\` with no 1.1, 2.1 prefixes. Inside sections, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets — never numbered lists (1., 2., 3.) — and write evidence prose as plain paragraphs without bullets. Cover EVERY chunk including the later sections — do not stop early. RULES: 1) NEVER use external knowledge. 2) EVERY fact MUST come from evidence chunks. 3) Do NOT add citations of any kind — no [EVIDENCE X], no [1]/[2], no footnotes; write facts as plain sentences. 4) You MUST cover ALL chunks — the prompt lists what each chunk contains. 5) If any chunk is missing from your answer, it is INVALID. 6) Never guess or infer. 7) If evidence is insufficient, say 'Insufficient evidence.' 8) Body subheadings MUST come ONLY from themes present in the evidence — NEVER invent 'Limitations', 'Challenges', 'Future Scope', 'Way Forward', 'Government Initiatives', 'Impact', 'Criticism' unless explicitly in the evidence. NEVER create any sub-heading on your own: ### sub-sections may only come from headings that literally appear in the evidence; when reusing an evidence heading, copy it VERBATIM but STRIP any leading number (e.g. '10.5.1 Iran' becomes 'Iran', '1. Physical Geography' becomes 'Physical Geography') — never keep a source number and never add a number of your own (never '## **2. 1. Physical Geography**'). Never create bold label prefixes inside bullets (like 'Resource Mapping:', 'Policy Application:') unless the evidence literally contains them — write bullets as plain sentences. Use at most two heading levels (## and ###). Each distinct major section from the evidence must appear as its own numbered ## section — never fold a major evidence section inside another as a sub-section. 9) If the evidence contains an ASCII/box diagram inside a ```text block, COPY it character-for-character into a ```text block in your answer — reproduce EVERY character EXACTLY: every box-drawing character (─, │, ┌, ┐, └, ┘, ├, ┤, ▼), the leading indentation/spaces, inner padding, and labels. Do NOT re-indent, re-center, re-pad, trim spaces, or reformat. Place it as a STANDALONE block: blank line before the opening fence, opening \`\`\`text fence on its own line, diagram lines, closing \`\`\` fence on its own line, blank line after. Do NOT attach the fence to a bullet, heading, sentence, or citation. Before finishing, mentally check each EVIDENCE N was covered. NEVER use LaTeX math syntax (\`$$\` or \`$$...$$\`, \`\\(...\\)\`, \`\\text{...}\`, \`\\langle\`, \`\\rangle\`, \`\\longrightarrow\`) for code or HTML — write HTML tags and code as plain text, e.g. <ol><li>Item</li></ol>. Separate every heading and paragraph with a blank line; every heading, bullet (*), numbered item (1.), and code fence must begin on its own fresh line. ORIGINALITY: rephrase ALL explanatory prose in your own words — never copy consecutive sentences from the evidence word-for-word; paraphrase freely while keeping every fact, date, name, and figure exactly as stated. Exceptions that MUST still be copied exactly: section headings, tables, blockquoted definitions, and ASCII/box diagrams." }],
         },
         safetySettings: [
           { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
@@ -1032,5 +1034,85 @@ export async function proxyGeminiCall(apiKey, options) {
   return {
     answer: cleaned,
     tokenCount,
+  };
+}
+
+const RAG_ANSWER_SYSTEM_INSTRUCTION = `You are a STRICT RAG answer engine for UPSC study material.
+WORKFLOW: STEP 1 (EXTRACT) — read EVERY evidence chunk and silently extract all facts (names, dates, definitions, concepts, examples) from ALL chunks INCLUDING the later ones; never stop at the first chunks. STEP 2 (WRITE) — using ONLY the extracted facts, write the answer structured as: \`## **Introduction**\`, bold major headings \`## **<Theme>**\` created ONLY from themes present in the evidence (copy each heading verbatim from the evidence, stripping any leading number), and \`## **Conclusion**\`. Sub-sections use \`### **<Sub-theme>**\` taken only from headings that literally appear in the evidence; never number sections or sub-sections.
+RULES: 1) NEVER use external knowledge — every fact must come from the evidence chunks. 2) Mirror the evidence's structure: bullet points (*) only where the evidence itself uses bullets; write prose as plain paragraphs. 3) Do NOT add citations of any kind. 4) Cover ALL chunks — never omit later sections. 5) Never guess or infer; if evidence is insufficient, state 'Insufficient evidence.' 6) NEVER invent generic sub-headings ('Limitations', 'Challenges', 'Way Forward', 'Impact', 'Criticism') unless present in the evidence. 7) If the evidence contains an ASCII/box diagram inside a \`\`\`text block, copy it character-for-character into a \`\`\`text block placed standalone on its own lines. 8) NEVER use LaTeX math syntax (\`$$\`, \`\\(...\\)\`, \`\\text{...}\`) — write HTML/code/symbols as plain text or Unicode arrows (→).
+ORIGINALITY: rephrase ALL explanatory prose in your own words — never copy consecutive sentences from the evidence word-for-word; paraphrase freely while keeping every fact, date, name, and figure exactly as stated. Exceptions that MUST still be copied exactly: section headings, tables, blockquoted definitions, and ASCII/box diagrams.`;
+
+export async function generateAnswer({ apiKey, question, chunks, subjectId, options = {} }) {
+  const cleanKey = String(apiKey || "").trim();
+  if (!cleanKey) {
+    throw new GeminiApiError({
+      message: "Missing Gemini API key for answer generation.",
+      status: 401,
+      code: "GEMINI_INVALID_KEY",
+      userMessage: "Please provide a valid Gemini API key to proceed.",
+      operation: "generate_answer",
+    });
+  }
+
+  if (!chunks || chunks.length === 0) {
+    throw new Error("No evidence chunks provided to generateAnswer");
+  }
+
+  const userPrompt = buildRagPrompt({ question, chunks, subjectId });
+
+  const requestBody = {
+    contents: [
+      { role: "user", parts: [{ text: userPrompt }] },
+    ],
+    systemInstruction: {
+      parts: [{ text: RAG_ANSWER_SYSTEM_INSTRUCTION }],
+    },
+    safetySettings: [
+      { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+      { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+      { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+    ],
+    generationConfig: buildGeminiGenerationConfig({
+      maxOutputTokens: options.maxOutputTokens || 8192,
+      temperature: options.temperature ?? 0.0,
+      topP: options.topP ?? 1,
+    }),
+  };
+
+  const response = await requestGemini(
+    cleanKey,
+    buildGeminiUrls(":generateContent"),
+    {
+      method: "POST",
+      body: JSON.stringify(requestBody),
+    },
+    {
+      operation: "generate_answer",
+      timeoutMs: options.timeoutMs || GEMINI_REQUEST_TIMEOUT_MS,
+      retries: options.retries ?? GEMINI_MAX_RETRIES,
+    }
+  );
+
+  const data = await response.json();
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const text = parts.map((part) => part?.text || "").join("");
+
+  if (!text.trim()) {
+    throw new GeminiApiError({
+      message: "Gemini returned an empty response or was blocked by safety filters.",
+      status: 502,
+      code: "GEMINI_EMPTY_RESPONSE",
+      userMessage: "Unable to generate an answer. Please try rephrasing your question.",
+      operation: "generate_answer",
+    });
+  }
+
+  const cleaned = restoreExactDiagrams(cleanModelOutput(text), chunks);
+
+  return {
+    answer: cleaned,
+    modelUsed: getGeminiModel(),
+    usage: data?.usageMetadata || null,
   };
 }

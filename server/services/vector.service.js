@@ -38,6 +38,16 @@ export async function queryVector({ prompt, topK, skipRerank = false, subjectIds
     });
     return resp.data.chunks || [];
   } catch (err) {
+    const status = err?.response?.status;
+    const upstreamCode = err?.response?.data?.code;
+    if (status === 429 || upstreamCode === "GEMINI_QUOTA_EXCEEDED") {
+      const quotaErr = new Error(
+        err?.response?.data?.error ||
+          "Gemini API quota exceeded for your API key. Try again later or use a different key."
+      );
+      quotaErr.code = "GEMINI_QUOTA_EXCEEDED";
+      throw quotaErr;
+    }
     console.error("Vector retrieval failed:", err.message);
     return [];
   }

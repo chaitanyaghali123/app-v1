@@ -345,7 +345,15 @@ GEMINI_EMBED_TASK_QUERY = (
 _gemini_session = _requests.Session()
 
 
-def _gemini_embed_batch(texts, task_type="RETRIEVAL_QUERY", api_key=None):
+class GeminiEmbedError(RuntimeError):
+    """Embedding failure with an HTTP status the API layer can surface."""
+
+    def __init__(self, message, status=503):
+        super().__init__(message)
+        self.status = status
+
+
+def _gemini_embed_batch(texts, task_type="RETRIEVAL_QUERY", api_key=None, attempts=8):
     """Call Gemini batchEmbedContents API for a list of texts.
 
     Uses the supplied per-user api_key when available (question embedding
@@ -363,7 +371,7 @@ def _gemini_embed_batch(texts, task_type="RETRIEVAL_QUERY", api_key=None):
             for t in texts
         ]
     }
-    for attempt in range(8):
+    for attempt in range(attempts):
         try:
             resp = _gemini_session.post(
                 f"{GEMINI_EMBED_URL}?key={effective_key}",
@@ -371,33 +379,42 @@ def _gemini_embed_batch(texts, task_type="RETRIEVAL_QUERY", api_key=None):
                 timeout=90,
             )
             if resp.status_code == 429:
+                if attempt == attempts - 1:
+                    raise GeminiEmbedError(
+                        "Gemini embedding quota exceeded (429). "
+                        "Your API key has hit its daily/rate limit.",
+                        status=429,
+                    )
                 wait = (2 ** attempt) * 2
                 logger.warning(
-                    f"Gemini embed 429, attempt {attempt+1}/8, retry in {wait}s"
+                    f"Gemini embed 429, attempt {attempt+1}/{attempts}, retry in {wait}s"
                 )
                 time.sleep(wait)
                 continue
             # 4xx other than 429 = permanent (bad/expired key) — fail fast.
             if 400 <= resp.status_code < 500:
-                raise RuntimeError(
-                    f"Gemini embed client error {resp.status_code}: {resp.text[:300]}"
+                raise GeminiEmbedError(
+                    f"Gemini embed client error {resp.status_code}: {resp.text[:300]}",
+                    status=resp.status_code,
                 )
             resp.raise_for_status()
             data = resp.json()
             return [
                 e["values"] for e in data["embeddings"]
             ]
+        except GeminiEmbedError:
+            raise
         except RuntimeError:
             raise
         except Exception as exc:
-            if attempt == 7:
+            if attempt == attempts - 1:
                 raise
             wait = (2 ** attempt) * 2
             logger.warning(
-                f"Gemini embed error ({exc}), attempt {attempt+1}/8, retry in {wait}s"
+                f"Gemini embed error ({exc}), attempt {attempt+1}/{attempts}, retry in {wait}s"
             )
             time.sleep(wait)
-    raise RuntimeError("Failed to embed batch after 8 retries")
+    raise RuntimeError("Failed to embed batch after retries")
 
 # ==========================================================
 # LOAD RERANKER
@@ -509,7 +526,7 @@ def normalize_embedding_matrix(values):
     return embeddings / norms
 
 
-async def generate_embeddings(texts, api_key=None):
+async def generate_embeddings(texts, api_key=None, embed_attempts=8):
 
     if not texts:
         return np.empty(
@@ -522,7 +539,10 @@ async def generate_embeddings(texts, api_key=None):
         for i in range(0, len(texts), GEMINI_EMBED_BATCH):
             sub = texts[i : i + GEMINI_EMBED_BATCH]
             batch_embs = _gemini_embed_batch(
-                sub, task_type=GEMINI_EMBED_TASK_QUERY, api_key=api_key
+                sub,
+                task_type=GEMINI_EMBED_TASK_QUERY,
+                api_key=api_key,
+                attempts=embed_attempts
             )
             all_embs.extend(batch_embs)
         return all_embs
@@ -975,6 +995,7 @@ def pgvector_search(
                         heading_hierarchy,
                         parent_chunk,
                         is_parent_chunk,
+                        diagram_url,
                         1 - (embedding <=> %s::vector) AS vector_score
                     FROM upsc_chunks
                     WHERE embedding IS NOT NULL
@@ -1005,6 +1026,7 @@ def pgvector_search(
                         heading_hierarchy,
                         parent_chunk,
                         is_parent_chunk,
+                        diagram_url,
                         1 - (embedding <=> %s::vector) AS vector_score
                     FROM upsc_chunks
                     WHERE embedding IS NOT NULL
@@ -1033,6 +1055,7 @@ def pgvector_search(
                         heading_hierarchy,
                         parent_chunk,
                         is_parent_chunk,
+                        diagram_url,
                         1 - (embedding <=> %s::vector) AS vector_score
                     FROM upsc_chunks
                     WHERE embedding IS NOT NULL
@@ -1061,6 +1084,7 @@ def pgvector_search(
                         heading_hierarchy,
                         parent_chunk,
                         is_parent_chunk,
+                        diagram_url,
                         1 - (embedding <=> %s::vector) AS vector_score
                     FROM upsc_chunks
                     WHERE embedding IS NOT NULL
@@ -1106,6 +1130,7 @@ def pgvector_search(
                         "heading_hierarchy": heading_hierarchy,
                         "is_parent_chunk": row.get("is_parent_chunk") or False,
                         "parent_text": parent_text,
+                        "diagram_url": row.get("diagram_url"),
                     },
                     "vector_score": round(score, 4)
                 })
@@ -1184,6 +1209,7 @@ def postgres_bm25_search(
                         heading_hierarchy,
                         parent_chunk,
                         is_parent_chunk,
+                        diagram_url,
                         ts_rank(
                             search_vector,
                             plainto_tsquery(
@@ -1226,6 +1252,7 @@ def postgres_bm25_search(
                         heading_hierarchy,
                         parent_chunk,
                         is_parent_chunk,
+                        diagram_url,
                         ts_rank(
                             search_vector,
                             plainto_tsquery(
@@ -1266,6 +1293,7 @@ def postgres_bm25_search(
                         heading_hierarchy,
                         parent_chunk,
                         is_parent_chunk,
+                        diagram_url,
                         ts_rank(
                             search_vector,
                             plainto_tsquery(
@@ -1306,6 +1334,7 @@ def postgres_bm25_search(
                         heading_hierarchy,
                         parent_chunk,
                         is_parent_chunk,
+                        diagram_url,
                         ts_rank(
                             search_vector,
                             plainto_tsquery(
@@ -1353,6 +1382,7 @@ def postgres_bm25_search(
                         "heading_hierarchy": heading_hierarchy,
                         "is_parent_chunk": row.get("is_parent_chunk") or False,
                         "parent_text": parent_text,
+                        "diagram_url": row.get("diagram_url"),
                     },
                     "bm25_score": float(
                         row["bm25_score"]
@@ -1659,7 +1689,8 @@ async def hybrid_retrieval(
     q_emb = (
         await generate_embeddings(
             [query],
-            api_key=api_key
+            api_key=api_key,
+            embed_attempts=2
         )
     )[0]
 
@@ -2064,6 +2095,28 @@ async def chunks_api(
 
         raise
 
+    except GeminiEmbedError as e:
+
+        logger.error(
+            f"❌ Embedding failed (status {e.status}): {e}"
+        )
+
+        REQUEST_COUNT.labels(endpoint="/chunks", status="embed_error").inc()
+
+        return JSONResponse(
+            status_code=e.status,
+            content={
+                "request_id": request_id,
+                "error": str(e),
+                "code": (
+                    "GEMINI_QUOTA_EXCEEDED"
+                    if e.status == 429
+                    else "GEMINI_EMBED_FAILED"
+                ),
+                "chunks": []
+            }
+        )
+
     except Exception as e:
 
         logger.exception(
@@ -2353,10 +2406,27 @@ async def ingest_text_endpoint(
 
         await run_in_threadpool(_run)
 
+        r2_status = "skipped"
+
+        try:
+
+            from r2_store import build_key, r2_enabled, upload_r2_object
+
+            if r2_enabled():
+                upload_r2_object(build_key(subject_id, safe), target)
+                r2_status = "uploaded"
+
+        except Exception as r2_exc:
+
+            logger.warning(
+                f"R2 upload failed for {target}: {r2_exc}"
+            )
+
         return {
             "status": "indexed",
             "file": f"{subject_id}/{safe}",
-            "subject_id": subject_id
+            "subject_id": subject_id,
+            "r2": r2_status
         }
 
     except Exception as e:

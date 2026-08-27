@@ -167,6 +167,14 @@ router.post("/gemini/store-key", storeKeyLimiter, async (req, res) => {
       keyHash: fingerprintGeminiApiKey(cleanKey),
     });
 
+    try {
+      const fs = await import("fs");
+      fs.appendFileSync(
+        "/app/uploads/rag-debug.log",
+        `${new Date().toISOString()} STORE_KEY device=${deviceId} fp=${fingerprintGeminiApiKey(cleanKey).slice(0, 16)} ip=${req.ip}\n`
+      );
+    } catch {}
+
     recordGeminiMetric({
       route: "store_key",
       outcome: "success",

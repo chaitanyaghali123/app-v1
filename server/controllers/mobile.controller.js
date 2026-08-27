@@ -2,6 +2,7 @@ import { queryVector } from "../services/vector.service.js";
 import { pool } from "../services/db.service.js";
 import { getGeminiKeyRecord } from "../services/db.service.js";
 import { decryptGeminiApiKeyRecord } from "../services/gemini.service.js";
+import { SUBJECT_FOLDER_MAP, GS_PAPER_FOLDER_MAP } from "./gsMapping.js";
 
 import fs from "fs";
 import path from "path";
@@ -1197,26 +1198,6 @@ async function queryPostgresExpandedChunks({ question, maxChunks, sourceFiles, s
   }
 }
 
-const SUBJECT_FOLDER_MAP = {
-  history: ["history"],
-  "art-culture": ["heritage", "culture", "art"],
-  geography: ["geography"],
-  "polity-governance": ["polity", "governance"],
-  constitution: ["constitution"],
-  economy: ["economy", "economic"],
-  environment: ["environment", "ecology", "biodiversity"],
-  "science-tech": ["science", "technology"],
-  "social-justice": ["social justice", "social_justice"],
-  "international-relations": ["international", "international relations"],
-  "disaster-management": ["disaster"],
-  "internal-security": ["security"],
-  ethics: ["ethics", "integrity"],
-  agriculture: ["agriculture"],
-  "indian-society": ["society"],
-  "current-affairs": ["current"],
-  essay: ["essay"],
-  optional: ["optional"],
-};
 
 function levenshtein(a, b) {
   const m = a.length;
@@ -1298,6 +1279,16 @@ export async function getMobileRagContext(req, res) {
         console.warn("Mobile rag-context: failed to resolve user API key:", keyErr.message);
       }
     }
+    console.log(
+      `[rag-context] device=${deviceId ? `${deviceId.slice(0, 8)}…` : "NONE"} keyResolved=${Boolean(userApiKey)}`
+    );
+    try {
+      const fs = await import("fs");
+      fs.appendFileSync(
+        "/app/uploads/rag-debug.log",
+        `${new Date().toISOString()} device=${deviceId ? deviceId : "NONE"} keyResolved=${Boolean(userApiKey)} keyLen=${userApiKey?.length ?? 0} q=${question.slice(0, 40)}\n`
+      );
+    } catch {}
 
     const requestedMaxChunks = Math.max(
       1,
@@ -1312,13 +1303,31 @@ export async function getMobileRagContext(req, res) {
     const resolvedQuestion = correctSubjectTypo(question, subject) || question;
     const broadCoverage = isBroadCoverageQuestion(resolvedQuestion, subject);
 
-    const vectorChunks = await queryVector({
-      prompt: resolvedQuestion,
-      topK: requestedMaxChunks * 3,
-      skipRerank: false,
-      subjectIds: folderPatterns?.map((f) => f.toLowerCase()),
-      apiKey: userApiKey,
-    });
+    let vectorChunks;
+    try {
+      vectorChunks = await queryVector({
+        prompt: resolvedQuestion,
+        topK: requestedMaxChunks * 3,
+        skipRerank: false,
+        subjectIds: folderPatterns?.map((f) => f.toLowerCase()),
+        apiKey: userApiKey,
+      });
+    } catch (retrievalErr) {
+      if (retrievalErr?.code === "GEMINI_QUOTA_EXCEEDED") {
+        try {
+          const fs = await import("fs");
+          fs.appendFileSync(
+            "/app/uploads/rag-debug.log",
+            `${new Date().toISOString()} RETRIEVAL_QUOTA_FAIL device=${deviceId}\n`
+          );
+        } catch {}
+        return res.status(429).json({
+          error: retrievalErr.message,
+          code: "GEMINI_QUOTA_EXCEEDED",
+        });
+      }
+      throw retrievalErr;
+    }
 
     const pgChunks = Array.isArray(vectorChunks)
       ? vectorChunks.map((c) => ({

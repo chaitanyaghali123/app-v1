@@ -118,7 +118,18 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
   }
 
   if (!response.ok) {
-    throw new Error(`Unable to retrieve source chunks (${response.status}).`);
+    let message = `Unable to retrieve source chunks (${response.status}).`;
+    let code: string | undefined;
+    try {
+      const body = (await response.json()) as { error?: string; code?: string };
+      if (body.error) message = body.error;
+      code = body.code;
+    } catch {
+      // keep default message
+    }
+    const err = new Error(message) as Error & { code?: string };
+    err.code = code;
+    throw err;
   }
 
   const ragContext = (await response.json()) as RagContextResponse;

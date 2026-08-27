@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   SafeAreaView,
@@ -190,6 +192,63 @@ function resolveChunkScore(chunk: ChunkPreview, explicitScore: unknown): number 
   return scores.find((score) => score > 0) ?? null;
 }
 
+const GS_SUBJECTS: Record<string, Array<{ name: string }>> = {
+  gs1: [
+    { name: "Indian Heritage & Culture" },
+    { name: "History" },
+    { name: "Geography" },
+    { name: "Indian Society" },
+  ],
+  gs2: [
+    { name: "Constitution" },
+    { name: "Polity" },
+    { name: "Governance" },
+    { name: "Social Justice" },
+    { name: "International Relations" },
+  ],
+  gs3: [
+    { name: "Economy" },
+    { name: "Agriculture" },
+    { name: "Science & Technology" },
+    { name: "Environment & Ecology" },
+    { name: "Biodiversity" },
+    { name: "Disaster Management" },
+    { name: "Internal Security" },
+  ],
+  gs4: [
+    { name: "Ethics" },
+    { name: "Integrity" },
+    { name: "Aptitude" },
+  ],
+  essay: [
+    { name: "Essay" },
+  ],
+};
+
+const GS_DESCRIPTIONS: Record<string, string> = {
+  gs1: "This paper focuses on static and foundational humanity subjects. It covers Indian art, literature, and architecture from ancient to modern times, along with the freedom struggle, post-independence consolidation, and world history. It also examines the salient features and diversity of Indian society, social issues, and global physical/human geography.",
+  gs2: "This paper focuses on administrative, legal, and geopolitical systems. It evaluates the structure, functions, and constitutional provisions of the Indian political system, executive, judiciary, and state legislatures. Additionally, it covers public policy execution, governance mechanisms, social sector development schemes, and India's bilateral and global foreign relations.",
+  gs3: "This paper deals with dynamic science, economic, and security subjects. It covers macroeconomics, Indian agriculture, infrastructure, and financial growth, alongside advancements in fields like IT, space, and biotechnology. It also addresses environmental conservation, climate change, disaster risk reduction, and internal/external national security challenges.",
+  gs4: "This paper tests a candidate's moral framework, attitude, and administrative decision-making skills. It explores human values, ethical theories, emotional intelligence, probity in governance, and anti-corruption measures. Half of the paper evaluates real-world ethical dilemmas through practical administrative case studies.",
+  essay: "This paper tests the ability to articulate thoughts in a coherent, well-structured essay on topics spanning all areas of general studies, current affairs, and philosophical themes.",
+};
+
+const GS_NAMES: Record<string, string> = {
+  gs1: "General Studies 1",
+  gs2: "General Studies 2",
+  gs3: "General Studies 3",
+  gs4: "General Studies 4",
+  essay: "Essay",
+};
+
+const SUBJECT_COLORS: Record<string, string> = {
+  gs1: "#f59e0b",
+  gs2: "#3b82f6",
+  gs3: "#10b981",
+  gs4: "#8b5cf6",
+  essay: "#ec4899",
+};
+
 export default function App() {
   const [route, setRoute] = useState<"dashboard" | "qa" | "history">("dashboard");
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
@@ -208,6 +267,16 @@ export default function App() {
   const [tokenCount, setTokenCount] = useState(0);
   const [showChunks, setShowChunks] = useState(false);
   const [showApiInput, setShowApiInput] = useState(false);
+  const [pyqs, setPyqs] = useState<Array<{ paper: string; year: number | null; title: string; pdf_url: string }>>([]);
+  const [pyqsLoading, setPyqsLoading] = useState(false);
+  const [showPyqs, setShowPyqs] = useState(false);
+  const [sources, setSources] = useState<Record<string, { subject_name: string; files: Array<{ file_name: string; display_name: string; url: string }> }>>({});
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [showSources, setShowSources] = useState(false);
+  const [currentAffairs, setCurrentAffairs] = useState<Array<{ id: string; title: string; summary: string; source_url: string; source_name: string; paper_type: string; topics: string[]; published_date: string | null }>>([]);
+  const [caLoading, setCaLoading] = useState(false);
+  const [showCa, setShowCa] = useState(false);
+  const [caRange, setCaRange] = useState<"today" | "week" | "month">("week");
   const [debugMode, setDebugMode] = useState(() => {
     if (isWeb) return localStorage.getItem("upsc_debug") === "true";
     return false;
@@ -223,6 +292,89 @@ export default function App() {
   }, []);
 
   const cleanBackendUrl = backendUrl.trim().replace(/\/+$/, "");
+
+  const handleTogglePyqs = useCallback(() => {
+    if (showPyqs) {
+      setShowPyqs(false);
+      return;
+    }
+    if (pyqs.length > 0) {
+      setShowPyqs(true);
+      return;
+    }
+    if (!activeSubject) return;
+    setPyqsLoading(true);
+    setShowPyqs(true);
+    fetch(`${cleanBackendUrl}/api/pyqs/${activeSubject.id}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.success) setPyqs(data.pyqs);
+      })
+      .catch(() => {})
+      .finally(() => setPyqsLoading(false));
+  }, [showPyqs, pyqs.length, activeSubject, cleanBackendUrl]);
+
+  const handleToggleSources = useCallback(() => {
+    if (showSources) {
+      setShowSources(false);
+      return;
+    }
+    if (Object.keys(sources).length > 0) {
+      setShowSources(true);
+      return;
+    }
+    if (!activeSubject) return;
+    setSourcesLoading(true);
+    setShowSources(true);
+    fetch(`${cleanBackendUrl}/api/sources/${activeSubject.id}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.subjects) setSources(data.subjects);
+      })
+      .catch(() => {})
+      .finally(() => setSourcesLoading(false));
+  }, [showSources, Object.keys(sources).length, activeSubject, cleanBackendUrl]);
+
+  const fetchCa = useCallback((range: "today" | "week" | "month") => {
+    if (!activeSubject) return;
+    setCaLoading(true);
+    setShowCa(true);
+    const paper = activeSubject.id.startsWith("gs") ? activeSubject.id : "gs1";
+    fetch(`${cleanBackendUrl}/api/current-affairs?paper=${paper}&range=${range}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.articles) setCurrentAffairs(data.articles);
+      })
+      .catch(() => {})
+      .finally(() => setCaLoading(false));
+  }, [activeSubject, cleanBackendUrl]);
+
+  const handleToggleCa = useCallback(() => {
+    if (showCa) {
+      setShowCa(false);
+      return;
+    }
+    if (currentAffairs.length > 0) {
+      setShowCa(true);
+      return;
+    }
+    fetchCa(caRange);
+  }, [showCa, currentAffairs.length, fetchCa, caRange]);
+
+  const handleCaRangeChange = useCallback((range: "today" | "week" | "month") => {
+    setCaRange(range);
+    fetchCa(range);
+  }, [fetchCa]);
+
+  useEffect(() => {
+    setSources({});
+    setShowSources(false);
+    setPyqs([]);
+    setShowPyqs(false);
+    setCurrentAffairs([]);
+    setShowCa(false);
+    setCaRange("week");
+  }, [activeSubject?.id]);
 
   useEffect(() => {
     hasStoredKeyMarker().then((stored) => {
@@ -268,6 +420,7 @@ export default function App() {
     setChunks([]);
     setChunkScores([]);
     setHasAsked(false);
+    setShowPyqs(false);
     setRoute("qa");
   }, []);
 
@@ -339,8 +492,8 @@ export default function App() {
         backendUrl: cleanBackendUrl,
         question: cleanQuestion,
         subject: activeSubject.id,
-        maxChunks: 8,
-        maxContextChars: 12000,
+        maxChunks: 10,
+        maxContextChars: 36000,
         targetTokens: 3000,
         onStatus: setStatus,
         onToken: (token) => {
@@ -473,6 +626,258 @@ export default function App() {
           </View>
           )}
 
+          {activeSubject && GS_SUBJECTS[activeSubject.id] ? (
+            <View style={styles.subjectInfoCard}>
+              <Text style={[styles.subjectInfoTitle, { color: SUBJECT_COLORS[activeSubject.id] }]}>
+                {GS_NAMES[activeSubject.id] ?? activeSubject.name}
+              </Text>
+              <View style={styles.subjectInfoGrid}>
+                {GS_SUBJECTS[activeSubject.id].map((sub, i) => (
+                  <View key={i} style={[styles.subjectInfoBadge, { backgroundColor: SUBJECT_COLORS[activeSubject.id] + "12", borderColor: SUBJECT_COLORS[activeSubject.id] + "30" }]}>
+                    <Text style={[styles.subjectInfoNum, { color: SUBJECT_COLORS[activeSubject.id] }]}>{i + 1}</Text>
+                    <Text style={styles.subjectInfoText}>{sub.name}</Text>
+                  </View>
+                ))}
+              </View>
+              {GS_DESCRIPTIONS[activeSubject.id] ? (
+                <Text style={styles.subjectInfoDesc}>{GS_DESCRIPTIONS[activeSubject.id]}</Text>
+              ) : null}
+            </View>
+          ) : null}
+
+          {activeSubject && GS_SUBJECTS[activeSubject.id] ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={handleToggleSources}
+              style={({ pressed }) => [
+                styles.pyqToggleBtn,
+                { borderColor: SUBJECT_COLORS[activeSubject.id] + "40" },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={[styles.pyqToggleText, { color: SUBJECT_COLORS[activeSubject.id] }]}>
+                {showSources ? "Hide" : "Show"} Source Material
+              </Text>
+              <Text style={styles.pyqToggleArrow}>{showSources ? "v" : ">"}</Text>
+            </Pressable>
+          ) : null}
+
+          {showSources && Object.keys(sources).length > 0 ? (
+            <View style={styles.pyqCard}>
+              {Object.entries(sources).map(([subjectId, group]) => (
+                <View key={subjectId} style={{ marginBottom: 10 }}>
+                  <Text style={[styles.sourceSubjectLabel, { color: SUBJECT_COLORS[activeSubject.id] }]}>
+                    {group.subject_name}
+                  </Text>
+                  {group.files.map((file, i) => (
+                    <Pressable
+                      key={i}
+                      onPress={() => {
+                        const url = `${cleanBackendUrl}/api/sources/${activeSubject.id}/file/${file.file_name}?key=${encodeURIComponent(file.r2_key || file.file_name)}`;
+                        if (isWeb) {
+                          window.open(url, "_blank");
+                        } else {
+                          Linking.openURL(url);
+                        }
+                      }}
+                      style={({ pressed }) => [styles.sourceItem, pressed && { opacity: 0.7 }]}
+                    >
+                      <View style={[styles.pyqDot, { backgroundColor: SUBJECT_COLORS[activeSubject.id] }]} />
+                      <Text style={styles.sourceItemText} numberOfLines={2}>{file.display_name}</Text>
+                      <Text style={styles.pyqArrow}>↗</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ))}
+            </View>
+          ) : null}
+
+          {showSources && sourcesLoading ? (
+            <View style={styles.pyqCard}>
+              <ActivityIndicator color="#4f46e5" />
+              <Text style={styles.pyqLoadingText}>Loading sources...</Text>
+            </View>
+          ) : null}
+
+          {activeSubject && GS_SUBJECTS[activeSubject.id] ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={handleToggleCa}
+              style={({ pressed }) => [
+                styles.pyqToggleBtn,
+                { borderColor: SUBJECT_COLORS[activeSubject.id] + "40" },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={[styles.pyqToggleText, { color: SUBJECT_COLORS[activeSubject.id] }]}>
+                {showCa ? "Hide" : "Show"} Daily Current Affairs
+              </Text>
+              <Text style={styles.pyqToggleArrow}>{showCa ? "v" : ">"}</Text>
+            </Pressable>
+          ) : null}
+
+          {showCa ? (
+            <View style={{ flexDirection: "row", gap: 6, marginTop: 4, marginBottom: 2, paddingHorizontal: 4 }}>
+              {(["today", "week", "month"] as const).map((r) => (
+                <Pressable
+                  key={r}
+                  onPress={() => handleCaRangeChange(r)}
+                  style={({ pressed }) => [
+                    {
+                      paddingHorizontal: 12,
+                      paddingVertical: 5,
+                      borderRadius: 12,
+                      backgroundColor: caRange === r
+                        ? (SUBJECT_COLORS[activeSubject?.id || "gs1"] || "#3b82f6") + "20"
+                        : "#f0f1f3",
+                      borderWidth: 1,
+                      borderColor: caRange === r
+                        ? (SUBJECT_COLORS[activeSubject?.id || "gs1"] || "#3b82f6") + "50"
+                        : "#e0e1e3",
+                    },
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <Text style={{
+                    fontSize: 12,
+                    fontWeight: caRange === r ? "600" : "400",
+                    color: caRange === r
+                      ? SUBJECT_COLORS[activeSubject?.id || "gs1"] || "#3b82f6"
+                      : "#666",
+                  }}>
+                    {r === "today" ? "Today" : r === "week" ? "This Week" : "This Month"}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+
+          {showCa && currentAffairs.length > 0 ? (
+            <View style={styles.pyqCard}>
+              {currentAffairs.filter(a => a.source_tier !== "deep-link").length > 0 ? (
+                <>
+                  <Text style={[styles.caSectionLabel, { color: SUBJECT_COLORS[activeSubject.id] }]}>
+                    Official Sources
+                  </Text>
+                  {currentAffairs.filter(a => a.source_tier !== "deep-link").map((article, i) => (
+                    <Pressable
+                      key={article.id || i}
+                      onPress={() => {
+                        if (isWeb) window.open(article.source_url, "_blank");
+                        else Linking.openURL(article.source_url);
+                      }}
+                      style={({ pressed }) => [styles.pyqItem, pressed && { opacity: 0.7 }]}
+                    >
+                      <View style={[styles.pyqDot, { backgroundColor: SUBJECT_COLORS[activeSubject.id] }]} />
+                      <View style={styles.pyqItemContent}>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                          <Text style={styles.pyqItemYear}>{article.published_date || "Today"}</Text>
+                          <Text style={[styles.caSourceTag, { borderColor: SUBJECT_COLORS[activeSubject.id] + "30", color: SUBJECT_COLORS[activeSubject.id] }]}>
+                            {article.source_name}
+                          </Text>
+                        </View>
+                        <Text style={styles.pyqItemTitle}>{article.title}</Text>
+                        {article.topics.length > 0 ? (
+                          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+                            {article.topics.slice(0, 3).map((t, ti) => (
+                              <Text key={ti} style={[styles.caTopicTag, { borderColor: SUBJECT_COLORS[activeSubject.id] + "40", color: SUBJECT_COLORS[activeSubject.id] }]}>
+                                {t}
+                              </Text>
+                            ))}
+                          </View>
+                        ) : null}
+                      </View>
+                      <Text style={styles.pyqArrow}>↗</Text>
+                    </Pressable>
+                  ))}
+                </>
+              ) : null}
+
+              {currentAffairs.filter(a => a.source_tier === "deep-link").length > 0 ? (
+                <>
+                  <Text style={[styles.caSectionLabel, { color: SUBJECT_COLORS[activeSubject.id], marginTop: 12 }]}>
+                    Newspaper Reading
+                  </Text>
+                  {currentAffairs.filter(a => a.source_tier === "deep-link").map((article, i) => (
+                    <Pressable
+                      key={article.id || `dl-${i}`}
+                      onPress={() => {
+                        if (isWeb) window.open(article.source_url, "_blank");
+                        else Linking.openURL(article.source_url);
+                      }}
+                      style={({ pressed }) => [styles.pyqItem, pressed && { opacity: 0.7 }]}
+                    >
+                      <View style={[styles.pyqDot, { backgroundColor: "#6b7280" }]} />
+                      <View style={styles.pyqItemContent}>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                          <Text style={styles.pyqItemYear}>{article.published_date || "Today"}</Text>
+                          <Text style={[styles.caSourceTag, { borderColor: "#d1d5db", color: "#6b7280" }]}>
+                            {article.source_name}
+                          </Text>
+                        </View>
+                        <Text style={styles.pyqItemTitle}>{article.title}</Text>
+                      </View>
+                      <View style={styles.caReadBadge}>
+                        <Text style={styles.caReadBadgeText}>Read</Text>
+                        <Text style={styles.pyqArrow}>↗</Text>
+                      </View>
+                    </Pressable>
+                  ))}
+                </>
+              ) : null}
+            </View>
+          ) : null}
+
+          {showCa && caLoading ? (
+            <View style={styles.pyqCard}>
+              <ActivityIndicator color="#4f46e5" />
+              <Text style={styles.pyqLoadingText}>Loading current affairs...</Text>
+            </View>
+          ) : null}
+
+          {activeSubject && GS_SUBJECTS[activeSubject.id] ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={handleTogglePyqs}
+              style={({ pressed }) => [
+                styles.pyqToggleBtn,
+                { borderColor: SUBJECT_COLORS[activeSubject.id] + "40" },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={[styles.pyqToggleText, { color: SUBJECT_COLORS[activeSubject.id] }]}>
+                {showPyqs ? "Hide" : "Show"} Previous Year Questions
+              </Text>
+              <Text style={styles.pyqToggleArrow}>{showPyqs ? "v" : ">"}</Text>
+            </Pressable>
+          ) : null}
+
+          {showPyqs && pyqs.length > 0 ? (
+            <View style={styles.pyqCard}>
+              {pyqs.map((pyq, i) => (
+                <Pressable
+                  key={i}
+                  onPress={() => { if (isWeb) window.open(pyq.pdf_url, "_blank"); }}
+                  style={({ pressed }) => [styles.pyqItem, pressed && { opacity: 0.7 }]}
+                >
+                  <View style={[styles.pyqDot, { backgroundColor: SUBJECT_COLORS[activeSubject.id] }]} />
+                  <View style={styles.pyqItemContent}>
+                    <Text style={styles.pyqItemYear}>{pyq.year ?? "Older"}</Text>
+                    <Text style={styles.pyqItemTitle}>{pyq.title}</Text>
+                  </View>
+                  <Text style={styles.pyqArrow}>↗</Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+
+          {showPyqs && pyqsLoading ? (
+            <View style={styles.pyqCard}>
+              <ActivityIndicator color="#4f46e5" />
+              <Text style={styles.pyqLoadingText}>Loading PYQs...</Text>
+            </View>
+          ) : null}
+
           <View style={styles.card}>
             <Text style={styles.cardLabel}>Question</Text>
             <TextInput
@@ -516,6 +921,27 @@ export default function App() {
             </View>
           )}
 
+          {(() => {
+            const diagramUrls = chunks
+              .map((c) => c.metadata?.diagram_url)
+              .filter((u): u is string => typeof u === "string" && u.length > 0);
+            const uniqueUrls = [...new Set(diagramUrls)];
+            if (uniqueUrls.length === 0) return null;
+            return (
+              <View style={styles.diagramSection}>
+                <Text style={styles.diagramSectionTitle}>Diagrams from Source</Text>
+                {uniqueUrls.map((url, i) => (
+                  <Image
+                    key={i}
+                    source={{ uri: url }}
+                    style={styles.diagramFull}
+                    resizeMode="contain"
+                  />
+                ))}
+              </View>
+            );
+          })()}
+
           {chunks.length > 0 && (
             <View style={styles.chunksCard}>
               <Pressable
@@ -550,6 +976,14 @@ export default function App() {
                         <Text style={styles.chunkSource}>
                           {formatChunkText(chunk.metadata.source_file)}
                         </Text>
+                      )}
+                      {typeof chunk.metadata?.diagram_url === "string" &&
+                        chunk.metadata.diagram_url.length > 0 && (
+                          <Image
+                            source={{ uri: chunk.metadata.diagram_url }}
+                            style={styles.chunkDiagram}
+                            resizeMode="contain"
+                          />
                       )}
                       <Text style={styles.chunkText}>
                         {formatChunkText(chunk.text ?? chunk.content ?? "")}
@@ -901,9 +1335,221 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginBottom: 6,
   },
+  chunkDiagram: {
+    width: "100%",
+    height: 250,
+    borderRadius: 8,
+    marginBottom: 8,
+    backgroundColor: "#fff",
+  },
   chunkText: {
     color: "#4b5563",
     fontSize: 13,
     lineHeight: 18,
+  },
+  diagramSection: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    padding: 12,
+    marginTop: 12,
+  },
+  diagramSectionTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#4f46e5",
+    marginBottom: 8,
+  },
+  diagramFull: {
+    width: "100%",
+    height: 300,
+    borderRadius: 8,
+    marginBottom: 10,
+    backgroundColor: "#f9fafb",
+  },
+  subjectInfoCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#f3f4f6",
+    padding: 14,
+    marginBottom: 12,
+  },
+  subjectInfoTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    marginBottom: 6,
+  },
+  subjectInfoDesc: {
+    color: "#6b7280",
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 10,
+  },
+  subjectInfoGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  subjectInfoBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  subjectInfoNum: {
+    fontSize: 13,
+    fontWeight: "800",
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    textAlign: "center",
+    lineHeight: 22,
+    overflow: "hidden",
+  },
+  subjectInfoText: {
+    color: "#374151",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  pyqCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#f3f4f6",
+    padding: 10,
+    marginBottom: 12,
+  },
+  pyqToggleBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#ffffff",
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+  },
+  pyqToggleText: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  pyqToggleArrow: {
+    color: "#9ca3af",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  pyqItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: "#f9fafb",
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: "#f3f4f6",
+  },
+  pyqDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  pyqItemContent: {
+    flex: 1,
+  },
+  pyqItemTitle: {
+    color: "#6b7280",
+    fontSize: 13,
+    fontWeight: "500",
+    marginTop: 2,
+  },
+  pyqItemYear: {
+    color: "#111827",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  pyqArrow: {
+    color: "#9ca3af",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  pyqLoadingText: {
+    color: "#6b7280",
+    fontSize: 13,
+    marginTop: 6,
+    textAlign: "center",
+  },
+  sourceSubjectLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    marginBottom: 6,
+    marginLeft: 2,
+  },
+  sourceItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: "#f9fafb",
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: "#f3f4f6",
+  },
+  sourceItemText: {
+    color: "#374151",
+    fontSize: 13,
+    fontWeight: "500",
+    flex: 1,
+  },
+  caTopicTag: {
+    fontSize: 10,
+    fontWeight: "600",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  caSectionLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 8,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f3f4f6",
+  },
+  caSourceTag: {
+    fontSize: 10,
+    fontWeight: "600",
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  caReadBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    backgroundColor: "#f3f4f6",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  caReadBadgeText: {
+    color: "#6b7280",
+    fontSize: 11,
+    fontWeight: "600",
   },
 });

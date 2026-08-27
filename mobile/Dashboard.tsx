@@ -13,6 +13,24 @@ type Subject = {
   id: string;
   name: string;
   icon: string;
+  gs_paper?: string;
+  gs_paper_name?: string;
+};
+
+type GsPaper = {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  color: string;
+  subjects: Subject[];
+};
+
+type CorpusStats = {
+  total_chunks: number;
+  total_diagrams: number;
+  subjects: Array<{ subject_id: string; chunks: number; files: number }>;
+  gs_papers: Array<{ gs_paper: string; chunks: number; files: number; subjects: number }>;
 };
 
 type DashboardProps = {
@@ -26,6 +44,16 @@ type DashboardProps = {
   onToggleApiInput: () => void;
 };
 
+const GS_PAPERS = [
+  { id: "gs1", name: "GS 1", icon: "🏛️", color: "#f59e0b" },
+  { id: "gs2", name: "GS 2", icon: "⚖️", color: "#3b82f6" },
+  { id: "gs3", name: "GS 3", icon: "🔬", color: "#10b981" },
+  { id: "gs4", name: "GS 4", icon: "⭐", color: "#8b5cf6" },
+  { id: "essay", name: "Essay", icon: "📝", color: "#ec4899" },
+  { id: "optional", name: "Optional Paper 1", icon: "📖", color: "#6366f1" },
+  { id: "optional2", name: "Optional Paper 2", icon: "📖", color: "#6366f1" },
+];
+
 export default function Dashboard({
   backendUrl,
   onSelectSubject,
@@ -36,19 +64,16 @@ export default function Dashboard({
   onSaveApiKey,
   onToggleApiInput,
 }: DashboardProps) {
-  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [stats, setStats] = useState<CorpusStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const cleanUrl = backendUrl.replace(/\/+$/, "");
-    fetch(`${cleanUrl}/api/subjects`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
+    fetch(`${cleanUrl}/api/admin/dashboard`)
+      .then((r) => r.json())
       .then((data) => {
-        setSubjects(data.subjects || []);
+        setStats(data);
         setLoading(false);
       })
       .catch((err) => {
@@ -57,11 +82,25 @@ export default function Dashboard({
       });
   }, [backendUrl]);
 
+  const getGsChunks = (gsId: string) =>
+    stats?.gs_papers.find((g) => g.gs_paper === gsId)?.chunks ?? 0;
+
+  const getGsFiles = (gsId: string) =>
+    stats?.gs_papers.find((g) => g.gs_paper === gsId)?.files ?? 0;
+
+  const handlePressPaper = (paper: typeof GS_PAPERS[0]) => {
+    onSelectSubject({
+      id: paper.id,
+      name: paper.name,
+      icon: paper.icon,
+    });
+  };
+
   if (loading) {
     return (
       <View style={styles.center}>
         <ActivityIndicator color="#4f46e5" />
-        <Text style={styles.loadingText}>Loading subjects...</Text>
+        <Text style={styles.loadingText}>Loading...</Text>
       </View>
     );
   }
@@ -79,15 +118,13 @@ export default function Dashboard({
       <View style={styles.container}>
         <View style={styles.headerSection}>
           <Text style={styles.badge}>UPSC MAINS</Text>
-          <Text style={styles.title}>Practice by Subject</Text>
-          <Text style={styles.subtitle}>
-            Choose a subject to start answer writing
-          </Text>
+          <Text style={styles.title}>RAG Study Assistant</Text>
+          <Text style={styles.subtitle}>Choose a paper to start</Text>
         </View>
 
         {showApiInput ? (
           <View style={styles.apiKeyCard}>
-            <Text style={styles.apiKeyLabel}>Gemini API Key</Text>
+            <Text style={styles.apiKeyLabel}>Gemini API Key (BYOK)</Text>
             <TextInput
               autoCapitalize="none"
               autoCorrect={false}
@@ -113,7 +150,7 @@ export default function Dashboard({
         ) : hasApiKey ? (
           <View style={styles.apiKeySavedBar}>
             <Text style={styles.apiKeyDot}>●</Text>
-            <Text style={styles.apiKeySavedText}>Key stored securely</Text>
+            <Text style={styles.apiKeySavedText}>Key stored</Text>
             <Pressable
               accessibilityRole="button"
               onPress={onToggleApiInput}
@@ -123,26 +160,29 @@ export default function Dashboard({
           </View>
         ) : null}
 
-        <View style={styles.grid}>
-          {subjects.map((subject) => (
-            <Pressable
-              key={subject.id}
-              accessibilityRole="button"
-              onPress={() => onSelectSubject(subject)}
-              style={({ pressed }) => [
-                styles.card,
-                pressed && styles.cardPressed,
-              ]}
-            >
-              <View style={styles.cardIconWrap}>
-                <Text style={styles.cardIcon}>{subject.icon}</Text>
-              </View>
-              <Text style={styles.cardName}>{subject.name}</Text>
-              <View style={styles.cardArrow}>
-                <Text style={styles.cardArrowText}>→</Text>
-              </View>
-            </Pressable>
-          ))}
+        <Text style={styles.sectionLabel}>Select Paper</Text>
+
+        <View style={styles.gsRow}>
+          {GS_PAPERS.map((paper) => {
+            const chunks = getGsChunks(paper.id);
+            return (
+              <Pressable
+                key={paper.id}
+                accessibilityRole="button"
+                onPress={() => handlePressPaper(paper)}
+                style={({ pressed }) => [
+                  styles.gsCard,
+                  { borderColor: paper.color + "30" },
+                  pressed && { borderColor: paper.color, backgroundColor: paper.color + "08" },
+                ]}
+              >
+                <View style={[styles.gsIconWrap, { backgroundColor: paper.color + "15" }]}>
+                  <Text style={styles.gsIcon}>{paper.icon}</Text>
+                </View>
+                <Text style={[styles.gsName, { color: paper.color }]}>{paper.name}</Text>
+              </Pressable>
+            );
+          })}
         </View>
       </View>
     </ScrollView>
@@ -264,60 +304,82 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
   },
-  grid: {
+  statsBar: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
+    alignItems: "center",
+    backgroundColor: "#f9fafb",
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: "#f3f4f6",
   },
-  card: {
+  statItem: {
+    flex: 1,
+    alignItems: "center",
+  },
+  statValue: {
+    color: "#111827",
+    fontSize: 20,
+    fontWeight: "800",
+  },
+  statLabel: {
+    color: "#6b7280",
+    fontSize: 11,
+    fontWeight: "600",
+    marginTop: 2,
+  },
+  statDivider: {
+    width: 1,
+    height: 30,
+    backgroundColor: "#e5e7eb",
+  },
+  sectionLabel: {
+    color: "#9ca3af",
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 1.5,
+    textTransform: "uppercase",
+    marginBottom: 12,
+  },
+  gsRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 28,
+  },
+  gsCard: {
+    flex: 1,
     backgroundColor: "#ffffff",
     borderRadius: 14,
-    flexBasis: "47%",
-    flexGrow: 1,
-    minHeight: 120,
-    paddingHorizontal: 16,
-    paddingVertical: 18,
-    justifyContent: "center",
-    gap: 8,
+    borderWidth: 1.5,
+    alignItems: "center",
+    paddingVertical: 16,
+    paddingHorizontal: 6,
+    gap: 6,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 2,
-    borderWidth: 1,
-    borderColor: "#f3f4f6",
   },
-  cardPressed: {
-    backgroundColor: "#f5f3ff",
-    borderColor: "#c7d2fe",
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
-  },
-  cardIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: "#f5f3ff",
+  gsIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
   },
-  cardIcon: {
-    fontSize: 20,
+  gsIcon: {
+    fontSize: 22,
   },
-  cardName: {
-    color: "#1f2937",
+  gsName: {
     fontSize: 13,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  gsChunkCount: {
+    color: "#6b7280",
+    fontSize: 14,
     fontWeight: "700",
-    lineHeight: 18,
-  },
-  cardArrow: {
-    position: "absolute",
-    right: 12,
-    top: 12,
-  },
-  cardArrowText: {
-    color: "#c7d2fe",
-    fontSize: 16,
-    fontWeight: "600",
   },
 });

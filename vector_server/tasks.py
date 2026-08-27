@@ -61,6 +61,24 @@ def ingest_file_task(self, file_path, subject_id=None):
     try:
         ensure_tables()
 
+        local_path = Path(file_path)
+
+        try:
+            from r2_store import build_key, r2_enabled, upload_r2_object
+
+            if (
+                r2_enabled()
+                and local_path.is_absolute()
+                and local_path.exists()
+            ):
+                key = build_key(subject_id, local_path.name)
+                upload_r2_object(key, local_path)
+                logger.info(f"Mirrored upload to R2: {key}")
+        except Exception as mirror_exc:
+            logger.warning(
+                f"R2 mirror upload failed for {file_path}: {mirror_exc}"
+            )
+
         process_file(Path(file_path), subject_id=subject_id)
 
         logger.info(
