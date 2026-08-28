@@ -149,7 +149,17 @@ logger.info(
 # ==========================================================
 
 EMBED_DIM = int(
-    os.getenv("EMBED_DIM", "3072")
+    os.getenv("EMBED_DIM", "1536")
+)
+
+# Lock the embedding contract to whatever EMBED_MODEL actually emits.
+# gemini-embedding-001 with output_dimensionality=EMBED_DIM → 1536.
+# If EMBED_DIM ever differs from the DB column, ingestion/retrieval
+# will fail with vector dimension mismatches.
+logger.info(
+    "Embedding contract: %s dim=%s task=RETRIEVAL_DOCUMENT",
+    os.getenv("EMBED_MODEL", "gemini-embedding-001"),
+    EMBED_DIM,
 )
 
 HEADING_PREFIX_MAX_LEVELS = int(
@@ -374,12 +384,13 @@ def _gemini_embed_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
                 timeout=90,
             )
             if resp.status_code == 429:
+                # Distinguish rate limit (transient) from daily quota cap.
+                body = resp.text or ""
+                is_quota = "quota" in body.lower()
+                wait = (2 ** min(attempt, 3)) * 2
                 logger.warning(
-                    f"Gemini embed 429 body: {resp.text[:300]}"
-                )
-                wait = (2 ** attempt) * 2
-                logger.warning(
-                    f"Gemini embed 429, attempt {attempt+1}/8, retry in {wait}s"
+                    f"Gemini embed 429 (quota={is_quota}), attempt {attempt+1}/8, "
+                    f"retry in {wait}s: {resp.text[:200]}"
                 )
                 time.sleep(wait)
                 continue
@@ -390,13 +401,16 @@ def _gemini_embed_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
             ]
         except Exception as exc:
             if attempt == 7:
+                if "429" in str(exc):
+                    raise EmbedQuotaExhausted(str(exc))
                 raise
             wait = (2 ** attempt) * 2
             logger.warning(
                 f"Gemini embed error ({exc}), attempt {attempt+1}/8, retry in {wait}s"
             )
             time.sleep(wait)
-    raise RuntimeError("Failed to embed batch after 8 retries")
+    # If every attempt was a 429, surface as quota-exhausted.
+    raise EmbedQuotaExhausted("Failed to embed batch after retries (429)")
 
 # ==========================================================
 # POSTGRES POOL
@@ -1987,34 +2001,79 @@ EMBED_BATCH_DELAY = int(
     os.getenv("EMBED_BATCH_DELAY", "5")
 )
 
+# When daily Gemini quota is exhausted, defer embeddings instead of
+# failing the file: chunks are still stored (BM25-searchable) with a
+# NULL vector, and a backfill pass can embed them later.
+EMBED_DEFER_ON_QUOTA = os.getenv(
+    "EMBED_DEFER_ON_QUOTA",
+    "true"
+).lower() in ("1", "true", "yes")
+
+# Skip Gemini entirely (no API hits): store NULL vectors without trying.
+# Use while the daily quota is exhausted to ingest the corpus fast.
+EMBED_OFFLINE = os.getenv(
+    "EMBED_OFFLINE",
+    "false"
+).lower() in ("1", "true", "yes")
+
+
+class EmbedQuotaExhausted(RuntimeError):
+    """Raised when the daily Gemini embedding quota is exhausted."""
+
 
 def generate_embeddings(chunks):
-
     if not chunks:
         return np.empty(
             (0, EMBED_DIM),
             dtype=np.float32
         )
 
+    deferred = [None] * len(chunks)
     all_embeddings = []
-    for i in range(0, len(chunks), EMBED_SUB_BATCH_SIZE):
-        if i > 0:
+    try:
+        if EMBED_OFFLINE:
             logger.info(
-                f"Waiting {EMBED_BATCH_DELAY}s between embed batches..."
+                "EMBED_OFFLINE=true — storing NULL vectors "
+                f"({len(chunks)} chunks, BM25-searchable)"
             )
+            return deferred
+        for i in range(0, len(chunks), EMBED_SUB_BATCH_SIZE):
+            if i > 0:
+                logger.info(
+                    f"Waiting {EMBED_BATCH_DELAY}s between embed batches..."
+                )
             time.sleep(EMBED_BATCH_DELAY)
-        sub_batch = chunks[i : i + EMBED_SUB_BATCH_SIZE]
-        batch_embs = _gemini_embed_batch(
-            sub_batch, task_type=GEMINI_EMBED_TASK
-        )
-        all_embeddings.extend(batch_embs)
+            sub_batch = chunks[i : i + EMBED_SUB_BATCH_SIZE]
+            batch_embs = _gemini_embed_batch(
+                sub_batch, task_type=GEMINI_EMBED_TASK
+            )
+            all_embeddings.extend(batch_embs)
 
-    return np.asarray(
-        all_embeddings,
-        dtype=np.float32
-    )
+        return np.asarray(
+            all_embeddings,
+            dtype=np.float32
+        )
+
+    except EmbedQuotaExhausted:
+        if EMBED_DEFER_ON_QUOTA:
+            logger.warning(
+                "Gemini quota exhausted — deferring embeddings "
+                "(chunks stored with NULL vector, BM25-searchable)"
+            )
+            return deferred
+        raise
+    except Exception as exc:
+        if EMBED_DEFER_ON_QUOTA and "429" in str(exc):
+            logger.warning(
+                f"Gemini embed 429 — deferring embeddings "
+                f"({len(chunks)} chunks stored with NULL vector)"
+            )
+            return deferred
+        raise
 
 def pgvector_literal(embedding):
+    if embedding is None:
+        return None
     values = (
         embedding.tolist()
         if hasattr(embedding, "tolist")
@@ -2126,27 +2185,117 @@ def insert_postgres_rows(rows):
         DB_RETRY_DELAY
     )
 
+
+def backfill_embedding_embeds(limit=100, chunk_ids=None):
+    """Embed chunks whose embedding IS NULL, in place.
+
+    Returns (attempted, completed).
+    """
+    conn = get_conn()
+    rows = None
+    try:
+        with conn.cursor() as cur:
+            if chunk_ids:
+                cur.execute(
+                    """
+                    SELECT id, chunk FROM upsc_chunks
+                    WHERE id = ANY(%s) AND embedding IS NULL
+                    """,
+                    (chunk_ids,)
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, chunk FROM upsc_chunks
+                    WHERE embedding IS NULL
+                    LIMIT %s
+                    """,
+                    (limit,)
+                )
+            rows = cur.fetchall()
+        conn.commit()
+    finally:
+        release_conn(conn)
+
+    if not rows:
+        return (0, 0)
+
+    for i in range(0, len(rows), EMBED_SUB_BATCH_SIZE):
+        batch = rows[i : i + EMBED_SUB_BATCH_SIZE]
+        ids = [r[0] for r in batch]
+        texts = [r[1] for r in batch]
+        try:
+            embs = _gemini_embed_batch(texts, task_type="RETRIEVAL_DOCUMENT")
+        except EmbedQuotaExhausted:
+            logger.warning(
+                f"Backfill stopped at {i}/{len(rows)}: quota exhausted"
+            )
+            return (len(rows), i)
+
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                for cid, emb in zip(ids, embs):
+                    cur.execute(
+                        """
+                        UPDATE upsc_chunks
+                        SET embedding = %s::vector
+                        WHERE id = %s
+                        """,
+                        (pgvector_literal(emb), cid)
+                    )
+            conn.commit()
+        finally:
+            release_conn(conn)
+
+        if i + EMBED_SUB_BATCH_SIZE < len(rows):
+            time.sleep(EMBED_BATCH_DELAY)
+
+    return (len(rows), len(rows))
+
+
+def count_unembedded_chunks():
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM upsc_chunks WHERE embedding IS NULL"
+            )
+            row = cur.fetchone()
+            return row[0] if row else 0
+    finally:
+        release_conn(conn)
+
+
 # ==========================================================
 # PROCESS FILE
 # ==========================================================
 
-# GS Paper → folder mapping for ingestion
+# GS Paper → folder mapping for ingestion.
+# MUST mirror server/controllers/gsMapping.js (GS_PAPER_FOLDER_MAP).
+# This is the single canonical taxonomy: R2 folder → GS paper.
 GS_FOLDER_MAP = {
-    'history': 'gs1', 'culture': 'gs1', 'heritage': 'gs1',
-    'art-culture': 'gs1', 'geography': 'gs1', 'society': 'gs1',
-    'indian-society': 'gs1',
-    'polity': 'gs2', 'governance': 'gs2', 'constitution': 'gs2',
-    'social-justice': 'gs2', 'international': 'gs2',
-    'international-relations': 'gs2',
-    'economy': 'gs3', 'environment': 'gs3', 'ecology': 'gs3',
-    'disaster': 'gs3', 'disaster-management': 'gs3',
-    'internal-security': 'gs3', 'security': 'gs3',
-    'science': 'gs3', 'technology': 'gs3', 'science-tech': 'gs3',
-    'agriculture': 'gs3',
-    'ethics': 'gs4', 'integrity': 'gs4',
-    'essay': 'essay', 'current-affairs': 'essay',
-    'optional': 'optional',
+    'gs1': ['history', 'culture', 'heritage', 'geography', 'society',
+            'indian-society', 'art-culture'],
+    'gs2': ['polity', 'governance', 'constitution', 'social-justice',
+            'international', 'international-relations'],
+    'gs3': ['economy', 'economic', 'environment', 'ecology', 'biodiversity',
+            'disaster', 'disaster-management', 'security', 'internal-security',
+            'science', 'technology', 'science-tech', 'agriculture'],
+    'gs4': ['ethics', 'integrity'],
+    'essay': ['essay', 'current', 'current-affairs', 'yojana', 'kurukshetra'],
+    'optional': ['optional'],
 }
+
+# Folder → GS paper (inverse lookup for ingestion routing)
+_FOLDER_TO_GS = {
+    folder: paper
+    for paper, folders in GS_FOLDER_MAP.items()
+    for folder in folders
+}
+
+def folder_to_gs_paper(subject_id):
+    return _FOLDER_TO_GS.get(subject_id, subject_id)
 
 root_folder = None
 
@@ -2171,7 +2320,7 @@ def process_file(file, subject_id=None):
         fname = file.name
         subject_id = "general"
 
-    gs_paper = GS_FOLDER_MAP.get(subject_id, subject_id)
+    gs_paper = folder_to_gs_paper(subject_id)
 
     suffix = file.suffix.lower()
 

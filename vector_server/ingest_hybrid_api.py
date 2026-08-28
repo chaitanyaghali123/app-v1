@@ -140,7 +140,13 @@ EMBEDDING_RETRY_DELAY = float(
 )
 
 EMBED_DIM = int(
-    os.getenv("EMBED_DIM", "3072")
+    os.getenv("EMBED_DIM", "1536")
+)
+
+logger.info(
+    "Embedding contract: %s dim=%s task=RETRIEVAL_DOCUMENT",
+    os.getenv("EMBED_MODEL", "gemini-embedding-001"),
+    EMBED_DIM,
 )
 
 # ==========================================================
@@ -2441,6 +2447,164 @@ async def ingest_text_endpoint(
         )
 
 
+@app.get("/gs4-kb/search")
+async def gs4_kb_search_endpoint(
+    q: str = "",
+    top_k: int = 8,
+    module_category: str = None,
+    syllabus_tag: str = None,
+    tags: str = None,
+    x_api_key: str = Header(None)
+):
+    """Search the GS4 ethics knowledge base (BM25 + trigram).
+
+    Vector search is used automatically when entries have embeddings;
+    until embeddings are backfilled, ranked full-text search applies.
+    """
+
+    verify_api_key(x_api_key)
+
+    try:
+
+        import gs4_ethics_kb
+
+        tag_list = None
+        if tags:
+            tag_list = [
+                t.strip() for t in tags.split(",") if t.strip()
+            ]
+
+        results = gs4_ethics_kb.search_gs4_kb(
+            query=q.strip(),
+            top_k=max(1, min(int(top_k), 20)),
+            module_category=module_category,
+            syllabus_tag=syllabus_tag,
+            tags=tag_list,
+        )
+
+        return {
+            "query": q.strip(),
+            "count": len(results),
+            "results": results,
+            "embedded": (results and results[0].get("score") or 0) > 0
+        }
+
+    except Exception as e:
+
+        logger.exception(f"gs4-kb search failed: {e}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"gs4-kb search failed: {str(e)}"
+        )
+
+
+@app.post("/gs4-kb/seed")
+async def gs4_kb_seed_endpoint(
+    request: Request,
+    x_api_key: str = Header(None)
+):
+    """Seed the GS4 ethics knowledge base from curated open source.
+
+    Accepts optional {"embed": true} to generate Gemini embeddings.
+    Embeddings are skipped when the API quota is exhausted.
+    """
+
+    verify_api_key(x_api_key)
+
+    body = await request.json() if request.headers.get("content-length") else {}
+
+    try:
+
+        import gs4_ethics_kb
+        import gs4_ethics_content
+
+        gs4_ethics_kb.ensure_table()
+
+        n = gs4_ethics_content.seed_all(
+            embed=bool(body.get("embed", False))
+        )
+
+        return {
+            "status": "ok",
+            "seeded": n,
+            "total": len(gs4_ethics_content.ALL_CONTENT),
+            "stats": gs4_ethics_kb.kb_stats()
+        }
+
+    except Exception as e:
+
+        logger.exception(f"gs4-kb seed failed: {e}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"gs4-kb seed failed: {str(e)}"
+        )
+
+
+@app.get("/gs4-kb/stats")
+async def gs4_kb_stats_endpoint(
+    x_api_key: str = Header(None)
+):
+
+    verify_api_key(x_api_key)
+
+    try:
+
+        import gs4_ethics_kb
+
+        return gs4_ethics_kb.kb_stats()
+
+    except Exception as e:
+
+        logger.exception(f"gs4-kb stats failed: {e}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"gs4-kb stats failed: {str(e)}"
+        )
+
+
+@app.post("/gs4-kb/backfill-embeddings")
+async def gs4_kb_backfill_endpoint(
+    request: Request,
+    x_api_key: str = Header(None)
+):
+    """Embed any KB rows missing vectors (batch, best-effort).
+
+    Run this outside the daily quota window. Rows are embedded in
+    batches so a partial failure leaves prior rows persisted.
+    """
+
+    verify_api_key(x_api_key)
+
+    body = await request.json() if request.headers.get("content-length") else {}
+
+    try:
+
+        import gs4_ethics_kb
+
+        gs4_ethics_kb.ensure_table()
+
+        limit = int(body.get("limit", 200))
+        n_done = gs4_ethics_kb.backfill_embeddings(limit)
+
+        return {
+            "status": "ok",
+            "embedded": n_done,
+            "stats": gs4_ethics_kb.kb_stats()
+        }
+
+    except Exception as e:
+
+        logger.exception(f"gs4-kb backfill failed: {e}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"gs4-kb backfill failed: {str(e)}"
+        )
+
+
 @app.get("/ingest-status/{job_id}")
 async def ingest_status(
     job_id: str,
@@ -2465,6 +2629,44 @@ async def ingest_status(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get status: {str(e)}"
+        )
+
+
+@app.post("/backfill-embeddings")
+async def backfill_embeddings_endpoint(
+    request: Request,
+    x_api_key: str = Header(None)
+):
+    """Embed upsc_chunks rows whose embedding IS NULL (batch, best-effort).
+
+    Rows stored during a quota-exhausted ingest get their vectors here.
+    """
+
+    verify_api_key(x_api_key)
+
+    body = await request.json() if request.headers.get("content-length") else {}
+
+    try:
+
+        from ingest_hybrid import backfill_embedding_embeds
+
+        limit = int(body.get("limit", 100))
+        attempted, completed = backfill_embedding_embeds(limit=limit)
+
+        return {
+            "status": "ok",
+            "attempted": attempted,
+            "completed": completed,
+            "deferred_remaining": attempted - completed
+        }
+
+    except Exception as e:
+
+        logger.exception(f"backfill-embeddings failed: {e}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"backfill-embeddings failed: {str(e)}"
         )
 
 
