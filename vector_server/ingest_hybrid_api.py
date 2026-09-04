@@ -380,7 +380,8 @@ def _gemini_embed_batch(texts, task_type="RETRIEVAL_QUERY", api_key=None, attemp
     for attempt in range(attempts):
         try:
             resp = _gemini_session.post(
-                f"{GEMINI_EMBED_URL}?key={effective_key}",
+                f"https://generativelanguage.googleapis.com/v1/"
+                f"models/{EMBED_MODEL}:batchEmbedContents?key={effective_key}",
                 json=payload,
                 timeout=90,
             )
@@ -718,7 +719,7 @@ def ensure_tables():
                     chunk_index INTEGER,
                     page_number INTEGER,
                     chunk_version INTEGER DEFAULT 1,
-                    embedding VECTOR({EMBED_DIM}),
+                    embedding HALFVEC({EMBED_DIM}),
                     search_vector tsvector,
                     heading_hierarchy jsonb DEFAULT '[]'::jsonb,
                     parent_chunk TEXT DEFAULT '',
@@ -729,7 +730,7 @@ def ensure_tables():
 
             cur.execute(f"""
                 ALTER TABLE upsc_chunks
-                ADD COLUMN IF NOT EXISTS embedding VECTOR({EMBED_DIM});
+                ADD COLUMN IF NOT EXISTS embedding HALFVEC({EMBED_DIM});
             """)
 
             cur.execute("""
@@ -754,15 +755,13 @@ def ensure_tables():
                 USING GIN(chunk gin_trgm_ops);
             """)
 
-            if EMBED_DIM <= 2000:
-
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_hnsw_v_partitioned
-                    ON upsc_chunks
-                    USING hnsw (
-                        embedding vector_cosine_ops
-                    );
-                """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_hnsw_v_partitioned
+                ON upsc_chunks
+                USING hnsw (
+                    embedding halfvec_cosine_ops
+                );
+            """)
 
         conn.commit()
 
@@ -1002,12 +1001,12 @@ def pgvector_search(
                         parent_chunk,
                         is_parent_chunk,
                         diagram_url,
-                        1 - (embedding <=> %s::vector) AS vector_score
+                        1 - (embedding <=> %s::halfvec) AS vector_score
                     FROM upsc_chunks
                     WHERE embedding IS NOT NULL
                       AND topic=%s
                       AND subject_id = ANY(%s::text[])
-                    ORDER BY embedding <=> %s::vector
+                    ORDER BY embedding <=> %s::halfvec
                     LIMIT %s
                 """, (
                     query_vector,
@@ -1033,11 +1032,11 @@ def pgvector_search(
                         parent_chunk,
                         is_parent_chunk,
                         diagram_url,
-                        1 - (embedding <=> %s::vector) AS vector_score
+                        1 - (embedding <=> %s::halfvec) AS vector_score
                     FROM upsc_chunks
                     WHERE embedding IS NOT NULL
                       AND topic=%s
-                    ORDER BY embedding <=> %s::vector
+                    ORDER BY embedding <=> %s::halfvec
                     LIMIT %s
                 """, (
                     query_vector,
@@ -1062,11 +1061,11 @@ def pgvector_search(
                         parent_chunk,
                         is_parent_chunk,
                         diagram_url,
-                        1 - (embedding <=> %s::vector) AS vector_score
+                        1 - (embedding <=> %s::halfvec) AS vector_score
                     FROM upsc_chunks
                     WHERE embedding IS NOT NULL
                       AND subject_id = ANY(%s::text[])
-                    ORDER BY embedding <=> %s::vector
+                    ORDER BY embedding <=> %s::halfvec
                     LIMIT %s
                 """, (
                     query_vector,
@@ -1091,10 +1090,10 @@ def pgvector_search(
                         parent_chunk,
                         is_parent_chunk,
                         diagram_url,
-                        1 - (embedding <=> %s::vector) AS vector_score
+                        1 - (embedding <=> %s::halfvec) AS vector_score
                     FROM upsc_chunks
                     WHERE embedding IS NOT NULL
-                    ORDER BY embedding <=> %s::vector
+                    ORDER BY embedding <=> %s::halfvec
                     LIMIT %s
                 """, (
                     query_vector,

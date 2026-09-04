@@ -515,39 +515,66 @@ export async function refreshCurrentAffairs() {
   return { added: totalAdded, total: parseInt(rows[0].count, 10) };
 }
 
+const OPTIONAL_SUBJECTS = new Set([
+  "history-optional", "geography-optional", "public-administration-optional",
+  "sociology-optional", "political-science-optional", "philosophy-optional",
+]);
+
 export async function getCurrentAffairs(paperType, days, tier) {
   if (!days) days = 7;
   await ensureTable();
 
-  const { rows: cached } = await pool.query(
-    `SELECT scraped_at FROM current_affairs ORDER BY scraped_at DESC LIMIT 1`
-  );
+  const isOptional = OPTIONAL_SUBJECTS.has(paperType);
 
-  if (cached.length > 0) {
-    const age = Date.now() - new Date(cached[0].scraped_at).getTime();
-    if (age > CACHE_TTL_MS) {
-      console.log("Current affairs cache stale — refreshing...");
+  // For optional subjects we serve a curated, separately-seeded corpus; do
+  // not trigger the GS RSS refresh (which only tags gs1-4/general).
+  if (!isOptional) {
+    const { rows: cached } = await pool.query(
+      `SELECT scraped_at FROM current_affairs ORDER BY scraped_at DESC LIMIT 1`
+    );
+
+    if (cached.length > 0) {
+      const age = Date.now() - new Date(cached[0].scraped_at).getTime();
+      if (age > CACHE_TTL_MS) {
+        console.log("Current affairs cache stale — refreshing...");
+        await refreshCurrentAffairs();
+      }
+    } else {
+      console.log("No current affairs cached — fetching...");
       await refreshCurrentAffairs();
     }
+  }
+
+  let query;
+  let params;
+  if (isOptional) {
+    // Optional-subject CA is a curated set; no date cutoff so all seeded
+    // entries are returned (ordered newest first).
+    query = `
+      SELECT id, title, summary, source_url, source_name, paper_type, topics, published_date, source_tier
+      FROM current_affairs
+      WHERE paper_type = $1
+    `;
+    params = [paperType];
+    if (tier) {
+      query += ` AND source_tier = $2`;
+      params.push(tier);
+    }
+    query += ` ORDER BY published_date DESC NULLS LAST, scraped_at DESC`;
   } else {
-    console.log("No current affairs cached — fetching...");
-    await refreshCurrentAffairs();
+    query = `
+      SELECT id, title, summary, source_url, source_name, paper_type, topics, published_date, source_tier
+      FROM current_affairs
+      WHERE paper_type = $1
+        AND published_date >= CURRENT_DATE - ($2 || ' days')::INTERVAL
+    `;
+    params = [paperType, String(days)];
+    if (tier) {
+      query += ` AND source_tier = $3`;
+      params.push(tier);
+    }
+    query += ` ORDER BY published_date DESC NULLS LAST, scraped_at DESC LIMIT 100`;
   }
-
-  let query = `
-    SELECT id, title, summary, source_url, source_name, paper_type, topics, published_date, source_tier
-    FROM current_affairs
-    WHERE paper_type = $1
-      AND published_date >= CURRENT_DATE - ($2 || ' days')::INTERVAL
-  `;
-  const params = [paperType, String(days)];
-
-  if (tier) {
-    query += ` AND source_tier = $3`;
-    params.push(tier);
-  }
-
-  query += ` ORDER BY published_date DESC NULLS LAST, scraped_at DESC LIMIT 100`;
 
   const { rows } = await pool.query(query, params);
   return rows;

@@ -75,6 +75,12 @@ GS_SUBJECT_MAP = {
     "science": "gs3", "technology": "gs3", "science-tech": "gs3", "agriculture": "gs3",
     "ethics": "gs4", "integrity": "gs4",
     "essay": "essay", "current-affairs": "essay", "optional": "optional",
+    "history-optional": "optional",
+    "geography-optional": "optional",
+    "public-administration-optional": "optional",
+    "sociology-optional": "optional",
+    "political-science-optional": "optional",
+    "philosophy-optional": "optional",
 }
 
 

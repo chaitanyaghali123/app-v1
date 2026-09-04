@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
-  Linking,
   Platform,
   Pressable,
   SafeAreaView,
@@ -247,10 +246,28 @@ const SUBJECT_COLORS: Record<string, string> = {
   gs3: "#10b981",
   gs4: "#8b5cf6",
   essay: "#ec4899",
+  optional: "#6366f1",
 };
 
+const OPTIONAL_SUBJECTS: Array<{ id: string; name: string; icon: string; blurb: string }> = [
+  { id: "history-optional", name: "History", icon: "📜", blurb: "Ancient, Medieval, Modern & World History" },
+  { id: "geography-optional", name: "Geography", icon: "🌍", blurb: "Physical, Human & Indian Geography" },
+  { id: "public-administration-optional", name: "Public Administration", icon: "🏛️", blurb: "Administrative Theory & Indian Administration" },
+  { id: "sociology-optional", name: "Sociology", icon: "👥", blurb: "Foundations, Social Structure & Social Change" },
+  { id: "political-science-optional", name: "Political Science / PSIR", icon: "⚖️", blurb: "Political Theory & International Relations" },
+  { id: "philosophy-optional", name: "Philosophy", icon: "💭", blurb: "History & Systems of Philosophy" },
+];
+
+function isOptionalSubject(id: string) {
+  return OPTIONAL_SUBJECTS.some((s) => s.id === id);
+}
+
+function subjectColor(id: string): string {
+  return SUBJECT_COLORS[id] ?? SUBJECT_COLORS.optional ?? "#6366f1";
+}
+
 export default function App() {
-  const [route, setRoute] = useState<"dashboard" | "qa" | "history">("dashboard");
+  const [route, setRoute] = useState<"dashboard" | "qa" | "history" | "optional-picker">("dashboard");
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
   const [apiKey, setApiKey] = useState("");
   const [hasSavedApiKey, setHasSavedApiKey] = useState(false);
@@ -270,13 +287,6 @@ export default function App() {
   const [pyqs, setPyqs] = useState<Array<{ paper: string; year: number | null; title: string; pdf_url: string }>>([]);
   const [pyqsLoading, setPyqsLoading] = useState(false);
   const [showPyqs, setShowPyqs] = useState(false);
-  const [sources, setSources] = useState<Record<string, { subject_name: string; files: Array<{ file_name: string; display_name: string; url: string }> }>>({});
-  const [sourcesLoading, setSourcesLoading] = useState(false);
-  const [showSources, setShowSources] = useState(false);
-  const [currentAffairs, setCurrentAffairs] = useState<Array<{ id: string; title: string; summary: string; source_url: string; source_name: string; paper_type: string; topics: string[]; published_date: string | null }>>([]);
-  const [caLoading, setCaLoading] = useState(false);
-  const [showCa, setShowCa] = useState(false);
-  const [caRange, setCaRange] = useState<"today" | "week" | "month">("week");
   const [debugMode, setDebugMode] = useState(() => {
     if (isWeb) return localStorage.getItem("upsc_debug") === "true";
     return false;
@@ -314,66 +324,9 @@ export default function App() {
       .finally(() => setPyqsLoading(false));
   }, [showPyqs, pyqs.length, activeSubject, cleanBackendUrl]);
 
-  const handleToggleSources = useCallback(() => {
-    if (showSources) {
-      setShowSources(false);
-      return;
-    }
-    if (Object.keys(sources).length > 0) {
-      setShowSources(true);
-      return;
-    }
-    if (!activeSubject) return;
-    setSourcesLoading(true);
-    setShowSources(true);
-    fetch(`${cleanBackendUrl}/api/sources/${activeSubject.id}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.subjects) setSources(data.subjects);
-      })
-      .catch(() => {})
-      .finally(() => setSourcesLoading(false));
-  }, [showSources, Object.keys(sources).length, activeSubject, cleanBackendUrl]);
-
-  const fetchCa = useCallback((range: "today" | "week" | "month") => {
-    if (!activeSubject) return;
-    setCaLoading(true);
-    setShowCa(true);
-    const paper = activeSubject.id.startsWith("gs") ? activeSubject.id : "gs1";
-    fetch(`${cleanBackendUrl}/api/current-affairs?paper=${paper}&range=${range}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.articles) setCurrentAffairs(data.articles);
-      })
-      .catch(() => {})
-      .finally(() => setCaLoading(false));
-  }, [activeSubject, cleanBackendUrl]);
-
-  const handleToggleCa = useCallback(() => {
-    if (showCa) {
-      setShowCa(false);
-      return;
-    }
-    if (currentAffairs.length > 0) {
-      setShowCa(true);
-      return;
-    }
-    fetchCa(caRange);
-  }, [showCa, currentAffairs.length, fetchCa, caRange]);
-
-  const handleCaRangeChange = useCallback((range: "today" | "week" | "month") => {
-    setCaRange(range);
-    fetchCa(range);
-  }, [fetchCa]);
-
   useEffect(() => {
-    setSources({});
-    setShowSources(false);
     setPyqs([]);
     setShowPyqs(false);
-    setCurrentAffairs([]);
-    setShowCa(false);
-    setCaRange("week");
   }, [activeSubject?.id]);
 
   useEffect(() => {
@@ -414,6 +367,21 @@ export default function App() {
   }, [apiKey, cleanBackendUrl]);
 
   const handleSelectSubject = useCallback((subject: Subject) => {
+    setActiveSubject(subject);
+    setQuestion("");
+    setAnswer("");
+    setChunks([]);
+    setChunkScores([]);
+    setHasAsked(false);
+    setShowPyqs(false);
+    if (subject.id === "optional") {
+      setRoute("optional-picker");
+      return;
+    }
+    setRoute("qa");
+  }, []);
+
+  const handleSelectOptional = useCallback((subject: Subject) => {
     setActiveSubject(subject);
     setQuestion("");
     setAnswer("");
@@ -571,6 +539,62 @@ export default function App() {
     );
   }
 
+  if (route === "optional-picker") {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar barStyle="dark-content" backgroundColor="#f8f9ff" />
+        <ScrollView contentContainerStyle={styles.scroll}>
+          <View style={styles.topBar}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={handleBackToDashboard}
+              style={({ pressed }) => [
+                styles.backBtn,
+                pressed && styles.backBtnPressed,
+              ]}
+            >
+              <Text style={styles.backText}>← Subjects</Text>
+            </Pressable>
+          </View>
+          <View style={styles.subjectInfoCard}>
+            <Text style={[styles.subjectInfoTitle, { color: SUBJECT_COLORS.optional }]}>
+              Optional Subjects
+            </Text>
+            <Text style={styles.subjectInfoDesc}>
+              Choose an optional subject to view its source material, previous year questions and current affairs.
+            </Text>
+          </View>
+          <View style={styles.optionalGrid}>
+            {OPTIONAL_SUBJECTS.map((sub) => (
+              <Pressable
+                key={sub.id}
+                accessibilityRole="button"
+                onPress={() =>
+                  handleSelectOptional({
+                    id: sub.id,
+                    name: sub.name,
+                    icon: sub.icon,
+                  })
+                }
+                style={({ pressed }) => [
+                  styles.optionalCard,
+                  { borderColor: SUBJECT_COLORS.optional + "30" },
+                  pressed && { borderColor: SUBJECT_COLORS.optional, backgroundColor: SUBJECT_COLORS.optional + "08" },
+                ]}
+              >
+                <View style={[styles.optionalIconWrap, { backgroundColor: SUBJECT_COLORS.optional + "15" }]}>
+                  <Text style={styles.optionalIcon}>{sub.icon}</Text>
+                </View>
+                <Text style={[styles.optionalName, { color: SUBJECT_COLORS.optional }]}>{sub.name}</Text>
+                <Text style={styles.optionalBlurb}>{sub.blurb}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor="#f8f9ff" />
@@ -628,7 +652,7 @@ export default function App() {
 
           {activeSubject && GS_SUBJECTS[activeSubject.id] ? (
             <View style={styles.subjectInfoCard}>
-              <Text style={[styles.subjectInfoTitle, { color: SUBJECT_COLORS[activeSubject.id] }]}>
+              <Text style={[styles.subjectInfoTitle, { color: subjectColor(activeSubject.id) }]}>
                 {GS_NAMES[activeSubject.id] ?? activeSubject.name}
               </Text>
               <View style={styles.subjectInfoGrid}>
@@ -643,209 +667,28 @@ export default function App() {
                 <Text style={styles.subjectInfoDesc}>{GS_DESCRIPTIONS[activeSubject.id]}</Text>
               ) : null}
             </View>
-          ) : null}
-
-          {activeSubject && GS_SUBJECTS[activeSubject.id] ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={handleToggleSources}
-              style={({ pressed }) => [
-                styles.pyqToggleBtn,
-                { borderColor: SUBJECT_COLORS[activeSubject.id] + "40" },
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <Text style={[styles.pyqToggleText, { color: SUBJECT_COLORS[activeSubject.id] }]}>
-                {showSources ? "Hide" : "Show"} Source Material
+          ) : isOptionalSubject(activeSubject?.id || "") ? (
+            <View style={styles.subjectInfoCard}>
+              <Text style={[styles.subjectInfoTitle, { color: subjectColor(activeSubject!.id) }]}>
+                {activeSubject!.name}
               </Text>
-              <Text style={styles.pyqToggleArrow}>{showSources ? "v" : ">"}</Text>
-            </Pressable>
-          ) : null}
-
-          {showSources && Object.keys(sources).length > 0 ? (
-            <View style={styles.pyqCard}>
-              {Object.entries(sources).map(([subjectId, group]) => (
-                <View key={subjectId} style={{ marginBottom: 10 }}>
-                  <Text style={[styles.sourceSubjectLabel, { color: SUBJECT_COLORS[activeSubject.id] }]}>
-                    {group.subject_name}
-                  </Text>
-                  {group.files.map((file, i) => (
-                    <Pressable
-                      key={i}
-                      onPress={() => {
-                        const url = `${cleanBackendUrl}/api/sources/${activeSubject.id}/file/${file.file_name}?key=${encodeURIComponent(file.r2_key || file.file_name)}`;
-                        if (isWeb) {
-                          window.open(url, "_blank");
-                        } else {
-                          Linking.openURL(url);
-                        }
-                      }}
-                      style={({ pressed }) => [styles.sourceItem, pressed && { opacity: 0.7 }]}
-                    >
-                      <View style={[styles.pyqDot, { backgroundColor: SUBJECT_COLORS[activeSubject.id] }]} />
-                      <Text style={styles.sourceItemText} numberOfLines={2}>{file.display_name}</Text>
-                      <Text style={styles.pyqArrow}>↗</Text>
-                    </Pressable>
-                  ))}
-                </View>
-              ))}
-            </View>
-          ) : null}
-
-          {showSources && sourcesLoading ? (
-            <View style={styles.pyqCard}>
-              <ActivityIndicator color="#4f46e5" />
-              <Text style={styles.pyqLoadingText}>Loading sources...</Text>
-            </View>
-          ) : null}
-
-          {activeSubject && GS_SUBJECTS[activeSubject.id] ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={handleToggleCa}
-              style={({ pressed }) => [
-                styles.pyqToggleBtn,
-                { borderColor: SUBJECT_COLORS[activeSubject.id] + "40" },
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <Text style={[styles.pyqToggleText, { color: SUBJECT_COLORS[activeSubject.id] }]}>
-                {showCa ? "Hide" : "Show"} Daily Current Affairs
+              <Text style={styles.subjectInfoDesc}>
+                {OPTIONAL_SUBJECTS.find((s) => s.id === activeSubject!.id)?.blurb || "Optional Subject"}
               </Text>
-              <Text style={styles.pyqToggleArrow}>{showCa ? "v" : ">"}</Text>
-            </Pressable>
-          ) : null}
-
-          {showCa ? (
-            <View style={{ flexDirection: "row", gap: 6, marginTop: 4, marginBottom: 2, paddingHorizontal: 4 }}>
-              {(["today", "week", "month"] as const).map((r) => (
-                <Pressable
-                  key={r}
-                  onPress={() => handleCaRangeChange(r)}
-                  style={({ pressed }) => [
-                    {
-                      paddingHorizontal: 12,
-                      paddingVertical: 5,
-                      borderRadius: 12,
-                      backgroundColor: caRange === r
-                        ? (SUBJECT_COLORS[activeSubject?.id || "gs1"] || "#3b82f6") + "20"
-                        : "#f0f1f3",
-                      borderWidth: 1,
-                      borderColor: caRange === r
-                        ? (SUBJECT_COLORS[activeSubject?.id || "gs1"] || "#3b82f6") + "50"
-                        : "#e0e1e3",
-                    },
-                    pressed && { opacity: 0.7 },
-                  ]}
-                >
-                  <Text style={{
-                    fontSize: 12,
-                    fontWeight: caRange === r ? "600" : "400",
-                    color: caRange === r
-                      ? SUBJECT_COLORS[activeSubject?.id || "gs1"] || "#3b82f6"
-                      : "#666",
-                  }}>
-                    {r === "today" ? "Today" : r === "week" ? "This Week" : "This Month"}
-                  </Text>
-                </Pressable>
-              ))}
             </View>
           ) : null}
 
-          {showCa && currentAffairs.length > 0 ? (
-            <View style={styles.pyqCard}>
-              {currentAffairs.filter(a => a.source_tier !== "deep-link").length > 0 ? (
-                <>
-                  <Text style={[styles.caSectionLabel, { color: SUBJECT_COLORS[activeSubject.id] }]}>
-                    Official Sources
-                  </Text>
-                  {currentAffairs.filter(a => a.source_tier !== "deep-link").map((article, i) => (
-                    <Pressable
-                      key={article.id || i}
-                      onPress={() => {
-                        if (isWeb) window.open(article.source_url, "_blank");
-                        else Linking.openURL(article.source_url);
-                      }}
-                      style={({ pressed }) => [styles.pyqItem, pressed && { opacity: 0.7 }]}
-                    >
-                      <View style={[styles.pyqDot, { backgroundColor: SUBJECT_COLORS[activeSubject.id] }]} />
-                      <View style={styles.pyqItemContent}>
-                        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                          <Text style={styles.pyqItemYear}>{article.published_date || "Today"}</Text>
-                          <Text style={[styles.caSourceTag, { borderColor: SUBJECT_COLORS[activeSubject.id] + "30", color: SUBJECT_COLORS[activeSubject.id] }]}>
-                            {article.source_name}
-                          </Text>
-                        </View>
-                        <Text style={styles.pyqItemTitle}>{article.title}</Text>
-                        {article.topics.length > 0 ? (
-                          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
-                            {article.topics.slice(0, 3).map((t, ti) => (
-                              <Text key={ti} style={[styles.caTopicTag, { borderColor: SUBJECT_COLORS[activeSubject.id] + "40", color: SUBJECT_COLORS[activeSubject.id] }]}>
-                                {t}
-                              </Text>
-                            ))}
-                          </View>
-                        ) : null}
-                      </View>
-                      <Text style={styles.pyqArrow}>↗</Text>
-                    </Pressable>
-                  ))}
-                </>
-              ) : null}
-
-              {currentAffairs.filter(a => a.source_tier === "deep-link").length > 0 ? (
-                <>
-                  <Text style={[styles.caSectionLabel, { color: SUBJECT_COLORS[activeSubject.id], marginTop: 12 }]}>
-                    Newspaper Reading
-                  </Text>
-                  {currentAffairs.filter(a => a.source_tier === "deep-link").map((article, i) => (
-                    <Pressable
-                      key={article.id || `dl-${i}`}
-                      onPress={() => {
-                        if (isWeb) window.open(article.source_url, "_blank");
-                        else Linking.openURL(article.source_url);
-                      }}
-                      style={({ pressed }) => [styles.pyqItem, pressed && { opacity: 0.7 }]}
-                    >
-                      <View style={[styles.pyqDot, { backgroundColor: "#6b7280" }]} />
-                      <View style={styles.pyqItemContent}>
-                        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                          <Text style={styles.pyqItemYear}>{article.published_date || "Today"}</Text>
-                          <Text style={[styles.caSourceTag, { borderColor: "#d1d5db", color: "#6b7280" }]}>
-                            {article.source_name}
-                          </Text>
-                        </View>
-                        <Text style={styles.pyqItemTitle}>{article.title}</Text>
-                      </View>
-                      <View style={styles.caReadBadge}>
-                        <Text style={styles.caReadBadgeText}>Read</Text>
-                        <Text style={styles.pyqArrow}>↗</Text>
-                      </View>
-                    </Pressable>
-                  ))}
-                </>
-              ) : null}
-            </View>
-          ) : null}
-
-          {showCa && caLoading ? (
-            <View style={styles.pyqCard}>
-              <ActivityIndicator color="#4f46e5" />
-              <Text style={styles.pyqLoadingText}>Loading current affairs...</Text>
-            </View>
-          ) : null}
-
-          {activeSubject && GS_SUBJECTS[activeSubject.id] ? (
+          {activeSubject && (GS_SUBJECTS[activeSubject.id] || isOptionalSubject(activeSubject.id)) ? (
             <Pressable
               accessibilityRole="button"
               onPress={handleTogglePyqs}
               style={({ pressed }) => [
                 styles.pyqToggleBtn,
-                { borderColor: SUBJECT_COLORS[activeSubject.id] + "40" },
+                { borderColor: subjectColor(activeSubject.id) + "40" },
                 pressed && { opacity: 0.7 },
               ]}
             >
-              <Text style={[styles.pyqToggleText, { color: SUBJECT_COLORS[activeSubject.id] }]}>
+              <Text style={[styles.pyqToggleText, { color: subjectColor(activeSubject.id) }]}>
                 {showPyqs ? "Hide" : "Show"} Previous Year Questions
               </Text>
               <Text style={styles.pyqToggleArrow}>{showPyqs ? "v" : ">"}</Text>
@@ -860,7 +703,7 @@ export default function App() {
                   onPress={() => { if (isWeb) window.open(pyq.pdf_url, "_blank"); }}
                   style={({ pressed }) => [styles.pyqItem, pressed && { opacity: 0.7 }]}
                 >
-                  <View style={[styles.pyqDot, { backgroundColor: SUBJECT_COLORS[activeSubject.id] }]} />
+                  <View style={[styles.pyqDot, { backgroundColor: subjectColor(activeSubject!.id) }]} />
                   <View style={styles.pyqItemContent}>
                     <Text style={styles.pyqItemYear}>{pyq.year ?? "Older"}</Text>
                     <Text style={styles.pyqItemTitle}>{pyq.title}</Text>
@@ -1387,6 +1230,45 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginTop: 10,
   },
+  optionalGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  optionalCard: {
+    width: "48%",
+    backgroundColor: "#ffffff",
+    borderRadius: 14,
+    borderWidth: 1.5,
+    alignItems: "flex-start",
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    gap: 6,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  optionalIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  optionalIcon: {
+    fontSize: 20,
+  },
+  optionalName: {
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  optionalBlurb: {
+    color: "#6b7280",
+    fontSize: 12,
+    lineHeight: 16,
+  },
   subjectInfoGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1485,71 +1367,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 6,
     textAlign: "center",
-  },
-  sourceSubjectLabel: {
-    fontSize: 13,
-    fontWeight: "700",
-    marginBottom: 6,
-    marginLeft: 2,
-  },
-  sourceItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: "#f9fafb",
-    marginBottom: 6,
-    borderWidth: 1,
-    borderColor: "#f3f4f6",
-  },
-  sourceItemText: {
-    color: "#374151",
-    fontSize: 13,
-    fontWeight: "500",
-    flex: 1,
-  },
-  caTopicTag: {
-    fontSize: 10,
-    fontWeight: "600",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 1,
-    overflow: "hidden",
-  },
-  caSectionLabel: {
-    fontSize: 12,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    marginBottom: 8,
-    paddingBottom: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f3f4f6",
-  },
-  caSourceTag: {
-    fontSize: 10,
-    fontWeight: "600",
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderRadius: 3,
-    borderWidth: 1,
-    overflow: "hidden",
-  },
-  caReadBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 2,
-    backgroundColor: "#f3f4f6",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  caReadBadgeText: {
-    color: "#6b7280",
-    fontSize: 11,
-    fontWeight: "600",
   },
 });

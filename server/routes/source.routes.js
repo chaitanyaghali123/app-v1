@@ -3,7 +3,11 @@ import { getSourceList, streamR2File } from "../services/source.service.js";
 
 const router = Router();
 
-const VALID_PAPERS = ["gs1", "gs2", "gs3", "gs4"];
+const VALID_PAPERS = [
+  "gs1", "gs2", "gs3", "gs4", "essay",
+  "history-optional", "geography-optional", "public-administration-optional",
+  "sociology-optional", "political-science-optional", "philosophy-optional",
+];
 
 router.get("/sources/:paper", async (req, res) => {
   try {

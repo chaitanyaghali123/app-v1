@@ -216,7 +216,7 @@ export async function getPyqs(paper) {
     `SELECT paper, year, title, pdf_url, source
      FROM upsc_pyqs
      WHERE paper = $1
-     ORDER BY year DESC, title`,
+     ORDER BY year DESC NULLS LAST, title`,
     [paper]
   );
   return rows;

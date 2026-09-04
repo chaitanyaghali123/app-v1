@@ -29,10 +29,11 @@ import psycopg2.extras
 logger = logging.getLogger(__name__)
 
 EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))
+EMBED_MODEL = os.getenv("EMBED_MODEL", "gemini-embedding-001")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_EMBED_URL = (
     "https://generativelanguage.googleapis.com/v1beta/"
-    "models/gemini-embedding-001:batchEmbedContents"
+    f"models/{EMBED_MODEL}:batchEmbedContents"
 )
 
 TABLE = "gs4_ethics_knowledge_base"
@@ -68,7 +69,7 @@ CREATE TABLE IF NOT EXISTS gs4_ethics_knowledge_base (
     source_origin VARCHAR(100) NOT NULL,
     source_url TEXT,
     tags TEXT[] DEFAULT '{}',
-    embedding VECTOR(%(dim)s),
+    embedding HALFVEC(%(dim)s),
     created_at TIMESTAMP DEFAULT NOW(),
     UNIQUE (title, module_category)
 );
@@ -89,7 +90,7 @@ CREATE INDEX IF NOT EXISTS idx_gs4_kb_search
 
 CREATE INDEX IF NOT EXISTS idx_gs4_kb_embedding
     ON gs4_ethics_knowledge_base
-    USING hnsw (embedding vector_cosine_ops);
+    USING hnsw (embedding halfvec_cosine_ops);
 """
 
 
@@ -120,7 +121,7 @@ def _embed_texts(texts):
     payload = {
         "requests": [
             {
-                "model": "models/gemini-embedding-001",
+                "model": f"models/{EMBED_MODEL}",
                 "content": {"parts": [{"text": t}]},
                 "taskType": "RETRIEVAL_DOCUMENT",
                 "outputDimensionality": EMBED_DIM,
@@ -187,7 +188,7 @@ def upsert_entry(
                                 source_origin = %%s,
                                 source_url = %%s,
                                 tags = %%s,
-                                embedding = %%s::vector,
+                                embedding = %%s::halfvec,
                                 updated_at = NOW()
                             WHERE id = %%s
                             """ % TABLE,
@@ -209,7 +210,7 @@ def upsert_entry(
                                 content_text, source_origin, source_url,
                                 tags, embedding
                             )
-                            VALUES (%%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s::vector)
+                            VALUES (%%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s::halfvec)
                             """ % TABLE,
                             (
                                 module_category,
@@ -386,10 +387,10 @@ def _vector_search(
                 f"""
                 SELECT id, module_category, syllabus_tag, title,
                        content_text, source_origin, source_url, tags,
-                       1 - (embedding <=> %(qv)s::vector) AS score
+                       1 - (embedding <=> %(qv)s::halfvec) AS score
                 FROM {TABLE}
                 {where_sql}
-                ORDER BY embedding <=> %(qv)s::vector
+                ORDER BY embedding <=> %(qv)s::halfvec
                 LIMIT %(limit)s
                 """,
                 {
@@ -517,7 +518,7 @@ def backfill_embeddings(limit=200, batch_size=8):
                     c2.execute(
                         f"""
                         UPDATE {TABLE}
-                        SET embedding = %s::vector
+                        SET embedding = %s::halfvec
                         WHERE id = %s
                         """,
                         (_pgvector_literal(emb), r["id"]),

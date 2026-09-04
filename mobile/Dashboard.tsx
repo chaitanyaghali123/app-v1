@@ -50,8 +50,7 @@ const GS_PAPERS = [
   { id: "gs3", name: "GS 3", icon: "🔬", color: "#10b981" },
   { id: "gs4", name: "GS 4", icon: "⭐", color: "#8b5cf6" },
   { id: "essay", name: "Essay", icon: "📝", color: "#ec4899" },
-  { id: "optional", name: "Optional Paper 1", icon: "📖", color: "#6366f1" },
-  { id: "optional2", name: "Optional Paper 2", icon: "📖", color: "#6366f1" },
+  { id: "optional", name: "Optional", icon: "📖", color: "#6366f1" },
 ];
 
 export default function Dashboard({

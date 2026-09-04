@@ -1,0 +1,10 @@
+import pg from 'pg';
+const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
+await c.connect();
+const t = await c.query("SELECT COUNT(*) AS n FROM upsc_chunks");
+console.log("NODE upsc_chunks total:", t.rows[0].n);
+const r = await c.query("SELECT COUNT(*) AS n FROM documents");
+console.log("NODE documents total:", r.rows[0].n);
+const missing = await c.query("SELECT COUNT(*) AS n FROM upsc_chunks WHERE file_hash='3f16fdbc85a7edbfdc024d18ff1e632fe5597cb62c2d8013fa55609d2cbf57a6'");
+console.log("NODE heatwave_new_hash_chunks:", missing.rows[0].n);
+await c.end();

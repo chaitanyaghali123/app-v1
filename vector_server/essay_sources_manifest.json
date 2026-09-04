@@ -1,0 +1,53 @@
+{
+  "meta": {
+    "purpose": "Bookmark manifest of public-domain / official sources for the UPSC Mains Essay corpus.",
+    "status": "NOT_DOWNLOADED",
+    "note": "These entries are pointers only. No files are downloaded or embedded until ingest is run with embed=True. Populate a downloader against each 'layer' when ready."
+  },
+  "layers": {
+    "abstract_philosophy": {
+      "label": "Abstract & Philosophical Foundations (Section A)",
+      "sources": [
+        {"name": "SEP — Justice", "url": "https://plato.stanford.edu/entries/justice/"},
+        {"name": "SEP — Ethics (moral theory)", "url": "https://plato.stanford.edu/entries/ethics/"},
+        {"name": "SEP — Utilitarianism", "url": "https://plato.stanford.edu/entries/utilitarianism-history/"},
+        {"name": "SEP — Free Will", "url": "https://plato.stanford.edu/entries/freewill/"},
+        {"name": "SEP — Epistemology", "url": "https://plato.stanford.edu/entries/epistemology/"},
+        {"name": "SEP — Pragmatism", "url": "https://plato.stanford.edu/entries/pragmatism/"},
+        {"name": "SEP — Stoicism", "url": "https://plato.stanford.edu/entries/stoicism/"},
+        {"name": "IEP — Humanism", "url": "https://iep.utm.edu/humanism/"},
+        {"name": "Gutenberg — Plato's Republic", "url": "https://www.gutenberg.org/ebooks/1497"},
+        {"name": "Gutenberg — Marcus Aurelius Meditations", "url": "https://www.gutenberg.org/ebooks/2680"},
+        {"name": "Gutenberg — Aristotle Nicomachean Ethics", "url": "https://www.gutenberg.org/ebooks/8438"},
+        {"name": "Gutenberg — Mill On Liberty", "url": "https://www.gutenberg.org/ebooks/34901"},
+        {"name": "Gutenberg — Complete Works of Swami Vivekananda", "url": "https://www.gutenberg.org/"},
+        {"name": "Gutenberg — Tagore Stray Birds", "url": "https://www.gutenberg.org/ebooks/25224"}
+      ]
+    },
+    "policy_socio_economic": {
+      "label": "Policy & Socio-Economic (Section B)",
+      "sources": [
+        {"name": "Yojana Magazine (Publications Division)", "url": "https://publicationsdivision.nic.in/"},
+        {"name": "Kurukshetra Magazine", "url": "https://publicationsdivision.nic.in/"},
+        {"name": "NITI Aayog — Vision/Strategy documents", "url": "https://www.niti.gov.in/"},
+        {"name": "Economic Survey", "url": "https://www.indiabudget.gov.in/economic_survey/"},
+        {"name": "District Development / Aspirational Districts", "url": "https://www.niti.gov.in/aspirational-districts"}
+      ]
+    },
+    "evidence_case_studies": {
+      "label": "Administrative Evidence & Case Studies",
+      "sources": [
+        {"name": "DARPG Best Practices Compendiums", "url": "https://www.darpg.gov.in/"},
+        {"name": "NITI Aspirational Districts case studies", "url": "https://www.niti.gov.in/aspirational-districts"}
+      ]
+    },
+    "hooks_quotes": {
+      "label": "Curated Quotes & Anecdotes (structured JSON)",
+      "sources": [
+        {"name": "Local: essay_quotes_content.py", "url": "file://essay_quotes_content.py"},
+        {"name": "Local: essay_anecdotes_content.py", "url": "file://essay_anecdotes_content.py"},
+        {"name": "Local: essay_rules_content.py", "url": "file://essay_rules_content.py"}
+      ]
+    }
+  }
+}

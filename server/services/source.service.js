@@ -24,6 +24,13 @@ const GS_PAPER_SUBJECTS = {
   gs2: ["polity", "constitution", "governance", "international", "international-relations", "social-justice"],
   gs3: ["economy", "science", "science-tech", "environment", "disaster-management", "disaster", "internal-security"],
   gs4: ["ethics"],
+  essay: ["essay"],
+  "history-optional": ["history-optional"],
+  "geography-optional": ["geography-optional"],
+  "public-administration-optional": ["public-administration-optional"],
+  "sociology-optional": ["sociology-optional"],
+  "political-science-optional": ["political-science-optional"],
+  "philosophy-optional": ["philosophy-optional"],
 };
 
 const SUBJECT_DISPLAY = {
@@ -45,6 +52,13 @@ const SUBJECT_DISPLAY = {
   disaster: "Disaster Management",
   "internal-security": "Internal Security",
   ethics: "Ethics & Integrity",
+  essay: "Essay",
+  "history-optional": "History (Optional)",
+  "geography-optional": "Geography (Optional)",
+  "public-administration-optional": "Public Administration (Optional)",
+  "sociology-optional": "Sociology (Optional)",
+  "political-science-optional": "Political Science (Optional)",
+  "philosophy-optional": "Philosophy (Optional)",
 };
 
 const SUBJECT_TO_GS = {
@@ -54,6 +68,13 @@ const SUBJECT_TO_GS = {
   economy: "gs3", science: "gs3", "science-tech": "gs3", environment: "gs3",
   "disaster-management": "gs3", disaster: "gs3", "internal-security": "gs3",
   ethics: "gs4",
+  essay: "essay",
+  "history-optional": "optional",
+  "geography-optional": "optional",
+  "public-administration-optional": "optional",
+  "sociology-optional": "optional",
+  "political-science-optional": "optional",
+  "philosophy-optional": "optional",
 };
 
 function cleanFileName(file_name) {
@@ -135,11 +156,21 @@ async function getSourceList(paper) {
   return results;
 }
 
+const EXT_MIME = {
+  ".txt": "text/plain; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".pdf": "application/pdf",
+};
+
 async function streamR2File(r2Key, res) {
   try {
     const command = new GetObjectCommand({ Bucket: BUCKET, Key: r2Key });
     const response = await r2.send(command);
-    res.setHeader("Content-Type", response.ContentType || "application/pdf");
+    const ext = (r2Key.split(".").pop() || "").toLowerCase();
+    const mime = EXT_MIME[`.${ext}`];
+    res.setHeader("Content-Type", mime || response.ContentType || "application/pdf");
     if (response.ContentLength) {
       res.setHeader("Content-Length", String(response.ContentLength));
     }

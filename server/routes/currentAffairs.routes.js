@@ -17,10 +17,12 @@ router.get("/", async (req, res) => {
     const rangeMap = { today: 1, week: 7, month: 30 };
     const days = rangeMap[range] ?? 7;
 
-    if (!["gs1", "gs2", "gs3", "gs4"].includes(paper)) {
+    if (!["gs1", "gs2", "gs3", "gs4",
+      "history-optional", "geography-optional", "public-administration-optional",
+      "sociology-optional", "political-science-optional", "philosophy-optional"].includes(paper)) {
       return res.status(400).json({
         success: false,
-        error: "paper must be gs1, gs2, gs3, or gs4",
+        error: "paper must be gs1, gs2, gs3, gs4, or an optional subject",
       });
     }
 

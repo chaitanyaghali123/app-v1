@@ -3,7 +3,11 @@ import { getPyqs, refreshPyqs } from "../services/upscPyq.service.js";
 
 const router = Router();
 
-const VALID_PAPERS = ["essay", "gs1", "gs2", "gs3", "gs4"];
+const VALID_PAPERS = [
+  "essay", "gs1", "gs2", "gs3", "gs4",
+  "history-optional", "geography-optional", "public-administration-optional",
+  "sociology-optional", "political-science-optional", "philosophy-optional",
+];
 
 router.get("/refresh", async (req, res) => {
   try {

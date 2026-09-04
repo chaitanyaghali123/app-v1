@@ -379,7 +379,8 @@ def _gemini_embed_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
     for attempt in range(8):
         try:
             resp = _gemini_session.post(
-                f"{GEMINI_EMBED_URL}?key={GEMINI_API_KEY}",
+                f"https://generativelanguage.googleapis.com/v1/"
+                f"models/{EMBED_MODEL}:batchEmbedContents?key={GEMINI_API_KEY}",
                 json=payload,
                 timeout=90,
             )
@@ -604,7 +605,7 @@ def ensure_tables():
                     page_number INTEGER,
 
                     chunk_version INTEGER DEFAULT 1,
-                    embedding VECTOR({EMBED_DIM}),
+                    embedding HALFVEC({EMBED_DIM}),
                     search_vector tsvector,
                     heading_hierarchy jsonb DEFAULT '[]'::jsonb,
                     parent_chunk TEXT DEFAULT '',
@@ -679,15 +680,13 @@ def ensure_tables():
             # HNSW INDEX
             # ==================================================
 
-            if EMBED_DIM <= 2000:
-
-                cur.execute(f"""
-                    CREATE INDEX IF NOT EXISTS idx_hnsw_v_partitioned
-                    ON upsc_chunks
-                    USING hnsw (
-                        embedding vector_cosine_ops
-                    );
-                """)
+            cur.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_hnsw_v_partitioned
+                ON upsc_chunks
+                USING hnsw (
+                    embedding halfvec_cosine_ops
+                );
+            """)
 
         conn.commit()
 
@@ -1509,6 +1508,20 @@ def chunk_text(text):
     text = clean_ascii_diagrams(text)
 
     # --- Phase 1: Parse document into heading-aware sections ---
+    # Statute mode: Indian Acts use run-in section heads like
+# "18. Powers and functions of Information Commissions.—(1) ...".
+    # Auto-enable only when the text clearly has several such headings so
+    # ordinary PDFs keep their current (markdown-only) behaviour.
+    statute_section_re = re.compile(
+        r"^\s*(\d{1,3})\.\s+([A-Z][A-Za-z0-9 ,'()&/.-]{3,90})\.—",
+        re.MULTILINE,
+    )
+    statute_chapter_re = re.compile(
+        r"^\s*CHAPTER\s+(?:[0-9]+|\s*[IVXLC]{1,7})(?:[\.:]\s.*)?$",
+        re.IGNORECASE,
+    )
+    statute_mode = len(statute_section_re.findall(text, re.MULTILINE)) >= 3
+
     lines = text.split("\n")
     heading_stack = []  # [(level, heading_text), ...]
     sections = []  # [(heading_hierarchy, section_text), ...]
@@ -1517,6 +1530,29 @@ def chunk_text(text):
 
     for line in lines:
         stripped = line.strip()
+        if statute_mode:
+            chapter_match = statute_chapter_re.match(stripped)
+            if chapter_match:
+                if current_section_text:
+                    sections.append((list(current_hierarchy), "\n".join(current_section_text).strip()))
+                heading_text = stripped
+                heading_stack = [(1, heading_text)]
+                current_hierarchy = [heading_text]
+                current_section_text = [stripped]
+                continue
+            section_match = statute_section_re.match(stripped)
+            if section_match:
+                if current_section_text:
+                    sections.append((list(current_hierarchy), "\n".join(current_section_text).strip()))
+                sec_num = int(section_match.group(1))
+                sec_title = section_match.group(2)
+                while heading_stack and heading_stack[-1][0] >= 2:
+                    heading_stack.pop()
+                heading_stack.append((2, f"{sec_num}. {sec_title}"))
+                current_hierarchy = [h[1] for h in heading_stack]
+                current_section_text = [stripped]
+                continue
+
         heading_match = re.match(r"^(#{1,6})\s+(.+)", stripped)
         if heading_match:
             if current_section_text:
@@ -2130,7 +2166,7 @@ def insert_postgres_rows(rows):
                         %s,
                         %s,
                         %s,
-                        %s::vector,
+                        %s::halfvec,
                         to_tsvector(
                             'english',
                             %s
@@ -2220,38 +2256,58 @@ def backfill_embedding_embeds(limit=100, chunk_ids=None):
     if not rows:
         return (0, 0)
 
+    # Build batches of (ids, texts) once, then embed them concurrently.
+    batches = []
     for i in range(0, len(rows), EMBED_SUB_BATCH_SIZE):
         batch = rows[i : i + EMBED_SUB_BATCH_SIZE]
-        ids = [r[0] for r in batch]
-        texts = [r[1] for r in batch]
-        try:
-            embs = _gemini_embed_batch(texts, task_type="RETRIEVAL_DOCUMENT")
-        except EmbedQuotaExhausted:
-            logger.warning(
-                f"Backfill stopped at {i}/{len(rows)}: quota exhausted"
-            )
-            return (len(rows), i)
+        batches.append(([r[0] for r in batch], [r[1] for r in batch]))
 
-        conn = get_conn()
-        try:
-            with conn.cursor() as cur:
-                for cid, emb in zip(ids, embs):
-                    cur.execute(
-                        """
-                        UPDATE upsc_chunks
-                        SET embedding = %s::vector
-                        WHERE id = %s
-                        """,
-                        (pgvector_literal(emb), cid)
-                    )
-            conn.commit()
-        finally:
-            release_conn(conn)
+    completed = 0
+    quota_exhausted = False
 
-        if i + EMBED_SUB_BATCH_SIZE < len(rows):
-            time.sleep(EMBED_BATCH_DELAY)
+    def _embed_one(batch_work):
+        ids, texts = batch_work
+        embs = _gemini_embed_batch(texts, task_type="RETRIEVAL_DOCUMENT")
+        return ids, embs
 
-    return (len(rows), len(rows))
+    workers = max(1, EMBED_CONCURRENCY)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(_embed_one, bw) for bw in batches]
+        for fut in as_completed(futures):
+            try:
+                ids, embs = fut.result()
+            except EmbedQuotaExhausted:
+                quota_exhausted = True
+                logger.warning("Backfill stopped: quota exhausted")
+                break
+            except Exception as exc:
+                logger.exception(f"Backfill embed batch failed: {exc}")
+                continue
+
+            conn = get_conn()
+            try:
+                with conn.cursor() as cur:
+                    for cid, emb in zip(ids, embs):
+                        cur.execute(
+                            """
+                            UPDATE upsc_chunks
+                            SET embedding = %s::halfvec
+                            WHERE id = %s
+                            """,
+                            (pgvector_literal(emb), cid)
+                        )
+                conn.commit()
+            finally:
+                release_conn(conn)
+            completed += len(ids)
+
+            if EMBED_BATCH_DELAY:
+                time.sleep(EMBED_BATCH_DELAY)
+
+    if quota_exhausted:
+        return (len(rows), completed)
+
+    return (len(rows), completed)
 
 
 def count_unembedded_chunks():
@@ -2284,7 +2340,9 @@ GS_FOLDER_MAP = {
             'science', 'technology', 'science-tech', 'agriculture'],
     'gs4': ['ethics', 'integrity'],
     'essay': ['essay', 'current', 'current-affairs', 'yojana', 'kurukshetra'],
-    'optional': ['optional'],
+'optional': ['optional', 'history-optional', 'geography-optional',
+                 'public-administration-optional', 'sociology-optional',
+                 'political-science-optional', 'philosophy-optional'],
 }
 
 # Folder → GS paper (inverse lookup for ingestion routing)
@@ -2946,3 +3004,5 @@ if __name__ == "__main__":
     logger.info(
         f"âš¡ Total ingestion time: {elapsed}s"
     )
+
+
