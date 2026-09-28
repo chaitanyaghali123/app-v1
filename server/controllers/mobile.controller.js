@@ -1289,6 +1289,8 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
     err.status = 400;
     throw err;
   }
+  const prepStartedAt = Date.now();
+  const stageMark = (name) => ({ [name]: Date.now() - prepStartedAt });
 
   let userApiKey = null;
   if (deviceId && typeof deviceId === "string" && deviceId.length >= 8) {
@@ -1334,6 +1336,7 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
 
   let vectorChunks;
   try {
+    const retrievalStartedAt = Date.now();
     vectorChunks = await queryVector({
       prompt: resolvedQuestion,
       topK: requestedMaxChunks * 3,
@@ -1341,6 +1344,9 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
       subjectIds: folderPatterns ? folderPatterns.map((f) => f.toLowerCase()) : null,
       apiKey: userApiKey,
     });
+    const retrievalMs = Date.now() - retrievalStartedAt;
+    console.log(`[rag-prep] stage vector_retrieval..${retrievalMs}ms query=${resolvedQuestion.slice(0, 60)}`);
+    stageMark(`retrieval:${retrievalMs}`);
   } catch (retrievalErr) {
     if (retrievalErr?.code === "GEMINI_QUOTA_EXCEEDED") {
       try {
@@ -1403,12 +1409,16 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
   let retrievalMode = "ranked";
 
   if (broadCoverage) {
+    const coverageStartedAt = Date.now();
     sourceFile = pickBestSourceFile(usefulChunks, resolvedQuestion);
     const sourceChunks = await queryPostgresSourceFileChunks({
       sourceFile,
       maxChunks: MAX_FILE_COVERAGE_SOURCE_CHUNKS,
     });
     sourceChunkCount = sourceChunks.length;
+    const coverageMs = Date.now() - coverageStartedAt;
+    console.log(`[rag-prep] stage coverage..${coverageMs}ms sourceFile=${sourceFile} chunks=${sourceChunks.length}`);
+    stageMark(`coverage:${coverageMs}`);
 
     if (sourceChunks.length > 0) {
       limitedChunks = tagEvidenceFacets(
@@ -1471,6 +1481,18 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
   const sourceIssue = thinAssessment.thin
     ? THIN_EVIDENCE_MESSAGE
     : sourceAssessment.issue;
+
+  console.log(
+    `[rag-prep] total=${Date.now() - prepStartedAt}ms ${Object.entries({
+      key: userApiKey ? 1 : 0,
+      chunksInput: pgChunks.length,
+      useful: usefulChunks.length,
+      limited: limitedChunks.length,
+      final: budgetedChunks.length,
+    })
+      .map(([k, v]) => `${k}=${v}`)
+      .join(" ")}`
+  );
 
   return {
     userApiKey,
@@ -1566,6 +1588,7 @@ export async function getMobileAnswer(req, res) {
   const startedAt = Date.now();
   let keyHash = null;
   let contextChars = 0;
+  let prepareMs = 0;
 
   const prepareError = (err, res) => {
     const parsed = toMobileRagError(err);
@@ -1578,7 +1601,9 @@ export async function getMobileAnswer(req, res) {
   };
 
   try {
+    const prepareStartedAt = Date.now();
     const ctx = await prepareMobileRagContext(req.body || {});
+    prepareMs = Date.now() - prepareStartedAt;
     contextChars = ctx.budgetedChunks.reduce((sum, c) => sum + (c.text?.length || 0), 0);
 
     if (!ctx.userApiKey) {
@@ -1677,6 +1702,9 @@ export async function getMobileAnswer(req, res) {
       tokenCount: result.tokenCount || 0,
       contextChars,
     });
+    console.log(
+      `[mobile-answer] success: prepareMs=${prepareMs} genMs=${Date.now() - startedAt - prepareMs} totalMs=${Date.now() - startedAt} tokens=${result.tokenCount || 0}`
+    );
     res.write(
       `data: ${JSON.stringify({
         type: "done",
