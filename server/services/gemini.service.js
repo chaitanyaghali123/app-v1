@@ -246,7 +246,7 @@ export async function decryptGeminiApiKeyRecord(record) {
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
 const GEMINI_MODEL_FALLBACKS = String(
-  process.env.GEMINI_MODEL_FALLBACKS || "gemini-3.5-flash-lite,gemini-3.6-flash"
+  process.env.GEMINI_MODEL_FALLBACKS || ""
 )
   .split(",")
   .map((m) => m.trim())
@@ -274,6 +274,9 @@ function buildGeminiUrls(action) {
 }
 
 function getGeminiThinkingConfig() {
+  if (process.env.GEMINI_THINKING_ENABLED === "false") {
+    return null;
+  }
   const model = String(GEMINI_MODEL || "").toLowerCase();
   if (model === "gemini-2.0-flash-thinking" || model === "gemini-2.5-pro" || model.includes("gemini-3.")) {
     return { thinkingLevel: GEMINI_THINKING_LEVEL };
@@ -598,6 +601,50 @@ export async function validateGeminiApiKey(apiKey) {
   return true;
 }
 
+function detectWordLimit(question, subjectId) {
+  const ids = Array.isArray(subjectId)
+    ? subjectId
+    : String(subjectId || "")
+        .split(/[,\s]+/)
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+
+  const idSet = new Set(ids);
+  if (idSet.has("essay")) return 1300;
+  return 600;
+}
+
+function countWords(text) {
+  const t = String(text || "")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/[*_`]/g, "")
+    .replace(/^\s*(?:[-•*]|\d+\.)\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return t ? t.split(" ").filter(Boolean).length : 0;
+}
+
+function clampAnswerToLimit(text, wordLimit) {
+  const words = String(text || "").replace(/\s+/g, " ").trim().split(" ");
+  let boundary = -1;
+  let end = 0;
+  for (let i = 0; i < words.length && i < wordLimit; i++) {
+    if (/[.!?]["')\]*]{0,2}$/.test(words[i])) boundary = i;
+    end = i + 1;
+  }
+  return words.slice(0, boundary >= 0 ? boundary + 1 : end).join(" ");
+}
+
+function enforceWordLimit(answer, wordLimit) {
+  const text = String(answer || "");
+  const wordCount = countWords(text);
+  if (!wordLimit || !text.trim() || wordCount <= wordLimit) {
+    return { answer: text, wordCount, clamped: false };
+  }
+  const clamped = clampAnswerToLimit(text, wordLimit);
+  return { answer: clamped, wordCount: countWords(clamped), clamped: true };
+}
+
 function buildRagPrompt({ question, chunks, subjectId }) {
   if (!chunks || chunks.length === 0) {
     throw new Error("No evidence chunks provided to buildRagPrompt");
@@ -607,54 +654,84 @@ function buildRagPrompt({ question, chunks, subjectId }) {
     .map((chunk, idx) => `EVIDENCE ${idx + 1}:\n${chunk.text.trim()}`)
     .join("\n\n");
 
-  const chunkSummaries = chunks
-    .map((chunk, idx) => {
-      const headings = (chunk.text.match(/##\s+(.+)/g) || []).map(h => h.replace(/^##\s+/, "").trim());
-      const bullets = (chunk.text.match(/\*\s+\*\*([^:]+):\*\*/g) || []).map(b => b.replace(/^\*\s+\*\*:?/, "").replace(/:?\*\*$/, "").trim());
-      const parts = [];
-      if (headings.length) parts.push("headings: " + headings.join(", "));
-      if (bullets.length) parts.push("topics: " + bullets.join(", "));
-      return `EVIDENCE ${idx + 1} MUST cover: ${parts.length ? parts.join("; ") : "(general content from this chunk)"}`;
-    })
-    .join("\n");
+  const wordLimit = detectWordLimit(question, subjectId);
 
-  return `
-You are an expert UPSC Mains AI Tutor for ${(subjectId || "general studies").toUpperCase()}. Structure your response using clean, natural Markdown.
+  const wordLimitInstruction = wordLimit
+    ? `
+HARD WORD BUDGET — ${wordLimit} words (headings excluded) — NON-NEGOTIABLE:
+- ${wordLimit === 1300 ? "Introduction = 100–120 words, Body = ~1080 words, Conclusion = 90–100 words." : "Introduction = 55–70 words, Body = ~480 words, Conclusion = 45–60 words."}
+- That body space buys you only ${wordLimit === 1300 ? "8–9" : "6"} body paragraphs of ${wordLimit === 1300 ? "120–140" : "75–95"} words each. PLAN the allocation BEFORE writing a single word.
+- PARAGRAPH-CLASS LENGTH CHECK: ${wordLimit === 1300 ? "every body paragraph alone must be at least 110 words" : "every body paragraph alone must be at least 75 words"} — silently count it IMMEDIATELY after writing it; if it is short, expand it with more evidence BEFORE starting the next paragraph. NEVER attempt a final word-count total as a substitute for this per-paragraph check.
+- VOLUME OVER VERBOSITY: the examiner grades depth, not compression — do NOT condense. Every point must be argued through to its full evidence-backed depth with named examples before you move on. A 400-word answer to a 600-word question is a fail. It is far better to write SLIGHTLY over the target and be trimmed than to under-answer.
+- HARD MINIMUM: the finished answer MUST be at least ${wordLimit === 1300 ? 1170 : 550} words (headings excluded). If, after writing your body paragraphs, you are below ${wordLimit === 1300 ? 1170 : 550} words, KEEP EXPANDING with new evidence-based paragraphs - NEVER write a Conclusion while under ${wordLimit === 1300 ? 1170 : 550} words. A Conclusion at the 3rd-of-budget mark is an automatic FAIL.
+- Write your COMPLETE answer within ${Math.round(wordLimit * 0.98)}–${wordLimit} words — a verdict over the limit is an automatic fail, so STAY UNDER.
+- Silently count before finishing. Cut ruthlessly: no filler, no restating the question, no re-listed points. If over, delete the weakest sentence in each body paragraph until within limit.
+- Before emitting the last paragraph, silently estimate the word count and stop immediately once you cross ${wordLimit}. NEVER begin a section you cannot finish inside the budget.`
+    : "";
 
-CRITICAL RULES - VIOLATION IS FORBIDDEN:
-1. YOU MUST NOT use ANY external knowledge, training data, or information not in the evidence.
-2. EVERY fact, date, name, concept, and detail MUST come directly from the evidence chunks.
-3. If evidence is insufficient or missing key information, you MUST state: "Insufficient evidence in provided chunks."
-4. NEVER guess, infer, or add information that is not explicitly stated in the evidence.
-5. NEVER use general knowledge about India, history, geography, or any topic.
-6. If you are uncertain about any detail, omit it or state the uncertainty.
-7. NEVER add generic summary sections like "Summary of ..." or "Overview of ...".
-8. NEVER add blockquote callouts like "> UPSC Mains Takeaway" or "> UPSC Exam Takeaway". Answer directly without generic wrapper sections.
-9. ORIGINALITY: Rephrase ALL explanatory prose in your own words. NEVER copy sentences from the evidence word-for-word; paraphrase sentence structures freely while keeping every fact, date, name, and figure EXACTLY as stated in the evidence. Short technical terms and standard definitions may match, but full sentences must not.
-10. Copying exceptions to rule 9: section headings (per FORMATTING RULES), tables, blockquoted definitions/direct quotes, and ASCII/box diagrams MUST still be reproduced exactly as they appear in the evidence.
+  return `You are an expert UPSC Mains answer-writer for ${(subjectId || "general studies").toUpperCase()}. Produce a high-scoring, examiner-ready UPSC Mains answer — not a generic essay.
 
-WORKFLOW — FOLLOW THESE TWO STEPS IN ORDER:
-STEP 1 (EXTRACT): Read EVERY evidence chunk, one by one. From each chunk, extract a complete list of facts: names, dates, definitions, concepts, examples, and key points. Do this for ALL chunks INCLUDING the later ones — never stop at the first chunks. Silently build this fact list (do not output it).
-STEP 2 (WRITE): Using ONLY the facts extracted in Step 1, write the final answer. Every sentence must trace back to a fact from Step 1. Structure the answer as:
-  - **Introduction**: \`## **Introduction**\` heading, states the question's theme using extracted facts.
-  - **Body**: bold major subheadings \`## **<Theme>**\` created ONLY from themes present in the evidence — copy each section heading VERBATIM from the evidence but STRIP any leading numbering (e.g. "10.4.3 💵💵Paper Money" becomes "💵💵Paper Money", "1. Physical Geography" becomes "Physical Geography") and adding NO numbers of your own. Sub-sections use \`### **<Sub-theme>**\` and are NOT numbered. Under each, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets (never numbered lists, never invent bold sub-labels inside bullets); write evidence prose as plain paragraphs without bullets.
-  - **Conclusion**: \`## **Conclusion**\` heading, restates the key extracted points.
-Cover ALL evidence chunks, including the LATER sections — the answer must not stop early or omit the final chunks' content.
+== DEMAND ANALYSIS (FIRST, BEFORE WRITING) ==
+- Identify the exact demand: the command verb + what is being asked. Then answer ONLY that.
+- If the demand is enumerative ("Discuss the distinctive features of X", "What are the factors/causes/features", "Mention the characteristics"), present your answer as an explicit ENUMERATED LIST of the features/factors with a bolded name + 1–2 concrete examples/facts each — examiners award marks for identifiable points.
+- If the question contains TWO or more separate directives ("Mention the challenges... Discuss the significance...", "Discuss the causes... and suggest suitable measures"), the body MUST answer EVERY part explicitly — allocate body paragraphs to each part in proportion to its demand and never collapse or skip any part.
+- If the demand is comparative ("Compare/Analyse the relationship"), give a clear comparative treatment of both sides.
+- If the demand is directive ("Examine the statement", "Comment"), take a clear, examinable position against the statement.
 
-FORMATTING RULES:
-1. Use Markdown ATX headers with the heading text BOLDED inside the header: \`## **Introduction**\`, \`## **<Section Theme>**\`, and \`## **Conclusion**\` for major sections; use \`### **<Sub-theme>**\` for sub-sections. COPY every section heading VERBATIM from the evidence but STRIP any leading number (e.g. evidence heading \`## 1. Physical Geography\` becomes \`## **Physical Geography**\`, evidence heading \`## 10.4.3 💵💵Paper Money\` becomes \`## **💵💵Paper Money**\`). NEVER keep source numbers in headings, NEVER add numbers to headings that are unnumbered in the evidence, NEVER renumber or reorder sections, and NEVER number the sub-sections (no 1.1, 2.1 prefixes). NEVER use plain unbolded headers (e.g. \`## 1. ...\` or \`## Introduction\`), and NEVER use a bold line without a Markdown \`#\` header as a heading. Do NOT write literal "Introduction:", "Body:", "Conclusion:" labels.
-2. Use Markdown blockquotes (> ) only for direct quotes or definitions from the evidence. Never use blockquotes for generic summaries or takeaway callouts.
-3. Do NOT add citations of any kind — no [EVIDENCE X], no [1]/[2], no footnotes. Write facts as plain sentences.
-4. Bold key terms and keywords essential for UPSC answers.
-5. Use bullet points (lines starting with \`* \`) ONLY for content that is a bulleted list in the evidence — for those, never use numbered lists (1., 2., 3.). When the evidence presents content as plain prose/paragraphs, write it as plain sentences and paragraphs — do NOT turn prose into bullets.
-6. If the evidence contains an ASCII/box diagram (usually inside a \`\`\`text block), COPY it character-for-character into a \`\`\`text block in your answer. Reproduce EVERY character EXACTLY: all box-drawing characters (─, │, ┌, ┐, └, ┘, ├, ┤, ▼), the leading indentation/spaces, the inner padding/spacing, and the labels. Do NOT re-indent, re-center, re-pad, trim spaces, or reformat the diagram in any way. Place the diagram as a STANDALONE block: leave a blank line before the opening \`\`\`text fence, put the opening fence on its own line, the diagram lines after it, then the closing \`\`\` fence on its own line followed by a blank line. Do NOT attach the fence to a bullet, heading, sentence, or citation.
-7. Body subheadings MUST be created ONLY from themes that are actually present in the evidence chunks (e.g. topics listed in the chunk summaries above). NEVER invent headings like "Limitations", "Challenges", "Future Scope", "Way Forward", "Government Initiatives", "Impact", "Criticism", etc., unless that theme explicitly appears in the evidence. If the evidence does not contain a theme, do NOT create a heading for it.
-8. NEVER create any sub-heading on your own. \`### **<Sub-theme>**\` sub-sections may ONLY be created from headings that literally appear in the evidence (e.g. "Physical Geography", "Human Geography", "Sustainable Resource Management", "Disaster Risk Reduction", "Urban Sprawl and Migration" when present in the evidence). When reusing an evidence heading as a sub-section heading, copy it VERBATIM but STRIP any leading number (e.g. evidence heading \`### 10.5.1 Iran\` becomes \`### **Iran**\`), never keep a source number in the heading, and never combine it with a number of your own (never "2. Iran"). NEVER create sub-subheadings or bold label prefixes inside bullets (e.g. "Resource Mapping:", "Policy Application:", "Hazard vs. Disaster:", "Urbanization Challenges:") unless the evidence literally contains such a label. Write bullet content as plain sentences. Use at most two heading levels (## and ###) — never a third level, and never turn bullet text into heading-like bold labels. Each distinct major section from the evidence must appear as its own \`##\` section in order — never fold a major evidence section inside another section as a sub-section.
-9. NEVER use LaTeX math syntax for code, HTML tags, or any content — never output \`$$\` or \`\$\$...\$\$\`, \`\\(...\\)\`, \`\\text{...}\`, \`\\langle\`, \`\\rangle\`, \`\\longrightarrow\`, or any other LaTeX command. Write HTML tags, code, and symbols as plain text (e.g. write \`<ol><li>Item</li></ol>\` directly) or inside \`\`\` code fences. If you need arrows, write →; if you need math symbols, use Unicode (×, ≤, ≥, ≈, ≠).
-10. Separate every heading and paragraph with a blank line. Every heading (\`##\`/\`###\`), bullet (\`* \`), numbered item (\`1. \`), and code fence must begin on its own fresh line — never run a heading or list item directly onto the end of the previous paragraph.
+== DIRECTIVE ROADMAP (match the answer skeleton to the verb) ==
+- **Evaluate / Assess**: name the criteria up front, then weigh evidence criterion-by-criterion, and close with an explicit verdict ("on balance..."). Never just describe.
+- **"To what extent" / "How far"**: open by taking an extent position, argue the magnitude (the extent AND its limits), close with the extent band you determined — a stated conclusion, not an open question.
+- **"Examine the statement" / "Critically examine"**: build evidence FOR the statement then AGAINST it, then your reasoned judgment as the deciding paragraph.
+- **Discuss / Comment**: balanced treatment of both/all sides, weighted 2:1 toward the side your thesis commits to.
+- **Causes... and its consequences/effects**: sequence causes → effects with explicit causal links ("stemming from...", "leading to..."), one paragraph per link group, not a mixed list.
+- **Mention / list verbs** ("Mention", "list the features"): plain enumerated list; each item = bolded term + a one-line factual anchor, no long prose.
+- **Distinguish / differentiate**: point-by-point contrast on shared criteria (criterion | X vs Y), NOT two separate descriptions written back-to-back.
 
-MANDATORY COVERAGE — YOU MUST INCLUDE CONTENT FROM EVERY EVIDENCE CHUNK:
-${chunkSummaries}
+== FORMAT ==
+The answer MUST have exactly three parts:
+
+## **Introduction** (short)
+- ONE compact paragraph: a crisp definition or one-line context, then a single thesis sentence that directly answers the question's directive verb.
+- Open the FIRST clause by naming the question's central entity (e.g. "Himalayan geo-resources", "mangrove ecosystems", "Home Rule Movement") in your own words — anchored on the strongest evidence fact — then compress the verdict/thesis into the closing clause.
+- Never quote or restate the question verbatim, never open with padding ("In modern times", "India is a diverse country").
+
+## **Content** — 6 dense thematic paragraphs (600-word Mains) or 8–9 (1300-word Essay)
+- Each body paragraph = ONE clear argument with a bolded keyword opening and 1–2 concrete supporting facts. Structure: Point → Evidence → Tie-back to the verb.
+- The analysis must follow the question's command verb:
+  * Analyze → cause–effect, dimensions, dynamics.
+  * Discuss / Comment → balanced treatment of both sides.
+  * Critically examine / Examine → evidence for AND against, then a judgment.
+  * Elucidate → explain with characteristics and examples.
+  * Evaluate → criteria-led verdict (use the social/political/economic/cultural lenses if the question names them).
+  * "To what extent" / "How far" → extent bands: argue magnitude, then state the determined extent.
+  * Distinguish / Differentiate → point-by-point contrast on shared criteria.
+  * Describe / "distinctive features" / "characteristics" → numbered feature-by-feature list, each with example.
+- Use exam salting: names, dates, Acts, Commissions, schemes, institutions, case data — the specifics that separate a 10/15-marker from a list.
+
+## **Conclusion** — ONE short paragraph
+- A balanced verdict (NOT a summary) tied to the specific entity/concept named in the question (e.g. conclude on "Hampi / Vijayanagara architecture", not "the past") + one short forward-looking line ("further reforms required", "sustained investment needed"). 2–3 sentences max.
+
+== EVIDENCE RULES ==
+- STRICT SOURCE-LOCK: the evidence chunks below are your ONLY source of facts — mine EVERY chunk for names, dates, acts, schemes, definitions, examples and use them; cover all chunks, not just the first. Do NOT bring in any outside or prior knowledge, even facts you are confident are true.
+- SOURCE-LOCKED ANSWERING — every name, date, number, scheme, and example in the answer MUST appear in the evidence chunks; assert nothing from memory. Where the chunks cannot support a point the question demands, OMIT that claim (or, only where necessary, state that the retrieved sources do not cover it) rather than filling it from prior knowledge. If a number, year, name, or quote is not certain, OMIT it rather than risk it; precision beats breadth. NEVER invent figures, statistics, dates, or quotes.
+- DO NOT MANUFACTURE SPECIFICITY: never attribute a specific architectural element, technique, scheme, motive, or causation (“introduced X”, “first to”, “forced X to innovate”, exact technique origins) unless the retrieved evidence establishes it. Attribute real provenance (“built on earlier South Indian/Dravidian temple traditions”) rather than an exclusive lineage you cannot support. Prefer a broader, well-supported historical statement over an impressive but weakly supported attribution; avoid absolutes (“mortarless”, “literally”, “-all”) unless the source confirms them.
+- ANCHOR EVERY POINT IN A VERIFIED EXAMPLE: when the question asks for examples (“elucidate with examples”, “with examples”, “mention instances”), the body MUST be led by concrete, named examples drawn from the evidence chunks (named temples/sites, schemes, acts, institutions). 3–5 well-supported examples beat 10 uncertain ones; if an example is not supported by the evidence, omit THAT example rather than invent or go vague. Never answer an “with examples” question with a general analysis and zero named examples.
+- For amalgamation/synthesis/“past vs contemporary” questions, structure the body as natural thematic headings that make the old-vs-new synthesis explicit (e.g. “Continuity with Earlier Southern Traditions”, “Interaction with Contemporary Deccan Architecture”). Weave the past-vs-contemporary contrast inside each section with named examples. Do NOT print mechanical label pairs like “PAST TRADITION -> ... | CONTEMPORARY INFLUENCE -> ...” in the final answer.
+- PREFER SUBJECT EXAMPLES: give the majority of examples from the SUBJECT being asked about (the very monuments/structures/schemes/institutions of that period) rather than its predecessors or broad historical background. Predecessor dynasties or prior contexts may appear only briefly as lineage context — the analytical weight and named examples must belong to the period in question.
+- GRADE YOUR CONFIDENCE BY SOURCE: the retrieved evidence chunks (NCERT and authoritative corpus) are your PRIMARY authority — state their explicitly supported facts directly and confidently (e.g. arched and domed fortification gateways tied to the Indo-Islamic style, gopuram architecture). Treat the chunks as the ONLY authority — never use outside knowledge as a substitute, and never let a plausible-sounding inference override or out-rank an evidence-supported point.
+- Never fabricate citations, studies, or sources.
+- ORIGINALITY: rephrase ALL explanatory prose in your own words — never copy consecutive sentences from the evidence word-for-word; you may keep dates, names, facts, and figures exactly as stated.
+
+== LANGUAGE & PRESENTATION ==
+1. Formal, impersonal, crisp exam English; active sentences.
+2. Bold key terms and facts as on-paper underlining would (e.g. **regional planning**, **Planning Commission**).
+3. Minimal bullets — real Mains answers are paragraphs. Block numbered lists are allowed for 250-word enumerative demands ("list features/factors") and management-measure parts; for 150-word answers prefer dense prose with bolded keywords inline over block lists.
+4. Markdown headers \`## **Introduction**\`, optional \`## **<short thematic heading>**\` for the body, \`## **Conclusion**\`. Headings are short and do not count toward the word limit.
+5. No citations, no [EVIDENCE X], no footnotes, no URLs, no LaTeX; use Unicode arrows/symbols (→, ×, ≤).
+6. If an evidence chunk contains an ASCII/box diagram, describe its structure in your own words in simple text — do not reproduce raw box-drawing characters.
+7. Separate every heading and paragraph with a blank line.
+
+${wordLimitInstruction}
 
 QUESTION:
 ${question}
@@ -820,6 +897,20 @@ function cleanModelOutput(text) {
     .replace(/^#{1,6}\s+\*\*\s*\d+\.\s*\d+\.\s+([^*\n]+?)\s*\*\*\s*$/gim, "### **$1**")
     .replace(/^#{1,6}\s+\d+\.\s*\d+\.\s+([^\n]+?)\s*$/gim, "### $1");
 
+  out = out
+    .replace(/\u00e2\u20ac\u201d/g, "\u2014")
+    .replace(/\u00e2\u20ac\u201c/g, "\u2013")
+    .replace(/\u00e2\u20ac\u0153/g, "\u201c")
+    .replace(/\u00e2\u20ac\u2122/g, "\u2019")
+    .replace(/\u00e2\u20ac\u02dc/g, "\u2018")
+    .replace(/\u00e2\u20ac\u00a6/g, "\u2026")
+    .replace(/\u00e2\u20ac\u00a2/g, "\u2022")
+    .replace(/\u00e2\u20ac\u00b9/g, "\u2039")
+    .replace(/\u00e2\u20ac\u00ba/g, "\u203a")
+    .replace(/(\*\*[^*\n]*\*\*)/g, "\u0000$1\u0000")
+    .replace(/\*/g, "")
+    .replace(/\u0000/g, "");;
+
   const isFullyFenced = /^```[\w-]*\s*[\s\S]*?```$/i.test(out);
   if (isFullyFenced) {
     out = out.replace(/^```[\w-]*\s*/i, "").replace(/```$/i, "");
@@ -889,19 +980,24 @@ function restoreExactDiagrams(answer, chunks) {
 
 export async function proxyGeminiCall(apiKey, options) {
   const { question, chunks, targetTokens, mode, onToken, onStatus } = options;
+  const proxyStartedAt = Date.now();
+  let firstTokenAt = 0;
 
-  onStatus?.("writing strict RAG answer");
-  const subjectId = options.subjectId || (chunks?.[0]?.subject_id) || null;
+  onStatus?.("writing mains answer");
+  const rawSubjectId = options.subjectId || (chunks?.[0]?.subject_id) || null;
+  const subjectId = Array.isArray(rawSubjectId) ? rawSubjectId.find((s) => typeof s === "string") || null : rawSubjectId;
   const userPrompt = buildRagPrompt({ question, chunks, subjectId });
   const url = buildGeminiUrls(":streamGenerateContent?alt=sse");
   const maxOutputTokens = targetTokens > 0 ? Math.min(targetTokens + 4096, 65536) : 8192;
+  const answerWordLimit = detectWordLimit(question, subjectId);
+  const maxOutputTokensCapped = answerWordLimit ? Math.min(maxOutputTokens, Math.round(answerWordLimit * 1.8) + 150) : maxOutputTokens;
   const generationConfig = buildGeminiGenerationConfig({
-    temperature: 0.0,
-    topP: 1,
-    maxOutputTokens,
+    temperature: 0.6,
+    topP: 0.95,
+    maxOutputTokens: maxOutputTokensCapped,
   });
   console.log(
-    `[gemini] request config: mode=${mode || "limited"}, chunks=${chunks.length}, maxOutputTokens=${maxOutputTokens}, thinking=${JSON.stringify(generationConfig.thinkingConfig || null)}`
+    `[gemini] request config: mode=${mode || "limited"}, chunks=${chunks.length}, maxOutputTokens=${maxOutputTokensCapped}, thinking=${JSON.stringify(generationConfig.thinkingConfig || null)}`
   );
 
   const response = await requestGemini(
@@ -911,7 +1007,7 @@ export async function proxyGeminiCall(apiKey, options) {
       method: "POST",
       body: JSON.stringify({
         systemInstruction: {
-          parts: [{ text: "You are a STRICT RAG answer engine. WORKFLOW: STEP 1 (EXTRACT) — read EVERY evidence chunk and extract all facts (names, dates, definitions, concepts, examples) from ALL chunks INCLUDING the later ones; never stop at the first chunks. STEP 2 (WRITE) — using ONLY the extracted facts, write the answer as: \`## **Introduction**\` (Markdown header with bold text inside), bold major headings \`## **<Theme>**\` for the Body created ONLY from themes present in the evidence — copy each heading VERBATIM from the evidence, STRIPPING any leading number (e.g. '10.4.3 💵💵Paper Money' becomes '💵💵Paper Money', '1. Physical Geography' becomes 'Physical Geography') and never adding numbers of your own — and \`## **Conclusion**\`. Never number the sub-sections — sub-sections use \`### **<Sub-theme>**\` with no 1.1, 2.1 prefixes. Inside sections, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets — never numbered lists (1., 2., 3.) — and write evidence prose as plain paragraphs without bullets. Cover EVERY chunk including the later sections — do not stop early. RULES: 1) NEVER use external knowledge. 2) EVERY fact MUST come from evidence chunks. 3) Do NOT add citations of any kind — no [EVIDENCE X], no [1]/[2], no footnotes; write facts as plain sentences. 4) You MUST cover ALL chunks — the prompt lists what each chunk contains. 5) If any chunk is missing from your answer, it is INVALID. 6) Never guess or infer. 7) If evidence is insufficient, say 'Insufficient evidence.' 8) Body subheadings MUST come ONLY from themes present in the evidence — NEVER invent 'Limitations', 'Challenges', 'Future Scope', 'Way Forward', 'Government Initiatives', 'Impact', 'Criticism' unless explicitly in the evidence. NEVER create any sub-heading on your own: ### sub-sections may only come from headings that literally appear in the evidence; when reusing an evidence heading, copy it VERBATIM but STRIP any leading number (e.g. '10.5.1 Iran' becomes 'Iran', '1. Physical Geography' becomes 'Physical Geography') — never keep a source number and never add a number of your own (never '## **2. 1. Physical Geography**'). Never create bold label prefixes inside bullets (like 'Resource Mapping:', 'Policy Application:') unless the evidence literally contains them — write bullets as plain sentences. Use at most two heading levels (## and ###). Each distinct major section from the evidence must appear as its own numbered ## section — never fold a major evidence section inside another as a sub-section. 9) If the evidence contains an ASCII/box diagram inside a ```text block, COPY it character-for-character into a ```text block in your answer — reproduce EVERY character EXACTLY: every box-drawing character (─, │, ┌, ┐, └, ┘, ├, ┤, ▼), the leading indentation/spaces, inner padding, and labels. Do NOT re-indent, re-center, re-pad, trim spaces, or reformat. Place it as a STANDALONE block: blank line before the opening fence, opening \`\`\`text fence on its own line, diagram lines, closing \`\`\` fence on its own line, blank line after. Do NOT attach the fence to a bullet, heading, sentence, or citation. Before finishing, mentally check each EVIDENCE N was covered. NEVER use LaTeX math syntax (\`$$\` or \`$$...$$\`, \`\\(...\\)\`, \`\\text{...}\`, \`\\langle\`, \`\\rangle\`, \`\\longrightarrow\`) for code or HTML — write HTML tags and code as plain text, e.g. <ol><li>Item</li></ol>. Separate every heading and paragraph with a blank line; every heading, bullet (*), numbered item (1.), and code fence must begin on its own fresh line. ORIGINALITY: rephrase ALL explanatory prose in your own words — never copy consecutive sentences from the evidence word-for-word; paraphrase freely while keeping every fact, date, name, and figure exactly as stated. Exceptions that MUST still be copied exactly: section headings, tables, blockquoted definitions, and ASCII/box diagrams." }],
+          parts: [{ text: "You are an expert UPSC Mains answer-writer. Produce the answer in the standard UPSC Mains format:\n1. ## **Introduction** — one compact paragraph: a context/definition line, then a single thesis sentence that directly answers the directive verb (never restate the question).\n2. ## **Body** — 2-4 dense thematic paragraphs for 600-word (Mains) and 1300-word (Essay) answers. Each paragraph = Point (bolded keyword) → Evidence → Tie-back to the verb. Match the analysis to the command verb: Analyze → cause-effect/dimensions; Discuss/Comment → balanced sides; Critically examine/Examine → for + against + judgment; Elucidate → characteristics + examples; Evaluate → criteria-led verdict.\n3. ## **Conclusion** — one paragraph: balanced verdict + one forward-looking line (2-3 sentences).\nGround every claim in the EVIDENCE chunks first and mine ALL chunks (never stop at the first). STRICT SOURCE-LOCK: use ONLY the evidence chunks — never add facts, names, dates, numbers, or examples from memory, even if confidently known. If a point needed to answer is not in the chunks, omit it rather than fill from prior knowledge. NEVER invent figures, dates, or quotes. For enumerative demands (“Discuss the distinctive features/characteristics/factors”), structure the body as an explicit numbered list of the features/factors, each with a bolded name and 1–2 concrete examples. Report only facts you are certain about — if a number, year, or quote is doubtful, omit it; precision beats breadth. Do not manufacture specificity: never attribute a specific element, technique, or motive the evidence does not establish; prefer a broader, well-supported statement over an impressive but weakly supported one. REQUIRE VERIFIED EXAMPLES: anchor each body point in 1–3 concrete named examples drawn from the evidence (monuments, schemes, acts, institutions); 3–5 well-supported examples beat 10 uncertain ones; if an example is not supported, omit it, but never answer an “with examples” question with zero named examples. For amalgamation/synthesis questions, for amalgamation/synthesis questions use natural thematic headings (e.g. “Continuity with Earlier Traditions”, “Interaction with Contemporary Styles”) and weave the old-vs-new contrast into each section; do not print mechanical label pairs. Prefer examples of the SUBJECT being asked about over examples of its predecessors or background. Grade your confidence by source: state evidence-supported facts (e.g. arched/domed Indo-Islamic fortification gateways, gopuram architecture) directly and confidently; keep anything beyond the chunks subordinate and conservative, assertively proportional to its support. Honor the word limit in the question (600 words for Mains, 1300 words for Essay): cut ruthlessly rather than exceed. Rephrase all explanatory prose in your own words. Bold key terms. Minimal bullets. No citations, no footnotes, no URLs, no LaTeX; use Unicode arrows (→). If an evidence chunk contains an ASCII/box diagram, describe its structure in your own words — never reproduce box-drawing characters. If there is genuinely no relevant evidence, say so briefly." }],
         },
         safetySettings: [
           { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
@@ -939,11 +1035,13 @@ export async function proxyGeminiCall(apiKey, options) {
   const decoder = new TextDecoder();
   let buffer = "";
   let fullText = "";
+  let lastEmitted = 0;
   let tokenCount = 0;
   let finishReason = "";
   let promptTokenCount = 0;
   let thoughtTokenCount = 0;
   let totalTokenCount = 0;
+  const STREAM_FLUSH_CHARS = 96;
   const processStreamLine = (line) => {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data: ")) return;
@@ -954,8 +1052,12 @@ export async function proxyGeminiCall(apiKey, options) {
       const parts = data?.candidates?.[0]?.content?.parts || [];
       const text = parts.map((part) => part?.text || "").join("");
       if (text) {
+        if (!firstTokenAt) firstTokenAt = Date.now();
         fullText += text;
-        onToken?.(restoreExactDiagrams(cleanModelOutput(fullText), chunks));
+        if (onToken && fullText.length - lastEmitted >= STREAM_FLUSH_CHARS) {
+          lastEmitted = fullText.length;
+          onToken(restoreExactDiagrams(cleanModelOutput(fullText), chunks));
+        }
       }
       const usage = data?.usageMetadata || {};
       if (usage.candidatesTokenCount) {
@@ -1001,6 +1103,10 @@ export async function proxyGeminiCall(apiKey, options) {
     throw new Error("Gemini returned an empty response.");
   }
 
+  if (onToken && fullText.length > lastEmitted) {
+    onToken(restoreExactDiagrams(cleanModelOutput(fullText), chunks));
+  }
+
   const cleaned = restoreExactDiagrams(cleanModelOutput(fullText), chunks);
 
   if (finishReason && finishReason !== "STOP") {
@@ -1025,22 +1131,42 @@ export async function proxyGeminiCall(apiKey, options) {
     console.log(`[gemini] finish reason: ${finishReason}, tokens: ${promptTokenCount}+${tokenCount} (thoughts: ${thoughtTokenCount})`);
   }
   console.log(
-    `[gemini] usage: prompt=${promptTokenCount || "unknown"}, output=${tokenCount || "unknown"}, thoughts=${thoughtTokenCount || 0}, total=${totalTokenCount || "unknown"}, maxOutputTokens=${maxOutputTokens}`
+    `[gemini] usage: prompt=${promptTokenCount || "unknown"}, output=${tokenCount || "unknown"}, thoughts=${thoughtTokenCount || 0}, total=${totalTokenCount || "unknown"}, maxOutputTokens=${maxOutputTokensCapped}`
   );
   console.log(
     `[gemini] proxy — ${cleaned.length} chars, ${tokenCount} tokens`
   );
 
+  console.log(
+    `[gemini] textgen: ttftMs=${firstTokenAt ? firstTokenAt - proxyStartedAt : -1} genMs=${Date.now() - proxyStartedAt} outputTokens=${tokenCount} tokPerSec=${tokenCount > 0 && Date.now() - proxyStartedAt > 0 ? Math.round((tokenCount / Math.max(1, Date.now() - proxyStartedAt)) * 1000) : 0}`
+  );
+
+  const enforced = enforceWordLimit(cleaned, answerWordLimit);
+  if (enforced.clamped) {
+    console.warn(
+      `[gemini] word-limit clamp: ${enforced.wordCount} words (limit ${answerWordLimit}) after enforcing`
+    );
+  }
+
+  const minAnswerWords = answerWordLimit
+    ? Math.max(200, Math.round(answerWordLimit * 0.92))
+    : 0;
+  if (answerWordLimit && enforced.wordCount < minAnswerWords) {
+    console.warn(
+      `[gemini] answer below target: ${enforced.wordCount}/${answerWordLimit} words (single-call generation)`
+    );
+  }
+
   return {
-    answer: cleaned,
+    answer: enforced.answer,
     tokenCount,
+    wordCount: enforced.wordCount,
+    wordLimit: answerWordLimit || null,
+    wordLimitClamped: enforced.clamped,
   };
 }
 
-const RAG_ANSWER_SYSTEM_INSTRUCTION = `You are a STRICT RAG answer engine for UPSC study material.
-WORKFLOW: STEP 1 (EXTRACT) — read EVERY evidence chunk and silently extract all facts (names, dates, definitions, concepts, examples) from ALL chunks INCLUDING the later ones; never stop at the first chunks. STEP 2 (WRITE) — using ONLY the extracted facts, write the answer structured as: \`## **Introduction**\`, bold major headings \`## **<Theme>**\` created ONLY from themes present in the evidence (copy each heading verbatim from the evidence, stripping any leading number), and \`## **Conclusion**\`. Sub-sections use \`### **<Sub-theme>**\` taken only from headings that literally appear in the evidence; never number sections or sub-sections.
-RULES: 1) NEVER use external knowledge — every fact must come from the evidence chunks. 2) Mirror the evidence's structure: bullet points (*) only where the evidence itself uses bullets; write prose as plain paragraphs. 3) Do NOT add citations of any kind. 4) Cover ALL chunks — never omit later sections. 5) Never guess or infer; if evidence is insufficient, state 'Insufficient evidence.' 6) NEVER invent generic sub-headings ('Limitations', 'Challenges', 'Way Forward', 'Impact', 'Criticism') unless present in the evidence. 7) If the evidence contains an ASCII/box diagram inside a \`\`\`text block, copy it character-for-character into a \`\`\`text block placed standalone on its own lines. 8) NEVER use LaTeX math syntax (\`$$\`, \`\\(...\\)\`, \`\\text{...}\`) — write HTML/code/symbols as plain text or Unicode arrows (→).
-ORIGINALITY: rephrase ALL explanatory prose in your own words — never copy consecutive sentences from the evidence word-for-word; paraphrase freely while keeping every fact, date, name, and figure exactly as stated. Exceptions that MUST still be copied exactly: section headings, tables, blockquoted definitions, and ASCII/box diagrams.`;
+const RAG_ANSWER_SYSTEM_INSTRUCTION = "You are an expert UPSC Mains answer-writer for UPSC study material. Produce answers in the standard UPSC Mains format:\n- ## **Introduction** — one compact paragraph: context/definition + a single thesis sentence answering the directive verb.\n- ## **Content** — 2-4 dense thematic paragraphs; each = Point (bolded) → Evidence → Tie-back to the verb; analysis maps to the command verb (Analyze/Discuss/Comment/Critically examine/Elucidate/Evaluate).\n- ## **Conclusion** — balanced verdict + one forward-looking line (2-3 sentences).\nGround every claim in the EVIDENCE chunks, mining ALL chunks. STRICT SOURCE-LOCK: use ONLY the evidence chunks — never add facts, names, dates, numbers, or examples from memory, even if confidently known; if a needed point is not in the chunks, omit it and never fill from prior knowledge. NEVER invent figures, dates, or quotes. For enumerative demands (distinctive features/characteristics/factors), list each feature/factor explicitly with a bolded name and concrete example. Report only certain facts — omit doubtful numbers/years; precision beats breadth. Do not manufacture specificity: attribute only what the evidence establishes; prefer broader, well-supported statements over impressive but weakly supported ones. REQUIRE VERIFIED EXAMPLES: anchor each body point in 1–3 concrete named examples from the evidence; 3–5 supported examples beat 10 uncertain ones; never answer an “with examples” question with zero named examples. For amalgamation/synthesis questions, for amalgamation/synthesis questions use natural thematic headings and weave the past-vs-contemporary contrast into each section (no mechanical label pairs); prefer examples of the subject asked about over its predecessors. Grade confidence by source: assert evidence-supported facts confidently; keep beyond-evidence additions subordinate and conservative. Honor the word limit in the question (600 words for Mains, 1300 words for Essay). Rephrase prose in your own words. No citations, no odd generic sub-headings unless the evidence contains the theme, no LaTeX, no verbatim box-diagrams (describe instead).";
 
 export async function generateAnswer({ apiKey, question, chunks, subjectId, options = {} }) {
   const cleanKey = String(apiKey || "").trim();
@@ -1110,9 +1236,15 @@ export async function generateAnswer({ apiKey, question, chunks, subjectId, opti
 
   const cleaned = restoreExactDiagrams(cleanModelOutput(text), chunks);
 
+  const answerWordLimit = detectWordLimit(question, subjectId);
+  const enforced = enforceWordLimit(cleaned, answerWordLimit);
+
   return {
-    answer: cleaned,
+    answer: enforced.answer,
     modelUsed: getGeminiModel(),
     usage: data?.usageMetadata || null,
+    wordCount: enforced.wordCount,
+    wordLimit: answerWordLimit || null,
+    wordLimitClamped: enforced.clamped,
   };
 }

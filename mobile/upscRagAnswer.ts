@@ -96,18 +96,21 @@ function normalizeChunkScores(chunks: RagChunk[], explicitScores?: number[]): nu
 export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
   let response;
   try {
-    const { getOrCreateDeviceId } = await import("./gemini");
+    const [{ getOrCreateDeviceId }, { authHeaders, ensureAuth }] = await Promise.all([
+      import("./gemini"),
+      import("./authApi"),
+    ]);
+    await ensureAuth(options.backendUrl);
+    const isEssay = String(options.subject || "").trim().toLowerCase() === "essay";
     response = await fetch(`${options.backendUrl}/api/mobile/rag-context`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: await authHeaders(),
       body: JSON.stringify({
         question: options.question,
-        subject: options.subject,
-        maxChunks: options.maxChunks ?? 25,
-        maxContextChars: options.maxContextChars ?? 40000,
-        targetTokens: options.targetTokens ?? 3000,
+    subject: options.subject,
+        maxChunks: options.maxChunks ?? (isEssay ? 35 : 20),
+        maxContextChars: options.maxContextChars ?? (isEssay ? 60000 : 40000),
+        targetTokens: options.targetTokens ?? (isEssay ? 2600 : 3000),
         deviceId: await getOrCreateDeviceId(),
       }),
     });
@@ -175,6 +178,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
     backendUrl: options.backendUrl,
     deviceId: await getOrCreateDeviceId(),
     question: options.question,
+    subjectId: options.subject,
     chunks: chunks
       .map((chunk) => ({
         text: chunk.text ?? chunk.content ?? "",
@@ -186,6 +190,12 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
           typeof chunk.metadata?.source_file === "string"
             ? chunk.metadata.source_file
             : chunk.source,
+        subject_id:
+          Array.isArray(chunk.subject_id) && chunk.subject_id.length
+            ? chunk.subject_id
+            : typeof chunk.metadata?.subject_id === "string"
+            ? chunk.metadata.subject_id
+            : undefined,
       }))
       .filter((chunk) => Boolean(chunk.text)),
     targetTokens: effectiveTargetTokens,

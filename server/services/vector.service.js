@@ -10,6 +10,7 @@ const VECTOR_TIMEOUT_MS = Number(process.env.VECTOR_API_TIMEOUT_MS || 60000);
  * Query PostgreSQL pgvector retrieval API.
  */
 export async function queryVector({ prompt, topK, skipRerank = false, subjectIds, apiKey }) {
+  const t0 = Date.now();
   try {
     const body = {
       query: prompt,
@@ -36,7 +37,11 @@ export async function queryVector({ prompt, topK, skipRerank = false, subjectIds
       headers: API_KEY ? { "x-api-key": API_KEY } : undefined,
       timeout: VECTOR_TIMEOUT_MS
     });
-    return resp.data.chunks || [];
+    const chunks = resp.data.chunks || [];
+    console.log(
+      `[vector] retrievalMs=${Date.now() - t0} topK=${topK} skipRerank=${skipRerank} returned=${chunks.length}`
+    );
+    return chunks;
   } catch (err) {
     const status = err?.response?.status;
     const upstreamCode = err?.response?.data?.code;

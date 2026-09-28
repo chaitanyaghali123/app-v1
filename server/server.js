@@ -41,6 +41,8 @@ import currentAffairsRoutes from "./routes/currentAffairs.routes.js";
 import {
   ensureRevisionsTable,
   ensureUsersTable,
+  ensureRefreshTokensTable,
+  ensureAuthCodesTable,
   ensureApiLogsTable,
   ensureGeminiKeysTable,
   ensureUpscChunkMediaColumns,
@@ -141,6 +143,8 @@ async function initialize() {
     await Promise.all([
       ensureRevisionsTable(),
       ensureUsersTable(),
+      ensureRefreshTokensTable(),
+      ensureAuthCodesTable(),
       ensureApiLogsTable(),
       ensureGeminiKeysTable(),
       ensureUpscChunkMediaColumns(),

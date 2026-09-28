@@ -1,0 +1,17 @@
+MISSING SOURCES - CURRENT AFFAIRS
+=================================
+
+Already in R2: 251 pre-news-dated newspaper articles (The Hindu, Indian
+Express) - present.
+
+Still to download:
+
+1. PIB (Press Information Bureau)
+   - Portal: pib.gov.in  (daily releases, feature articles)
+   - Bulk sync feed: https://pib.gov.in (release archive by ministry/year)
+
+2. Yojana & Kurukshetra Magazines (Publications Division, Min of I&B)
+   - Portal: dpippd.pib.gov.in  (monthly PDF issues)
+
+3. India Year Book (Publications Division, Government of India)
+   - Portal: dpippd.pib.gov.in  (PDF, latest edition)

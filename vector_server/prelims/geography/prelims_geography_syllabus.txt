@@ -1,0 +1,14 @@
+UPSC Prelims Syllabus - Geography
+==================================
+
+UPSC Prelims questions are framed directly from these exact government
+publications, reports, and foundational textbooks.
+
+NCERTs:
+- Class 11: Fundamentals of Physical Geography
+- Class 11: India: Physical Environment
+- Class 12: Fundamentals of Human Geography
+- Class 12: India: People and Economy
+
+Public Domain / Government Sources:
+- Bhuvan (ISRO Geo-portal) / Survey of India publication data

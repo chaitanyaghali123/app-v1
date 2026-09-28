@@ -16,6 +16,8 @@ const GS_PAPER_SUBJECT_IDS = {
 
 const router = Router();
 
+const MAX_CONTEXT_CHUNKS = 45;
+
 async function expandChunksToFullDocument(chunks, subjectIds) {
   try {
     const files = [...new Set(chunks.map((c) => c.source).filter(Boolean))];
@@ -32,7 +34,34 @@ async function expandChunksToFullDocument(chunks, subjectIds) {
     const { rows } = await pool.query(sql, params);
     if (!rows || rows.length === 0) return chunks;
 
-    return rows.map((r) => ({
+    // The expanded document can be long; bound the prompt context to the
+    // chunk window nearest the retrieved matches, keeping narration order.
+    let expanded = rows;
+    if (rows.length > MAX_CONTEXT_CHUNKS) {
+      const matchedIndexes = new Map();
+      for (const c of chunks) {
+        if (c.source && Number.isFinite(c.chunkIndex)) {
+          const list = matchedIndexes.get(c.source) || [];
+          list.push(c.chunkIndex);
+          matchedIndexes.set(c.source, list);
+        }
+      }
+      const distanceScores = new Map();
+      for (const r of rows) {
+        const mi = matchedIndexes.get(r.source) || [];
+        const dist = mi.length
+          ? Math.min(...mi.map((ix) => Math.abs(ix - r.chunk_index)))
+          : 0;
+        distanceScores.set(r, dist);
+      }
+      const ranked = rows
+        .slice()
+        .sort((a, b) => (distanceScores.get(a) - distanceScores.get(b)) || (a.chunk_index - b.chunk_index));
+      const kept = new Set(ranked.slice(0, MAX_CONTEXT_CHUNKS));
+      expanded = rows.filter((r) => kept.has(r));
+    }
+
+    return expanded.map((r) => ({
       text: r.text || "",
       source: r.source || "",
       topic: r.topic || "",
@@ -115,6 +144,7 @@ async function handleStream(req, res) {
       text: c.text || "",
       source: c.metadata?.source_file || "",
       topic: c.metadata?.topic || "",
+      chunkIndex: Number.isFinite(c.metadata?.chunk_index) ? c.metadata.chunk_index : undefined,
       vectorScore: c.vector_score ?? null,
       rerankScore: c.rerank_score ?? null,
     }));
@@ -151,7 +181,8 @@ async function handleStream(req, res) {
       question: prompt,
       chunks,
       targetTokens: 5000,
-      mode: "strict-rag",
+      mode: "mains",
+      subjectId: subjectFilter || undefined,
       onToken: (token) => {
         res.write(`data: ${JSON.stringify({ type: "token", text: token })}\n\n`);
       },
@@ -160,7 +191,7 @@ async function handleStream(req, res) {
       },
     });
 
-    res.write(`data: ${JSON.stringify({ type: "done", answer: result.answer, tokenCount: result.tokenCount, chunks })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "done", answer: result.answer, tokenCount: result.tokenCount, chunks, wordCount: result.wordCount ?? null, wordLimit: result.wordLimit ?? null, wordLimitClamped: result.wordLimitClamped ?? false })}\n\n`);
     res.end();
   } catch (err) {
     console.error("[rag/stream] error:", err.message);

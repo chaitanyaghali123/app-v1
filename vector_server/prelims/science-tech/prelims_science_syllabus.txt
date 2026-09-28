@@ -1,0 +1,15 @@
+UPSC Prelims Syllabus - General Science & Technology
+====================================================
+
+UPSC Prelims questions are framed directly from these exact government
+publications, reports, and foundational textbooks.
+
+NCERTs:
+- Class 6 to 10: Science NCERTs (all base concepts)
+- Class 11 & 12: Selected chapters on Biotechnology, Semiconductors, and
+  Communications
+
+Public Domain / Government Sources:
+- ISRO Official Releases (Space tech developments)
+- DRDO Releases (Defense technology)
+- Department of Biotechnology (DBT) updates

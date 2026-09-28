@@ -1,0 +1,16 @@
+MISSING SOURCES - GEOGRAPHY
+===========================
+
+Already in R2: Fundamentals of Physical Geography (Cl11), India: Physical
+Environment (Cl11), Fundamentals of Human Geography (Cl12), India: People and
+Economy (Cl12), The Earth Our Habitat (Cl6), Our Environment (Cl7), Resources
+& Development (Cl8), Contemporary India (Cl 9-10), Cl12 LESSIONAL splits
+(legy105-210) - present.
+
+Still to fetch (portal data; not a single PDF):
+
+1. Bhuvan (ISRO Geo-portal)
+   - Portal: bhuvan.nrsc.gov.in  (thematic map layers for India)
+
+2. Survey of India
+   - Portal: surveyofindia.gov.in  (topographic maps, scientific notes)

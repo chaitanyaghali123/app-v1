@@ -53,6 +53,31 @@ const GS_PAPERS = [
   { id: "optional", name: "Optional", icon: "📖", color: "#6366f1" },
 ];
 
+const PRELIMS_PAPERS = [
+  { id: "prelim-gs1", name: "Paper I \u00b7 GS", icon: "\ud83d\udcc2", color: "#0ea5e9" },
+  { id: "prelim-csat", name: "Paper II \u00b7 CSAT", icon: "\ud83e\udde0", color: "#14b8a6" },
+];
+
+const PRELIMS_PAPER1_SUBJECTS = [
+  { id: "history", name: "History", icon: "\ud83c\udfdb\ufe0f", color: "#b45309" },
+  { id: "geography", name: "Geography", icon: "\ud83c\udf0d", color: "#047857" },
+  { id: "polity", name: "Polity", icon: "\u2696\ufe0f", color: "#1d4ed8" },
+  { id: "economy", name: "Economy", icon: "\ud83d\udcb9", color: "#15803d" },
+  { id: "environment", name: "Environment", icon: "\ud83c\udf3f", color: "#065f46" },
+  { id: "science-tech", name: "Science & Technology", icon: "\ud83d\udd2c", color: "#6d28d9" },
+  { id: "current-affairs", name: "Current Affairs", icon: "\ud83d\udcf0", color: "#be123c" },
+];
+
+const PRELIMS_PAPER2_SUBJECTS = [
+  { id: "reading-comprehension", name: "Reading Comprehension", icon: "\ud83d\udcd6", color: "#1e40af" },
+  { id: "reasoning", name: "Reasoning", icon: "\ud83e\udde0", color: "#7c3aed" },
+  { id: "logical-analytical", name: "Logical / Analytical Ability", icon: "\ud83e\udde9", color: "#0891b2" },
+  { id: "basic-maths", name: "Basic Maths / Numeracy", icon: "\ud83d\udd22", color: "#b45309" },
+  { id: "data-interpretation", name: "Data Interpretation", icon: "\ud83d\udcca", color: "#15803d" },
+  { id: "decision-making", name: "Decision Making", icon: "\u2696\ufe0f", color: "#be123c" },
+  { id: "communication", name: "Communication / Interpersonal", icon: "\ud83d\udcac", color: "#0f766e" },
+];
+
 export default function Dashboard({
   backendUrl,
   onSelectSubject,
@@ -66,6 +91,9 @@ export default function Dashboard({
   const [stats, setStats] = useState<CorpusStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [prelimsSubjectPage, setPrelimsSubjectPage] = useState<
+    "prelim-gs1" | "prelim-csat" | null
+  >(null);
 
   useEffect(() => {
     const cleanUrl = backendUrl.replace(/\/+$/, "");
@@ -108,6 +136,84 @@ export default function Dashboard({
     return (
       <View style={styles.center}>
         <Text style={styles.errorText}>Failed to load: {error}</Text>
+      </View>
+    );
+  }
+
+  if (prelimsSubjectPage) {
+    const paper =
+      prelimsSubjectPage === "prelim-gs1" ? PRELIMS_PAPERS[0] : PRELIMS_PAPERS[1];
+    const subjects =
+      prelimsSubjectPage === "prelim-gs1"
+        ? PRELIMS_PAPER1_SUBJECTS
+        : PRELIMS_PAPER2_SUBJECTS;
+
+    return (
+      <View style={styles.pageScreen}>
+        <View style={styles.pageHeader}>
+          <View style={styles.pageBackCol}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back to papers"
+              onPress={() => setPrelimsSubjectPage(null)}
+              style={({ pressed }) => [
+                styles.pageBackBtn,
+                { borderColor: paper.color + "30" },
+                pressed && {
+                  borderColor: paper.color,
+                  backgroundColor: paper.color + "15",
+                },
+              ]}
+            >
+              <Text style={[styles.pageBackIcon, { color: paper.color }]}>
+                {"\u2190"}
+              </Text>
+              <Text style={[styles.pageBackText, { color: paper.color }]}>
+                Back
+              </Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.pageTitleCol}>
+            <Text style={styles.pageEyebrow}>UPSC PRELIMS</Text>
+            <Text style={[styles.pageTitle, { color: paper.color }]}>
+              {paper.name}
+            </Text>
+            <Text style={styles.pageSubtitle}>
+              {subjects.length} subjects under this paper
+            </Text>
+          </View>
+        </View>
+
+        <ScrollView contentContainerStyle={styles.scroll}>
+          <View style={styles.pageBody}>
+            <Text style={styles.sectionLabel}>Subjects</Text>
+
+            <View style={styles.pageSubjectGrid}>
+              {subjects.map((subject) => (
+                <View
+                  key={subject.id}
+                  style={[
+                    styles.gsCard,
+                    { borderColor: subject.color + "30" },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.gsIconWrap,
+                      { backgroundColor: subject.color + "15" },
+                    ]}
+                  >
+                    <Text style={styles.gsIcon}>{subject.icon}</Text>
+                  </View>
+                  <Text style={[styles.gsName, { color: subject.color }]}>
+                    {subject.name}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        </ScrollView>
       </View>
     );
   }
@@ -159,6 +265,30 @@ export default function Dashboard({
           </View>
         ) : null}
 
+        <Text style={styles.sectionLabel}>UPSC Prelims</Text>
+
+        <View style={styles.gsRow}>
+          {PRELIMS_PAPERS.map((paper) => (
+            <Pressable
+              key={paper.id}
+              accessibilityRole="button"
+              onPress={() =>
+                setPrelimsSubjectPage(paper.id as "prelim-gs1" | "prelim-csat")
+              }
+              style={({ pressed }) => [
+                styles.gsCard,
+                { borderColor: paper.color + "30" },
+                pressed && { borderColor: paper.color, backgroundColor: paper.color + "08" },
+              ]}
+            >
+              <View style={[styles.gsIconWrap, { backgroundColor: paper.color + "15" }]}>
+                <Text style={styles.gsIcon}>{paper.icon}</Text>
+              </View>
+              <Text style={[styles.gsName, { color: paper.color }]}>{paper.name}</Text>
+            </Pressable>
+          ))}
+        </View>
+
         <Text style={styles.sectionLabel}>Select Paper</Text>
 
         <View style={styles.gsRow}>
@@ -189,6 +319,69 @@ export default function Dashboard({
 }
 
 const styles = StyleSheet.create({
+  pageScreen: {
+    backgroundColor: "#f8f9ff",
+    flex: 1,
+  },
+  pageHeader: {
+    alignItems: "center",
+    borderBottomWidth: 1,
+    borderColor: "#f3f4f6",
+    flexDirection: "row",
+    gap: 14,
+    paddingBottom: 18,
+    paddingTop: 6,
+  },
+  pageBackCol: {
+    alignItems: "flex-start",
+  },
+  pageBackBtn: {
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 12,
+    flexDirection: "row",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  pageBackIcon: {
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  pageBackText: {
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  pageTitleCol: {
+    flex: 1,
+  },
+  pageEyebrow: {
+    color: "#9ca3af",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1.6,
+    marginBottom: 4,
+    textTransform: "uppercase",
+  },
+  pageTitle: {
+    color: "#111827",
+    fontSize: 24,
+    fontWeight: "800",
+    letterSpacing: -0.5,
+  },
+  pageSubtitle: {
+    color: "#6b7280",
+    fontSize: 14,
+    marginTop: 4,
+  },
+  pageBody: {
+    paddingTop: 20,
+  },
+  pageSubjectGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
   scroll: {
     flexGrow: 1,
   },

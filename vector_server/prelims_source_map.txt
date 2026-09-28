@@ -1,0 +1,80 @@
+UPSC Prelims Source Map
+========================
+
+Stick exclusively to NCERTs and official government public-domain sources.
+UPSC Prelims questions are framed directly from these exact government
+publications, reports, and foundational textbooks.
+
+Exact breakdown of NCERTs and official public-domain sources for each of the
+7 Prelims GS Paper I subjects:
+
+1. Polity & Governance
+   NCERTs:
+   - Class 11: Indian Constitution at Work
+   - Class 11: Political Theory
+   Public Domain / Government Sources:
+   - The Constitution of India (Bare Act) (indiacode.nic.in)
+   - PRS Legislative Research (summaries of newly passed Acts & Cabinet Bills)
+
+2. History & Art & Culture
+   NCERTs:
+   - Class 11: An Introduction to Indian Art (Part 1)
+   - Class 12: Themes in Indian History (Parts I, II, & III)
+   - Old NCERT Class 11: Ancient India (R.S. Sharma)
+   - Old NCERT Class 11: Medieval India (Satish Chandra)
+   - Old NCERT Class 12: Modern India (Bipan Chandra)
+   Public Domain / Government Sources:
+   - CCRT Website (ccrtindia.gov.in; Art & Culture material)
+   - Ministry of Culture Press Releases (World Heritage Sites, Archaeological
+     Survey of India findings)
+
+3. Geography
+   NCERTs:
+   - Class 11: Fundamentals of Physical Geography
+   - Class 11: India: Physical Environment
+   - Class 12: Fundamentals of Human Geography
+   - Class 12: India: People and Economy
+   Public Domain / Government Sources:
+   - Bhuvan (ISRO Geo-portal) / Survey of India publication data
+
+4. Economy
+   NCERTs:
+   - Class 11: Indian Economic Development
+   - Class 12: Introductory Macroeconomics
+   Public Domain / Government Sources:
+   - Economic Survey of India (Ministry of Finance)
+   - Union Budget Document (Ministry of Finance)
+   - NITI Aayog Reports & Policy Papers (niti.gov.in)
+   - RBI Annual Report / RBI Bulletin (basic monetary & banking concepts)
+
+5. Environment & Ecology
+   NCERTs:
+   - Class 12 Biology NCERT: Chapters 13, 14, 15, and 16 (Ecology Unit)
+   - Class 11 Chemistry NCERT: Environmental Chemistry chapter
+   Public Domain / Government Sources:
+   - MoEFCC (Ministry of Environment, Forest and Climate Change) updates
+   - India State of Forest Report (ISFR)
+   - ENVIS Network (Environmental Information System)
+
+6. General Science & Technology
+   NCERTs:
+   - Class 6 to 10: Science NCERTs (all base concepts)
+   - Class 11 & 12: Selected chapters on Biotechnology, Semiconductors, and
+     Communications
+   Public Domain / Government Sources:
+   - ISRO Official Releases (Space tech developments)
+   - DRDO Releases (Defense technology)
+   - Department of Biotechnology (DBT) updates
+
+7. Current Affairs
+   Public Domain / Government Sources:
+   - PIB (Press Information Bureau) (pib.gov.in)
+   - Yojana & Kurukshetra Magazines (Publications Division, Ministry of I&B)
+   - India Year Book (Publications Division, Government of India)
+
+Benefits for the App
+--------------------
+- Zero Copyright Issues: everything is in the public domain or freely
+  published by the Government of India / NCERT.
+- True UPSC Source Accuracy: questions created from these raw texts will
+  match the language, facts, and scope that UPSC setters actually pull from.

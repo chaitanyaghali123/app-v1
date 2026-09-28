@@ -172,7 +172,7 @@ TOP_K = int(
 )
 
 MAX_TOP_K = int(
-    os.getenv("MAX_TOP_K", "20")
+    os.getenv("MAX_TOP_K", "100")
 )
 
 VECTOR_CANDIDATES = int(
@@ -188,7 +188,7 @@ BM25_CANDIDATES = int(
 )
 
 RERANK_CANDIDATES = int(
-    os.getenv("RERANK_CANDIDATES", "30")
+    os.getenv("RERANK_CANDIDATES", "40")
 )
 MAX_CHUNK_CHARS = int(
 
@@ -337,10 +337,6 @@ PGVECTOR_DOCS = Gauge(
 import requests as _requests
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_EMBED_URL = (
-    "https://generativelanguage.googleapis.com/v1/"
-    "models/gemini-embedding-001:batchEmbedContents"
-)
 GEMINI_EMBED_BATCH = int(
     os.getenv("GEMINI_EMBED_BATCH", "20")
 )
@@ -488,6 +484,27 @@ def get_reranker():
             )
 
             loaded_model.eval()
+
+            try:
+                import time as _t
+                warm_inputs = loaded_tokenizer(
+                    ["what is the quit india movement"],
+                    ["it was launched in august 1942 by mahatma gandhi"],
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                    return_tensors="pt",
+                )
+                _tw = _t.time()
+                with torch.no_grad():
+                    loaded_model(**warm_inputs)
+                logger.info(
+                    f"Reranker warmed in {int((_t.time() - _tw) * 1000)}ms"
+                )
+            except Exception as warm_e:
+                logger.warning(
+                    f"Reranker warm-up failed: {warm_e}"
+                )
 
             rerank_tokenizer = loaded_tokenizer
             reranker = loaded_model
@@ -971,11 +988,19 @@ def pgvector_literal(embedding):
 def pgvector_search(
     query_embedding,
     topic=None,
-    subject_ids=None
+    subject_ids=None,
+    corpus="mains"
 ):
 
     conn = get_conn()
     query_vector = pgvector_literal(query_embedding)
+    corpus = (corpus or "mains").strip().lower()
+    if corpus == "prelims":
+        base = "prelims_chunks"
+    elif corpus == "all":
+        base = "(SELECT * FROM upsc_chunks UNION ALL SELECT * FROM prelims_chunks) q"
+    else:
+        base = "upsc_chunks"
 
     try:
 
@@ -987,7 +1012,7 @@ def pgvector_search(
 
             if topic and subject_ids:
 
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         id,
                         chunk,
@@ -1002,7 +1027,7 @@ def pgvector_search(
                         is_parent_chunk,
                         diagram_url,
                         1 - (embedding <=> %s::halfvec) AS vector_score
-                    FROM upsc_chunks
+                    FROM {base}
                     WHERE embedding IS NOT NULL
                       AND topic=%s
                       AND subject_id = ANY(%s::text[])
@@ -1018,7 +1043,7 @@ def pgvector_search(
 
             elif topic:
 
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         id,
                         chunk,
@@ -1033,7 +1058,7 @@ def pgvector_search(
                         is_parent_chunk,
                         diagram_url,
                         1 - (embedding <=> %s::halfvec) AS vector_score
-                    FROM upsc_chunks
+                    FROM {base}
                     WHERE embedding IS NOT NULL
                       AND topic=%s
                     ORDER BY embedding <=> %s::halfvec
@@ -1047,7 +1072,7 @@ def pgvector_search(
 
             elif subject_ids:
 
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         id,
                         chunk,
@@ -1062,7 +1087,7 @@ def pgvector_search(
                         is_parent_chunk,
                         diagram_url,
                         1 - (embedding <=> %s::halfvec) AS vector_score
-                    FROM upsc_chunks
+                    FROM {base}
                     WHERE embedding IS NOT NULL
                       AND subject_id = ANY(%s::text[])
                     ORDER BY embedding <=> %s::halfvec
@@ -1076,7 +1101,7 @@ def pgvector_search(
 
             else:
 
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         id,
                         chunk,
@@ -1091,7 +1116,7 @@ def pgvector_search(
                         is_parent_chunk,
                         diagram_url,
                         1 - (embedding <=> %s::halfvec) AS vector_score
-                    FROM upsc_chunks
+                    FROM {base}
                     WHERE embedding IS NOT NULL
                     ORDER BY embedding <=> %s::halfvec
                     LIMIT %s
@@ -1566,6 +1591,10 @@ def deduplicate_parent_chunks(chunks):
 # DIVERSITY
 # ==========================================================
 
+DIVERSIFY_TOPICS_CAP = int(
+    os.getenv("DIVERSIFY_TOPICS_CAP", "40")
+)
+
 def diversify_chunks(chunks):
 
     topic_counter = {}
@@ -1584,7 +1613,7 @@ def diversify_chunks(chunks):
             0
         )
 
-        if count >= 2:
+        if count >= DIVERSIFY_TOPICS_CAP:
             continue
 
         topic_counter[topic] = count + 1
@@ -1691,6 +1720,8 @@ async def hybrid_retrieval(
     if cached:
         return cached
 
+    _stage_t = time.time()
+
     q_emb = (
         await generate_embeddings(
             [query],
@@ -1699,6 +1730,9 @@ async def hybrid_retrieval(
         )
     )[0]
 
+    logger.info(f"⏱ embed_ms={int((time.time() - _stage_t) * 1000)}")
+    _stage_t = time.time()
+
     vector_results = await run_in_threadpool(
         pgvector_search,
         q_emb,
@@ -1706,12 +1740,18 @@ async def hybrid_retrieval(
         subject_ids
     )
 
+    logger.info(f"⏱ pgvector_ms={int((time.time() - _stage_t) * 1000)}")
+    _stage_t = time.time()
+
     bm25_results = await run_in_threadpool(
         postgres_bm25_search,
         query,
         topic,
         subject_ids
     )
+
+    logger.info(f"⏱ bm25_ms={int((time.time() - _stage_t) * 1000)}")
+    _stage_t = time.time()
 
     fused = reciprocal_rank_fusion(
         vector_results,
@@ -1740,6 +1780,9 @@ async def hybrid_retrieval(
 
         fused = fused[:top_k]
 
+    logger.info(f"⏱ rerank_ms={int((time.time() - _stage_t) * 1000)}")
+    _stage_t = time.time()
+
     fused = diversify_chunks(
         fused
     )
@@ -1766,6 +1809,8 @@ async def hybrid_retrieval(
         cache_key,
         final
     )
+
+    logger.info(f"⏱ post_rerank_ms={int((time.time() - _stage_t) * 1000)}")
 
     return final
 

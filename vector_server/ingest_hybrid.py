@@ -75,16 +75,105 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 USE_ONNX = False
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_EMBED_URL = (
-    "https://generativelanguage.googleapis.com/v1/"
-    "models/gemini-embedding-001:batchEmbedContents"
-)
 GEMINI_EMBED_BATCH = int(
     os.getenv("GEMINI_EMBED_BATCH", "20")
 )
 GEMINI_EMBED_TASK = (
     os.getenv("GEMINI_EMBED_TASK", "RETRIEVAL_DOCUMENT")
 )
+
+
+def _load_gemini_api_keys():
+    """Collect API keys from GEMINI_API_KEYS (comma/newline separated),
+    numbered GEMINI_API_KEY_1..N, and the primary GEMINI_API_KEY."""
+    keys = []
+    raw = os.getenv("GEMINI_API_KEYS", "") or ""
+    if raw.strip():
+        keys.extend(
+            k.strip() for k in re.split(r"[,\n;]+", raw) if k.strip()
+        )
+    idx = 1
+    while True:
+        k = (os.getenv(f"GEMINI_API_KEY_{idx}", "") or "").strip()
+        if not k:
+            break
+        keys.append(k)
+        idx += 1
+    # GEMINI_API_KEY may itself hold several comma-separated keys (legacy).
+    primary_raw = (os.getenv("GEMINI_API_KEY", "") or GEMINI_API_KEY or "")
+    keys = [
+        k.strip() for k in re.split(r"[,\n;]+", primary_raw) if k.strip()
+    ] + keys
+    seen = set()
+    unique = []
+    for k in keys:
+        if k not in seen:
+            seen.add(k)
+            unique.append(k)
+    return unique
+
+
+GEMINI_API_KEYS = _load_gemini_api_keys()
+
+# Thread-safe round-robin key pool with per-key cooldown tracking.
+# Keys reporting a hard quota cap are parked for a cooldown window, then
+# automatically re-enabled (transient per-window caps, not permanent).
+_gemini_key_lock = threading.Lock()
+_gemini_key_cursor = 0
+_gemini_key_unavailable_until = {}
+_GEMINI_KEY_COOLDOWN = float(os.getenv("GEMINI_KEY_COOLDOWN", "180"))
+
+
+def _gemini_prune_available():
+    now = time.monotonic()
+    for k in list(_gemini_key_unavailable_until):
+        if _gemini_key_unavailable_until[k] <= now:
+            del _gemini_key_unavailable_until[k]
+
+
+def _next_gemini_key(exclude=None):
+    """Return the next available key (round-robin). Returns None when every
+    key is parked in its cooldown window (avoids slamming capped keys)."""
+    exclude = exclude or set()
+    with _gemini_key_lock:
+        _gemini_prune_available()
+        candidates = [
+            k for k in GEMINI_API_KEYS
+            if k not in _gemini_key_unavailable_until and k not in exclude
+        ]
+        if not candidates:
+            return None
+        global _gemini_key_cursor
+        key = candidates[_gemini_key_cursor % len(candidates)]
+        _gemini_key_cursor += 1
+        return key
+
+
+def _mark_gemini_key_exhausted(key):
+    if not key:
+        return
+    with _gemini_key_lock:
+        _gemini_key_unavailable_until[key] = time.monotonic() + _GEMINI_KEY_COOLDOWN
+        _gemini_prune_available()
+        remaining = len(
+            [k for k in GEMINI_API_KEYS
+             if k not in _gemini_key_unavailable_until]
+        )
+    logger.warning(
+        "Gemini key ...%s parked for %.0fs quota-cooldown; %d key(s) available",
+        key[-6:],
+        _GEMINI_KEY_COOLDOWN,
+        remaining,
+    )
+
+
+def gemini_keys_available():
+    with _gemini_key_lock:
+        _gemini_prune_available()
+        return len(
+            [k for k in GEMINI_API_KEYS
+             if k not in _gemini_key_unavailable_until]
+        )
 
 # ==========================================================
 # LOGGING
@@ -141,7 +230,7 @@ FORCE_CPU_ONLY = (
 DEVICE = "cpu"
 
 logger.info(
-    f"Embedding provider: Gemini API (gemini-embedding-001)"
+    f"Embedding provider: Gemini API ({EMBED_MODEL})"
 )
 
 # ==========================================================
@@ -153,13 +242,58 @@ EMBED_DIM = int(
 )
 
 # Lock the embedding contract to whatever EMBED_MODEL actually emits.
-# gemini-embedding-001 with output_dimensionality=EMBED_DIM → 1536.
 # If EMBED_DIM ever differs from the DB column, ingestion/retrieval
 # will fail with vector dimension mismatches.
 logger.info(
     "Embedding contract: %s dim=%s task=RETRIEVAL_DOCUMENT",
     os.getenv("EMBED_MODEL", "gemini-embedding-001"),
     EMBED_DIM,
+)
+
+# ==========================================================
+# COPYRIGHT-SAFE INGESTION GATE (Strategy C)
+# ==========================================================
+# Every ingested document is classified before storage:
+#   "safe"       -> verbatim-ok sources (NCERT, government, statutes, PYPs)
+#   "regenerate" -> sources whose raw text must NOT be stored; each chunk
+#                   is paraphrased into ORIGINAL own-words knowledge points
+#                   before embedding/storage
+#   "reject"     -> sources that are never ingested (e.g. commercial books)
+# Gating happens in process_file() right after chunking, before embedding.
+# ==========================================================
+
+ENABLE_SOURCE_SAFETY_GATE = (
+    os.getenv("ENABLE_SOURCE_SAFETY_GATE", "true").lower() == "true"
+)
+
+SAFE_SOURCE_PATTERNS = os.getenv(
+    "SAFE_SOURCE_PATTERNS",
+    r"(NCERT|ARC_Report|NDMA|NITI_|MEA_|MHA_|MoEFCC|Economic_Survey|"
+    r"Constitution_of_India|_Act\.|DARPG|Lokpal|CCI|UPSC_GS4_PYP|"
+    r"Prevention_of_Corruption|CCS_|Right_to_Information|Citizens_Charters|"
+    r"NIP_|DPIIT_National|Bhagavad)"
+).strip()
+
+REGEN_SOURCE_PATTERNS = os.getenv(
+    "REGEN_SOURCE_PATTERNS",
+    r"(MPY|MPYE|BPAC|BPCS|MPA013|MPA-013|EPA-|NIOS|IGNOU|eGyanKosh)"
+).strip()
+
+REJECT_SOURCE_PATTERNS = os.getenv(
+    "REJECT_SOURCE_PATTERNS",
+    r"(Laxmikanth|Goh_|Spectrum|Disha|Pearson|TMH_|Oxford_|Cambridge_)"
+).strip()
+
+ABSTRACTION_GEN_MODEL = os.getenv(
+    "ABSTRACTION_GEN_MODEL", "gemini-3.6-flash"
+)
+
+ABSTRACTION_MAX_TOKENS = int(
+    os.getenv("ABSTRACTION_MAX_TOKENS", "1400")
+)
+
+ABSTRACTION_CONCURRENCY = int(
+    os.getenv("ABSTRACTION_CONCURRENCY", "3")
 )
 
 HEADING_PREFIX_MAX_LEVELS = int(
@@ -364,7 +498,11 @@ _gemini_session = requests.Session()
 
 
 def _gemini_embed_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
-    """Call Gemini batchEmbedContents API for a list of texts."""
+    """Call Gemini batchEmbedContents API for a list of texts.
+
+    Rotates across all configured GEMINI_API_KEYS. On a 429 the request is
+    retried on the next key; a key that reports a hard quota cap is parked.
+    """
     payload = {
         "requests": [
             {
@@ -376,22 +514,37 @@ def _gemini_embed_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
             for t in texts
         ]
     }
-    for attempt in range(8):
+    tried_keys = set()
+    max_attempts = max(8, len(GEMINI_API_KEYS) + 4)
+    for attempt in range(max_attempts):
+        key = _next_gemini_key(exclude=tried_keys)
+        if key is None:
+            # Every key parked in cooldown: bail out immediately instead of
+            # burning retries against capped keys.
+            raise EmbedQuotaExhausted("All Gemini keys in cooldown")
         try:
             resp = _gemini_session.post(
                 f"https://generativelanguage.googleapis.com/v1/"
-                f"models/{EMBED_MODEL}:batchEmbedContents?key={GEMINI_API_KEY}",
+                f"models/{EMBED_MODEL}:batchEmbedContents?key={key}",
                 json=payload,
                 timeout=90,
             )
             if resp.status_code == 429:
                 # Distinguish rate limit (transient) from daily quota cap.
                 body = resp.text or ""
-                is_quota = "quota" in body.lower()
+                tried_keys.add(key)
+                if "quota" in body.lower():
+                    _mark_gemini_key_exhausted(key)
+                if gemini_keys_available() == 0:
+                    raise EmbedQuotaExhausted(
+                        "All Gemini keys now in cooldown"
+                    )
                 wait = (2 ** min(attempt, 3)) * 2
                 logger.warning(
-                    f"Gemini embed 429 (quota={is_quota}), attempt {attempt+1}/8, "
-                    f"retry in {wait}s: {resp.text[:200]}"
+                    f"Gemini embed 429 key ...{key[-6:]} "
+                    f"(attempt {attempt+1}/{max_attempts}, "
+                    f"{gemini_keys_available()} keys left), retry in {wait}s: "
+                    f"{resp.text[:200]}"
                 )
                 time.sleep(wait)
                 continue
@@ -400,14 +553,18 @@ def _gemini_embed_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
             return [
                 e["values"] for e in data["embeddings"]
             ]
+        except EmbedQuotaExhausted:
+            raise
         except Exception as exc:
-            if attempt == 7:
+            tried_keys.add(key)
+            if attempt == max_attempts - 1:
                 if "429" in str(exc):
                     raise EmbedQuotaExhausted(str(exc))
                 raise
             wait = (2 ** attempt) * 2
             logger.warning(
-                f"Gemini embed error ({exc}), attempt {attempt+1}/8, retry in {wait}s"
+                f"Gemini embed error on key ...{key[-6:]} ({exc}), "
+                f"attempt {attempt+1}/{max_attempts}, retry in {wait}s"
             )
             time.sleep(wait)
     # If every attempt was a 429, surface as quota-exhausted.
@@ -2222,7 +2379,7 @@ def insert_postgres_rows(rows):
     )
 
 
-def backfill_embedding_embeds(limit=100, chunk_ids=None):
+def backfill_embedding_embeds(limit=100, chunk_ids=None, table="upsc_chunks"):
     """Embed chunks whose embedding IS NULL, in place.
 
     Returns (attempted, completed).
@@ -2233,16 +2390,16 @@ def backfill_embedding_embeds(limit=100, chunk_ids=None):
         with conn.cursor() as cur:
             if chunk_ids:
                 cur.execute(
-                    """
-                    SELECT id, chunk FROM upsc_chunks
+                    f"""
+                    SELECT id, chunk FROM {table}
                     WHERE id = ANY(%s) AND embedding IS NULL
                     """,
                     (chunk_ids,)
                 )
             else:
                 cur.execute(
-                    """
-                    SELECT id, chunk FROM upsc_chunks
+                    f"""
+                    SELECT id, chunk FROM {table}
                     WHERE embedding IS NULL
                     LIMIT %s
                     """,
@@ -2289,8 +2446,8 @@ def backfill_embedding_embeds(limit=100, chunk_ids=None):
                 with conn.cursor() as cur:
                     for cid, emb in zip(ids, embs):
                         cur.execute(
-                            """
-                            UPDATE upsc_chunks
+                            f"""
+                            UPDATE {table}
                             SET embedding = %s::halfvec
                             WHERE id = %s
                             """,
@@ -2310,12 +2467,12 @@ def backfill_embedding_embeds(limit=100, chunk_ids=None):
     return (len(rows), completed)
 
 
-def count_unembedded_chunks():
+def count_unembedded_chunks(table="upsc_chunks"):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM upsc_chunks WHERE embedding IS NULL"
+                f"SELECT COUNT(*) FROM {table} WHERE embedding IS NULL"
             )
             row = cur.fetchone()
             return row[0] if row else 0
@@ -2357,6 +2514,117 @@ def folder_to_gs_paper(subject_id):
 
 root_folder = None
 
+# ==========================================================
+# COPYRIGHT-SAFE INGESTION GATE — implementation
+# (Strategy C: source classification + abstraction before storage)
+# ==========================================================
+
+_abstraction_session = requests.Session()
+
+_SAFE_RE = re.compile(SAFE_SOURCE_PATTERNS, re.IGNORECASE)
+_REGEN_RE = re.compile(REGEN_SOURCE_PATTERNS, re.IGNORECASE)
+_REJECT_RE = re.compile(REJECT_SOURCE_PATTERNS, re.IGNORECASE)
+
+ABSTRACTION_PROMPT = (
+    "You are a content-remediation pipeline for a UPSC (GS) study app. "
+    "Rewrite the given study text as ORIGINAL, fact-dense bullet knowledge points. "
+    "STRICT RULES:\n"
+    "- Express EVERY fact in YOUR OWN WORDS. Do NOT reproduce any sentence, clause, "
+    "phrase, or contiguous run of the source verbatim.\n"
+    "- Never copy tables cell-for-cell, blockquoted definitions, direct quotes, or "
+    "any diagram text. Restate them entirely in your own words.\n"
+    "- Preserve every fact, name, date, number, definition, concept, thinker and "
+    "example in substance. Do NOT add outside information.\n"
+    "- Output only the paraphrased bullets (no preamble, no 'Here is...')."
+)
+
+
+def classify_source(fname):
+    """Return 'safe' | 'regenerate' | 'reject' for a source file name."""
+    if not ENABLE_SOURCE_SAFETY_GATE:
+        return "safe"
+    if _REJECT_RE.search(fname):
+        return "reject"
+    if _REGEN_RE.search(fname):
+        return "regenerate"
+    if _SAFE_RE.search(fname):
+        return "safe"
+    # Unknown sources default to regenerate (conservative: never store raw
+    # text from unrecognized / potentially commercial sources).
+    logger.info(
+        "Ungated source %s matched no rule — defaulting to regenerate",
+        fname,
+    )
+    return "regenerate"
+
+
+def abstract_one(text):
+    """Generate an ORIGINAL own-words knowledge-point version of `text`."""
+    model = ABSTRACTION_GEN_MODEL
+    url = (
+        f"https://generativelanguage.googleapis.com/v1/"
+        f"models/{model}:generateContent"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": ABSTRACTION_PROMPT + "\n\nTEXT:\n" + text}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": ABSTRACTION_MAX_TOKENS,
+        },
+    }
+    for attempt in range(4):
+        try:
+            resp = _abstraction_session.post(
+                f"{url}?key={GEMINI_API_KEY}",
+                json=payload,
+                timeout=90,
+            )
+            if resp.status_code == 429:
+                wait = (2 ** attempt) * 4
+                logger.warning(
+                    f"Abstraction 429, attempt {attempt+1}/4, retry in {wait}s"
+                )
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            out = (
+                data.get("candidates", [{}])[0]
+                .get("content", {})
+                .get("parts", [{}])[0]
+                .get("text", "")
+                .strip()
+            )
+            if out:
+                return out
+            return None
+        except Exception as exc:
+            if attempt == 3:
+                logger.warning(f"Abstraction failed: {exc}")
+                return None
+            wait = (2 ** attempt) * 4
+            logger.warning(
+                f"Abstraction error ({exc}), attempt {attempt+1}/4, retry in {wait}s"
+            )
+            time.sleep(wait)
+    return None
+
+
+def abstract_chunk_batch(text_list):
+    """Paraphrase a list of chunk texts (index-aligned)."""
+    if not text_list:
+        return []
+    outputs = [None] * len(text_list)
+    with ThreadPoolExecutor(max_workers=ABSTRACTION_CONCURRENCY) as ex:
+        futs = {
+            ex.submit(abstract_one, t): i
+            for i, t in enumerate(text_list)
+        }
+        for fut in as_completed(futs):
+            idx = futs[fut]
+            outputs[idx] = fut.result()
+    return outputs
+
 def process_file(file, subject_id=None):
 
     global root_folder
@@ -2388,6 +2656,37 @@ def process_file(file, subject_id=None):
         ".docx"
     ]:
         return
+
+    source_class = classify_source(fname)
+
+    if source_class == "reject":
+        logger.warning(
+            f"⛔ Rejected source (commercial/blocked): {fname}"
+        )
+        return
+
+    if source_class == "regenerate":
+        logger.info(
+            f"♻️  Regenerating source (abstraction gate): {fname}"
+        )
+    else:
+        logger.info(
+            f"✅ Safe source (verbatim-ok by policy): {fname}"
+        )
+
+    def _regenerate_batch_texts(batch_chunks):
+        """Replace each chunk's text with an ORIGINAL own-words paraphrase
+        (used only for 'regenerate' sources so raw text is never stored)."""
+        if not batch_chunks:
+            return
+        texts = [c["chunk_text"] for c in batch_chunks]
+        abstracts = abstract_chunk_batch(texts)
+        for i, chunk in enumerate(batch_chunks):
+            if abstracts[i]:
+                chunk["chunk_text"] = abstracts[i]
+        logger.info(
+            f"♻️  Abstracted {len(batch_chunks)} chunks for {fname}"
+        )
 
     logger.info(
         f"ðŸ“„ Processing {fname}"
@@ -2451,6 +2750,9 @@ def process_file(file, subject_id=None):
 
                     if batch_chunks:
 
+                        if source_class == "regenerate":
+                            _regenerate_batch_texts(batch_chunks)
+
                         chunk_texts_batch = [c["chunk_text"] for c in batch_chunks]
                         embeddings_batch = generate_embeddings(chunk_texts_batch)
 
@@ -2502,6 +2804,9 @@ def process_file(file, subject_id=None):
                 batch_chunks = chunk_text(batch_text)
 
                 if batch_chunks:
+
+                    if source_class == "regenerate":
+                        _regenerate_batch_texts(batch_chunks)
 
                     chunk_texts_batch = [c["chunk_text"] for c in batch_chunks]
                     embeddings_batch = generate_embeddings(chunk_texts_batch)
@@ -2639,6 +2944,9 @@ def process_file(file, subject_id=None):
 
             if batch_chunks:
 
+                if source_class == "regenerate":
+                    _regenerate_batch_texts(batch_chunks)
+
                 chunk_texts_batch = [c["chunk_text"] for c in batch_chunks]
                 embeddings_batch = generate_embeddings(chunk_texts_batch)
 
@@ -2719,6 +3027,7 @@ def process_file(file, subject_id=None):
                 json.dumps(meta.get("heading_hierarchy", [])),
                 meta.get("parent_text", ""),
                 meta.get("is_parent_chunk", False),
+                meta.get("diagram_url"),
                 meta.get("gs_paper", "general"),
             ))
 

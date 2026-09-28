@@ -1,0 +1,15 @@
+UPSC Prelims Syllabus - Economy
+===============================
+
+UPSC Prelims questions are framed directly from these exact government
+publications, reports, and foundational textbooks.
+
+NCERTs:
+- Class 11: Indian Economic Development
+- Class 12: Introductory Macroeconomics
+
+Public Domain / Government Sources:
+- Economic Survey of India (Ministry of Finance)
+- Union Budget Document (Ministry of Finance)
+- NITI Aayog Reports & Policy Papers (niti.gov.in)
+- RBI Annual Report / RBI Bulletin (basic monetary & banking concepts)

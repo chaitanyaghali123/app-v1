@@ -1,0 +1,16 @@
+MISSING SOURCES - POLITY & GOVERNANCE
+======================================
+
+Already in R2:
+- Indian Constitution at Work (Cl 11), Political Theory (Cl 11),
+  Democratic Politics (Cl 6-10) - present.
+- The Constitution of India (Bare Act, consolidated as on 2020 w/ 104th
+  Amendment) - ADDED: prelims/polity-governance/Constitution_of_India_As_on_2020.pdf
+  (source: indiacode.nic.in).
+
+Still to download (portal feeds, no single PDF):
+
+1. PRS Legislative Research - Bill Summaries
+   - Portal: prsindia.org
+   - URL: https://prsindia.org/billtrack (summaries of passed Acts / Cabinet bills)
+   - Pull the latest 2-3 landmark bills each session for current-affairs style facts.

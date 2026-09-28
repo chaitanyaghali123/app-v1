@@ -262,14 +262,14 @@ export async function findRefreshToken(token) {
   }
 }
 
-export async function saveRefreshToken(user_id, token) {
+export async function saveRefreshToken(user_id, token, expiresAt) {
   try {
     await pool.query(
       `
-      INSERT INTO user_tokens (user_id, token)
-      VALUES ($1, $2);
+      INSERT INTO user_tokens (user_id, token, expires_at)
+      VALUES ($1, $2, $3);
       `,
-      [user_id, token]
+      [user_id, token, expiresAt || null]
     );
   } catch (err) {
     console.error("❌ saveRefreshToken error:", err.message);
@@ -393,8 +393,18 @@ export async function ensureUsersTable() {
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         email TEXT UNIQUE,
         password TEXT,
+        name TEXT,
+        phone TEXT,
         created_at TIMESTAMP DEFAULT NOW()
       );
+    `);
+
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS name TEXT,
+      ADD COLUMN IF NOT EXISTS phone TEXT,
+      ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS is_subscribed BOOLEAN DEFAULT FALSE;
     `);
   } catch (err) {
     console.error("❌ ensureUsersTable error:", err.message);
@@ -408,11 +418,124 @@ export async function ensureRefreshTokensTable() {
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id TEXT,
         token TEXT,
+        expires_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);
+
+    await pool.query(`
+      ALTER TABLE user_tokens
+      ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_user_tokens_user
+      ON user_tokens(user_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_user_tokens_token
+      ON user_tokens(token);
+    `);
   } catch (err) {
     console.error("❌ ensureRefreshTokensTable error:", err.message);
+  }
+}
+
+export async function ensureAuthCodesTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS auth_codes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        code_hash TEXT NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        used_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    // users.id is a legacy integer identity; keep user_id TEXT for consistency.
+    await pool.query(`
+      ALTER TABLE auth_codes
+      ALTER COLUMN user_id TYPE TEXT USING user_id::text;
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_auth_codes_user_purpose
+      ON auth_codes(user_id, purpose);
+    `);
+  } catch (err) {
+    console.error("❌ ensureAuthCodesTable error:", err.message);
+  }
+}
+
+export async function saveAuthCode(userId, purpose, codeHash, expiresAt) {
+  try {
+    await pool.query(
+      `
+      INSERT INTO auth_codes (user_id, purpose, code_hash, expires_at)
+      VALUES ($1, $2, $3, $4)
+      `,
+      [userId, purpose, codeHash, expiresAt]
+    );
+  } catch (err) {
+    console.error("❌ saveAuthCode error:", err.message);
+  }
+}
+
+export async function findActiveAuthCode(userId, purpose) {
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT id, code_hash, expires_at, used_at
+      FROM auth_codes
+      WHERE user_id = $1
+        AND purpose = $2
+        AND used_at IS NULL
+        AND expires_at > NOW()
+      ORDER BY created_at DESC
+      LIMIT 1;
+      `,
+      [userId, purpose]
+    );
+    return rows[0] || null;
+  } catch (err) {
+    console.error("❌ findActiveAuthCode error:", err.message);
+    return null;
+  }
+}
+
+export async function markAuthCodeUsed(codeId) {
+  try {
+    await pool.query(
+      `
+      UPDATE auth_codes
+      SET used_at = NOW()
+      WHERE id = $1;
+      `,
+      [codeId]
+    );
+  } catch (err) {
+    console.error("❌ markAuthCodeUsed error:", err.message);
+  }
+}
+
+export async function invalidateAuthCodes(userId, purpose) {
+  try {
+    await pool.query(
+      `
+      UPDATE auth_codes
+      SET used_at = NOW()
+      WHERE user_id = $1
+        AND purpose = $2
+        AND used_at IS NULL;
+      `,
+      [userId, purpose]
+    );
+  } catch (err) {
+    console.error("❌ invalidateAuthCodes error:", err.message);
   }
 }
 
@@ -447,11 +570,20 @@ export async function ensureGeminiKeysTable() {
       ADD COLUMN IF NOT EXISTS key_hash TEXT,
       ADD COLUMN IF NOT EXISTS last_validated_at TIMESTAMP,
       ADD COLUMN IF NOT EXISTS last_error_code TEXT,
-      ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMP;
+      ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS user_id TEXT;
+    `);
+    await pool.query(`
+      ALTER TABLE gemini_keys
+      ALTER COLUMN user_id TYPE TEXT USING user_id::text;
     `);
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_gemini_keys_updated_at
       ON gemini_keys(updated_at DESC);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_gemini_keys_user
+      ON gemini_keys(user_id);
     `);
   } catch (err) {
     console.error("❌ ensureGeminiKeysTable error:", err.message);
@@ -464,10 +596,12 @@ export async function upsertGeminiKey(deviceId, encryptedKey, metadata = {}) {
   const encryptionVersion = Number(metadata.encryptionVersion || 1);
   const encryptionProvider = metadata.encryptionProvider || "static-secret";
   const encryptionKeyId = metadata.encryptionKeyId || null;
+  const userId = metadata.userId || null;
   const { rows } = await pool.query(
     `
     INSERT INTO gemini_keys (
       device_id,
+      user_id,
       encrypted_key,
       encrypted_data_key,
       encryption_version,
@@ -479,15 +613,16 @@ export async function upsertGeminiKey(deviceId, encryptedKey, metadata = {}) {
       last_error_at,
       updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NULL, NULL, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NULL, NULL, NOW())
     ON CONFLICT (device_id)
     DO UPDATE SET
-      encrypted_key = $2,
-      encrypted_data_key = $3,
-      encryption_version = $4,
-      encryption_provider = $5,
-      encryption_key_id = $6,
-      key_hash = $7,
+      user_id = COALESCE($2, gemini_keys.user_id),
+      encrypted_key = $3,
+      encrypted_data_key = $4,
+      encryption_version = $5,
+      encryption_provider = $6,
+      encryption_key_id = $7,
+      key_hash = $8,
       last_validated_at = NOW(),
       last_error_code = NULL,
       last_error_at = NULL,
@@ -496,6 +631,7 @@ export async function upsertGeminiKey(deviceId, encryptedKey, metadata = {}) {
     `,
     [
       deviceId,
+      userId,
       encryptedKey,
       encryptedDataKey,
       encryptionVersion,
@@ -512,6 +648,7 @@ export async function getGeminiKeyRecord(deviceId) {
     `
     SELECT
       device_id,
+      user_id,
       encrypted_key,
       encrypted_data_key,
       encryption_version,

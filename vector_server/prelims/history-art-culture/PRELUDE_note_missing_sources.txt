@@ -1,0 +1,21 @@
+MISSING SOURCES - HISTORY & ART & CULTURE
+=========================================
+
+Already in R2:
+- Themes in Indian History (I/II/III) Cl12, India & the Contemporary World
+  (Cl 9-10), Themes in World History Cl11, Our Pasts (Cl 6-8), NIOS History
+  lessons - present.
+- Old NCERT Ancient India (R.S. Sharma) - ADDED
+- Old NCERT Medieval India (Satish Chandra) - ADDED
+- Old NCERT Modern India (Bipan Chandra) - ADDED
+- An Introduction to Indian Art Part I (Cl 11 NCERT) - ADDED
+  (all under prelims/history-art-culture/)
+
+Still to fetch (portal/website content; OCR of the 3 old NCERTs is handled by
+the Gemini-OCR pipeline):
+
+1. CCRT (Centre for Cultural Resources and Training)
+   - Portal: ccrtindia.gov.in  (Art & Culture study material)
+
+2. Ministry of Culture Press Releases (World Heritage Sites, ASI findings)
+   - Portal: pib.gov.in (Ministry of Culture releases) / asi.nic.in

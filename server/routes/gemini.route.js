@@ -27,11 +27,12 @@ import {
   recordGeminiMetric,
 } from "../services/gemini-monitoring.service.js";
 import { isDistributedCacheEnabled } from "../config/redis.js";
+import { authenticate } from "../middleware/auth.js";
 
 const router = express.Router();
 
-const MAX_GEMINI_CHUNKS = Number(process.env.GEMINI_MAX_CHUNKS || 25);
-const MAX_GEMINI_CONTEXT_CHARS = Number(process.env.GEMINI_MAX_CONTEXT_CHARS || 40000);
+const MAX_GEMINI_CHUNKS = Number(process.env.GEMINI_MAX_CHUNKS || 40);
+const MAX_GEMINI_CONTEXT_CHARS = Number(process.env.GEMINI_MAX_CONTEXT_CHARS || 60000);
 const MAX_GEMINI_TARGET_TOKENS = Number(process.env.GEMINI_MAX_TARGET_TOKENS || 4096);
 
 const deviceKey = (req) => req.body?.deviceId || req.ip;
@@ -56,7 +57,7 @@ const proxyIpLimiter = createRateLimiter(
 );
 
 const proxyConcurrencyLimiter = createConcurrencyLimiter(
-  Number(process.env.GEMINI_MAX_CONCURRENT_PER_DEVICE || 2),
+  Number(process.env.GEMINI_MAX_CONCURRENT_PER_DEVICE || 1),
   { keyPrefix: "gemini:proxy", keyGenerator: deviceKey }
 );
 
@@ -115,6 +116,12 @@ function sanitizeGeminiRequest(body) {
       chunks: safeChunks,
       targetTokens,
       mode: typeof body.mode === "string" ? body.mode : "limited",
+      subjectId:
+        typeof body.subjectId === "string" && body.subjectId.trim()
+          ? body.subjectId.trim()
+          : Array.isArray(body.subjectId) && body.subjectId.some((s) => typeof s === "string" && s.trim())
+          ? body.subjectId.find((s) => typeof s === "string" && s.trim()).trim()
+          : undefined,
     },
   };
 }
@@ -147,7 +154,7 @@ function requireMetricsAuth(req, res, next) {
   return res.status(404).json({ error: "Not found" });
 }
 
-router.post("/gemini/store-key", storeKeyLimiter, async (req, res) => {
+router.post("/gemini/store-key", storeKeyLimiter, authenticate, async (req, res) => {
   const startedAt = Date.now();
   let deviceId = null;
   try {
@@ -165,6 +172,7 @@ router.post("/gemini/store-key", storeKeyLimiter, async (req, res) => {
     const encrypted = encrypt(cleanKey);
     await upsertGeminiKey(deviceId, encrypted, {
       keyHash: fingerprintGeminiApiKey(cleanKey),
+      userId: req.user?.id || null,
     });
 
     try {
@@ -215,6 +223,7 @@ router.post(
   proxyIpLimiter,
   proxyDeviceLimiter,
   proxyConcurrencyLimiter,
+  authenticate,
   async (req, res) => {
     const startedAt = Date.now();
     let deviceId = null;
@@ -231,7 +240,7 @@ router.post(
       if (parsed.error) {
         return res.status(400).json({ error: parsed.error });
       }
-      const { question, chunks, targetTokens, mode } = parsed.value;
+      const { question, chunks, targetTokens, mode, subjectId } = parsed.value;
       contextChars = getContextChars(chunks);
 
       const keyRecord = await getGeminiKeyRecord(deviceId);
@@ -267,6 +276,7 @@ router.post(
         chunks,
         targetTokens,
         mode,
+        subjectId,
         onToken: (token) => {
           res.write(`data: ${JSON.stringify({ type: "token", text: token })}\n\n`);
           if (typeof res.flush === "function") res.flush();
@@ -361,7 +371,7 @@ router.get("/gemini/health", (_req, res) => {
       proxyDeviceRateLimitPerMinute: Number(process.env.GEMINI_PROXY_DEVICE_RATE_LIMIT || 20),
       proxyIpRateLimitPerMinute: Number(process.env.GEMINI_PROXY_IP_RATE_LIMIT || 300),
       proxyKeyRateLimitPerMinute: Number(process.env.GEMINI_PROXY_KEY_RATE_LIMIT || 120),
-      maxConcurrentPerDevice: Number(process.env.GEMINI_MAX_CONCURRENT_PER_DEVICE || 2),
+      maxConcurrentPerDevice: Number(process.env.GEMINI_MAX_CONCURRENT_PER_DEVICE || 1),
       maxDevicesPerKeyPerDay: Number(process.env.GEMINI_MAX_DEVICES_PER_KEY_PER_DAY || 5),
     },
   });
@@ -376,7 +386,7 @@ router.get("/gemini/metrics", requireMetricsAuth, (req, res) => {
   return res.send(getGeminiMetricsPrometheus());
 });
 
-router.delete("/gemini/store-key", async (req, res) => {
+router.delete("/gemini/store-key", authenticate, async (req, res) => {
   try {
     const { deviceId } = req.body;
     if (!isValidDeviceId(deviceId)) {

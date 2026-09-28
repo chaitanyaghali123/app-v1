@@ -24,8 +24,8 @@ services:
      
       - AWS_REGION=local
       - S3_BUCKET=local-invoices
-      - SENDGRID_API_KEY=dev-placeholder
-      - EMAIL_FROM=admin@upsc-learning.com
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY:-dev-placeholder}
+      - EMAIL_FROM=${EMAIL_FROM:-admin@upsc-learning.com}
       - RAZORPAY_KEY_ID=rzp_test_stub
       - RAZORPAY_KEY_SECRET=stub-secret
       - RAZORPAY_WEBHOOK_SECRET=stub-webhook

@@ -19,26 +19,85 @@ export async function findUserByEmail(email) {
   return rows[0] || null;
 }
 
-// === Save Refresh Token (optional persistence) ===
-export async function saveRefreshToken(userId, token) {
+// === Find User by ID (safe, no password) ===
+export async function getUserById(id) {
   const sql = `
-    INSERT INTO refresh_tokens (user_id, token)
-    VALUES ($1, $2)
-    ON CONFLICT (user_id) DO UPDATE SET token = EXCLUDED.token;
+    SELECT
+      id,
+      name,
+      email,
+      phone,
+      email_verified_at,
+      is_subscribed,
+      created_at
+    FROM users
+    WHERE id = $1
+    LIMIT 1;
   `;
-  await pool.query(sql, [userId, token]);
+  const { rows } = await pool.query(sql, [id]);
+  return rows[0] || null;
 }
 
-// === Verify Refresh Token ===
-export async function verifyRefreshToken(token) {
-  const sql = `SELECT * FROM refresh_tokens WHERE token = $1 LIMIT 1;`;
-  const { rows } = await pool.query(sql, [token]);
-  return rows[0] ? true : false;
+// === Find User by ID (with password, for credential checks) ===
+export async function getUserByIdWithPassword(id) {
+  const sql = `SELECT * FROM users WHERE id = $1 LIMIT 1;`;
+  const { rows } = await pool.query(sql, [id]);
+  return rows[0] || null;
 }
 
-// === Revoke Refresh Token (for logout) ===
-export async function revokeRefreshToken(userId, token) {
-  const sql = `DELETE FROM refresh_tokens WHERE user_id = $1 AND token = $2;`;
-  await pool.query(sql, [userId, token]);
+// === Update Profile (name / phone) ===
+export async function updateUserProfile(id, { name, phone }) {
+  const sql = `
+    UPDATE users
+    SET name = COALESCE($2, name),
+        phone = COALESCE($3, phone)
+    WHERE id = $1
+    RETURNING id, name, email, phone, email_verified_at, is_subscribed, created_at;
+  `;
+  const { rows } = await pool.query(sql, [id, name ?? null, phone ?? null]);
+  return rows[0] || null;
 }
 
+// === Update Password (change / reset) ===
+export async function updateUserPassword(id, hashedPassword) {
+  const sql = `
+    UPDATE users
+    SET password = $2
+    WHERE id = $1
+    RETURNING id;
+  `;
+  const { rows } = await pool.query(sql, [id, hashedPassword]);
+  return rows[0]?.id || null;
+}
+
+// === Mark Email Verified ===
+export async function setEmailVerified(id) {
+  const sql = `
+    UPDATE users
+    SET email_verified_at = COALESCE(email_verified_at, NOW())
+    WHERE id = $1
+    RETURNING id;
+  `;
+  const { rows } = await pool.query(sql, [id]);
+  return rows[0]?.id || null;
+}
+
+// === Delete Account + all referenced data ===
+export async function deleteUserData(id) {
+  await pool.query(`DELETE FROM user_tokens WHERE user_id = $1;`, [id]);
+  await pool.query(`DELETE FROM gemini_keys WHERE user_id = $1;`, [id]);
+  await pool.query(`DELETE FROM auth_codes WHERE user_id = $1;`, [id]);
+
+  const { rows: chats } = await pool.query(
+    `DELETE FROM chats WHERE user_id = $1 RETURNING id;`,
+    [id]
+  );
+  for (const chat of chats) {
+    await pool.query(`DELETE FROM messages WHERE chat_id = $1;`, [chat.id]);
+  }
+
+  await pool.query(`DELETE FROM revisions WHERE user_id = $1;`, [id]);
+  await pool.query(`DELETE FROM results WHERE user_id = $1;`, [id]);
+  await pool.query(`DELETE FROM api_logs WHERE user_id = $1;`, [id]);
+  await pool.query(`DELETE FROM users WHERE id = $1;`, [id]);
+}

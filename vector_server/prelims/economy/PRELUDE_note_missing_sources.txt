@@ -1,0 +1,19 @@
+MISSING SOURCES - ECONOMY
+=========================
+
+Already in R2: Indian Economic Development (Cl11), Introductory Macroeconomics
+(Cl12), Understanding Economic Development (Cl10), Economics (Cl9), Economic
+Survey 2024-25 & 2025-26, NIP Report Vol1 2020, NITI Strategy for New India
+@75, Budget 2025-26 (At a Glance, Highlights, FM Speech, Expenditure Vol1) -
+present.
+
+Still to download:
+
+1. RBI Annual Report / RBI Bulletin
+   - Portal: rbi.org.in  -> rbidocs (https://rbi.org.in/scripts/AnnualReportPublications.aspx)
+
+2. NITI Aayog Reports & Policy Papers (latest, e.g. SDG India Index)
+   - Portal: niti.gov.in
+
+3. Union Budget full documents volume (if needed beyond what is added)
+   - Portal: indiabudget.gov.in/budget2025-26 (Demands for Grants, Receipt Budget)

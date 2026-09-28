@@ -1,0 +1,19 @@
+MISSING SOURCES - ENVIRONMENT & ECOLOGY
+=======================================
+
+Already in R2: Class12 Biology Ecology Unit X, MoEFCC Annual Reports 23-24 &
+24-25, ISFR 2023 Vol1, National Environment Policy 2006, National Clean Air
+Programme 2019, National Wildlife Action Plan 2017-31, Updated NDC 2022 -
+present.
+
+Still to download:
+
+1. Class 11 Chemistry - Environmental Chemistry chapter
+   - Included inside NCERT Class 11 Chemistry Part I (already in
+     prelims/science-tech). Extract chapter if a standalone PDF is desired.
+
+2. ENVIS Network (Environmental Information System)
+   - Portal: envis.nic.in (MoEFCC thematic environmental data)
+
+3. MoEFCC latest updates / press releases
+   - Portal: moef.gov.in; PIB Ministry release feed

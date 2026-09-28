@@ -11,11 +11,11 @@ const DEFAULT_MAX_CHUNKS = 15;
 const DEFAULT_MAX_CONTEXT_CHARS = 15000;
 const MOBILE_GEMINI_MAX_CHUNKS = Math.max(
   1,
-  Number(process.env.GEMINI_MAX_CHUNKS || 25)
+  Number(process.env.GEMINI_MAX_CHUNKS || 40)
 );
 const MOBILE_GEMINI_MAX_CONTEXT_CHARS = Math.max(
   300,
-  Number(process.env.GEMINI_MAX_CONTEXT_CHARS || 40000)
+  Number(process.env.GEMINI_MAX_CONTEXT_CHARS || 60000)
 );
 const MAX_FILE_COVERAGE_SOURCE_CHUNKS = 240;
 const MIN_USEFUL_CHUNK_CHARS = 20;
@@ -158,6 +158,11 @@ function chunkRelevanceScore(chunk, question) {
   const phrase = terms.join(" ");
   let score = Number(chunk.metadata?.search_score || 0) * 20;
 
+  const rr = numericValue(chunk.metadata?.rerank_score);
+  if (rr !== null) {
+    score += Math.tanh(rr) * 5;
+  }
+
   if (phrase && lower.includes(phrase)) score += 24;
   for (const term of terms) {
     const matches = lower.match(new RegExp(`\\b${term}\\w*`, "g"));
@@ -270,7 +275,7 @@ function selectBalancedChunks(chunks, question, maxChunks) {
     .sort((a, b) => b.relevanceScore - a.relevanceScore);
 
   const bestScore = ranked[0]?.relevanceScore || 0;
-  const relevanceFloor = Math.max(0.2, bestScore * 0.005);
+  const relevanceFloor = Math.max(0.05, bestScore * 0.005);
   const relevant = ranked.filter(
     (chunk) => chunk.relevanceScore >= relevanceFloor
   );
@@ -441,17 +446,19 @@ function isBroadCoverageQuestion(question, subject) {
   return nonSubjectTerms.length <= 1;
 }
 
-function filterRelevantChunks(chunks) {
+function filterRelevantChunks(chunks, maxChunks) {
   const scored = chunks.map((chunk) => ({
     chunk,
     rr: numericValue(chunk.metadata?.rerank_score),
   }));
-  const kept = scored.filter(({ rr }) => rr === null || rr >= 0);
-  if (kept.length > 0) return kept.map(({ chunk }) => chunk);
   const ranked = [...scored].sort(
     (a, b) => (b.rr ?? -Infinity) - (a.rr ?? -Infinity)
   );
-  return ranked.length > 0 ? [ranked[0].chunk] : [];
+  const keep = ranked.filter(({ rr }) => rr !== null);
+  const limit = maxChunks > 0 ? maxChunks : keep.length;
+  const slice = keep.slice(0, limit);
+  if (slice.length > 0) return slice.map(({ chunk }) => chunk);
+  return chunks.slice(0, maxChunks > 0 ? maxChunks : chunks.length);
 }
 
 function getChunkSourceFile(chunk) {
@@ -645,44 +652,64 @@ function pickCoverageChunks(chunks, maxChunks, question) {
     }));
 }
 
-function buildChunkAnswerPrompt({ question, chunks, targetTokens, mode }) {
+function detectWordLimit(question, subject) {
+  const ids = (Array.isArray(subject) ? subject : [subject])
+    .map((s) => String(s || "").trim().toLowerCase())
+    .filter(Boolean);
+  const idSet = new Set(ids);
+  if (idSet.has("essay")) return 1300;
+  return 600;
+}
+
+function buildChunkAnswerPrompt({ question, chunks, targetTokens, mode, wordLimit }) {
   const context = chunks
     .map((chunk, index) => `[${index + 1}] ${chunk.text}`)
     .join("\n\n");
 
-  const lengthInstruction = mode === "sufficient"
-    ? `Cover ALL information present in every available chunk. Extract every distinct point across all chunks. Keep the answer within approximately ${targetTokens} tokens.`
-    : `Cover ALL information present in every available chunk. Extract every distinct point across all chunks. Be thorough and complete.`;
+  const wordLimitInstruction = wordLimit
+    ? `
+WORD LIMIT (${wordLimit} words) - NON-NEGOTIABLE:
+- ${wordLimit === 1300 ? "This is a 1300-word Essay paper question. Introduction should be 100-120 words, Body = ~1080 words, Conclusion = 90-100 words." : "This is a 600-word Mains question. Introduction 60-70 words, Conclusion 45-60 words; everything else is the body."}
+- ${wordLimit === 1300 ? "Total essay words (headings excluded) must be ≤ 1300: write 1170-1300 words across 8-9 body paragraphs of 120-140 words each. PLAN the allocation BEFORE writing a single word. - HARD MINIMUM: the finished answer MUST be at least 1170 words (headings excluded). If, after writing your body paragraphs, you are below 1170 words, KEEP EXPANDING with new evidence-based paragraphs - NEVER write a Conclusion while under 1170 words. A Conclusion at the 3rd-of-budget mark is an automatic FAIL." : "Total answer words (headings excluded) must be ≤ 600: write 550-600 words across 4 body paragraphs of 90-110 words each. PLAN the allocation BEFORE writing a single word. - HARD MINIMUM: the finished answer MUST be at least 550 words (headings excluded). If, after writing your body paragraphs, you are below 550 words, KEEP EXPANDING with new evidence-based paragraphs - NEVER write a Conclusion while under 550 words."}
+- Silently count before finishing. Cut ruthlessly: no filler, no restating the question, no re-listed points. If over, delete the weakest sentence in each body paragraph until within limit.`
+    : "";
 
-  return `You are an expert UPSC Mains AI Tutor. Structure your response using clean, natural Markdown.
+  return `You are an expert UPSC Mains answer-writer. Write the answer in EXACTLY the standard UPSC Mains format examiners expect.
 
-CRITICAL RULES:
-- Every sentence must be directly extractable from the reference chunks.
-- Do NOT introduce any concept, example, date, name, law, institution, or explanation that is not explicitly written in the chunks.
-- Do NOT make inferences, generalizations, or logical connections not present verbatim.
-- If the chunks are insufficient, say only what the chunks contain and stop.
+== FORMAT ==
+The answer MUST have exactly three parts:
 
-WORKFLOW — FOLLOW THESE TWO STEPS IN ORDER:
-STEP 1 (EXTRACT): Read EVERY reference chunk, one by one. From each chunk, extract a complete list of facts: names, dates, definitions, concepts, examples, and key points. Do this for ALL chunks INCLUDING the later ones — never stop at the first chunks. Silently build this fact list (do not output it).
-STEP 2 (WRITE): Using ONLY the facts extracted in Step 1, write the final answer. Structure it as:
-  - **Introduction**: \`## **Introduction**\` heading stating the theme using extracted facts.
-  - **Body**: bold major subheadings \`## **<Theme>**\` created ONLY from themes present in the chunks — copy each section heading VERBATIM from the chunks, but STRIP any leading numbering (e.g. "10.4.3 💵💵Paper Money" becomes "💵💵Paper Money", "1. Physical Geography" becomes "Physical Geography") and adding NO numbers of your own. Sub-sections use \`### **<Sub-theme>**\` and are NOT numbered. Under each, mirror the evidence's structure: use bullet points (*) only where the evidence itself uses bullets (never numbered lists, never invent bold sub-labels inside bullets); write evidence prose as plain paragraphs without bullets.
-  - **Conclusion**: \`## **Conclusion**\` heading restating the key extracted points.
-Cover ALL reference chunks, including the LATER sections — the answer must not stop early or omit the final chunks' content.
+## **Introduction** (short)
+- ONE compact paragraph: a crisp definition or one-line context, then a single thesis sentence that directly answers the question's directive verb.
+- Never restate the question, never open with padding ("In modern times", "India is a diverse country").
 
-FORMATTING RULES:
-1. Use Markdown ATX headers with the heading text BOLDED inside the header: \`## **Introduction**\`, \`## **<Section Theme>**\`, and \`## **Conclusion**\` for major sections; use \`### **<Sub-theme>**\` for sub-sections. COPY every section heading VERBATIM from the evidence but STRIP any leading number (e.g. evidence heading \`## 1. Physical Geography\` becomes \`## **Physical Geography**\`, evidence heading \`## 10.4.3 💵💵Paper Money\` becomes \`## **💵💵Paper Money**\`). NEVER keep source numbers in headings, NEVER add numbers to headings that are unnumbered in the evidence, NEVER renumber or reorder sections, and NEVER number the sub-sections (no 1.1, 2.1 prefixes). NEVER use plain unbolded headers (e.g. \`## 1. ...\` or \`## Introduction\`), and NEVER use a bold line without a Markdown \`#\` header as a heading. Do NOT write literal "Introduction:", "Body:", "Conclusion:" labels.
-2. Use Markdown blockquotes (> ) for key definitions, exam-takeaway callouts, or important UPSC-relevant summaries.
-3. Do NOT add citations of any kind — no [EVIDENCE X], no [1]/[2], no footnotes. Write facts as plain sentences.
-4. Bold key terms and keywords essential for UPSC answers.
-5. Use bullet points (lines starting with \`* \`) ONLY for content that is a bulleted list in the evidence — for those, never use numbered lists (1., 2., 3.). When the evidence presents content as plain prose/paragraphs, write it as plain sentences and paragraphs — do NOT turn prose into bullets.
-6. If a reference chunk contains an ASCII/box diagram (usually inside a \`\`\`text block), COPY it character-for-character into a \`\`\`text block in your answer. Reproduce EVERY character EXACTLY: all box-drawing characters (─, │, ┌, ┐, └, ┘, ├, ┤, ▼), the leading indentation/spaces, the inner padding/spacing, and the labels. Do NOT re-indent, re-center, re-pad, trim spaces, or reformat the diagram in any way. Place the diagram as a STANDALONE block: leave a blank line before the opening \`\`\`text fence, put the opening fence on its own line, the diagram lines after it, then the closing \`\`\` fence on its own line followed by a blank line. Do NOT attach the fence to a bullet, heading, sentence, or citation.
-7. Body subheadings MUST be created ONLY from themes that are actually present in the reference chunks. NEVER invent headings like "Limitations", "Challenges", "Future Scope", "Way Forward", "Government Initiatives", "Impact", "Criticism", etc., unless that theme explicitly appears in the chunks. If the chunks do not contain a theme, do NOT create a heading for it.
-8. NEVER create any sub-heading on your own. \`### **<Sub-theme>**\` sub-sections may ONLY be created from headings that literally appear in the evidence (e.g. "Physical Geography", "Human Geography", "Sustainable Resource Management", "Disaster Risk Reduction", "Urban Sprawl and Migration" when present in the evidence). When reusing an evidence heading as a sub-section heading, copy it VERBATIM but STRIP any leading number (e.g. evidence heading \`### 10.5.1 Iran\` becomes \`### **Iran**\`), never keep a source number in the heading, and never combine it with a number of your own (never "2. Iran"). NEVER create sub-subheadings or bold label prefixes inside bullets (e.g. "Resource Mapping:", "Policy Application:", "Hazard vs. Disaster:", "Urbanization Challenges:") unless the evidence literally contains such a label. Write bullet content as plain sentences. Use at most two heading levels (## and ###) — never a third level, and never turn bullet text into heading-like bold labels. Each distinct major section from the evidence must appear as its own \`##\` section in order — never fold a major evidence section inside another section as a sub-section.
-9. NEVER use LaTeX math syntax for code, HTML tags, or any content — never output \`$$\` or \`\$\$...\$\$\`, \`\\(...\\)\`, \`\\text{...}\`, \`\\langle\`, \`\\rangle\`, \`\\longrightarrow\`, or any other LaTeX command. Write HTML tags, code, and symbols as plain text (e.g. write \`<ol><li>Item</li></ol>\` directly) or inside \`\`\` code fences. If you need arrows, write →; if you need math symbols, use Unicode (×, ≤, ≥, ≈, ≠).
-10. Separate every heading and paragraph with a blank line. Every heading (\`##\`/\`###\`), bullet (\`* \`), numbered item (\`1. \`), and code fence must begin on its own fresh line — never run a heading or list item directly onto the end of the previous paragraph.
+## **Body** — 4 dense thematic paragraphs (600-word Mains) or 8–9 (1300-word Essay)
+- Each body paragraph = ONE clear argument with a bolded keyword opening and 1–2 concrete supporting facts. Structure: Point → Evidence → Tie-back to the verb.
+- The analysis must follow the question's command verb:
+  * Analyze → cause–effect, dimensions, dynamics.
+  * Discuss / Comment → balanced treatment of both sides.
+  * Critically examine / Examine → evidence for AND against, then a judgment.
+  * Elucidate → explain with characteristics and examples.
+  * Evaluate → criteria-led verdict (use the social/political/economic/cultural lenses if the question names them).
+- Use exam salting: names, dates, Acts, Commissions, schemes, institutions, case data — the specifics that separate a 10/15-marker from a list.
 
-${lengthInstruction}
+## **Conclusion** — ONE short paragraph
+- A balanced verdict (NOT a summary) + a single forward-looking line ("further reforms required", "sustained investment needed", etc.). 2–3 sentences max.
+
+== EVIDENCE RULES ==
+- The reference chunks are your ONLY source of facts (strict source-lock) — mine every chunk for names, dates, acts, schemes, definitions, examples and use them.
+- STRICT SOURCE-LOCK — every name, date, number, scheme, and example in the answer MUST come from the reference chunks. Never add outside or prior knowledge, even confidently-known UPSC facts. If the chunks cannot support a needed point, omit it rather than fill from memory — NEVER invent figures, statistics, dates, or quotes.
+- Never fabricate citations, studies, or sources.
+
+== LANGUAGE & PRESENTATION ==
+1. Formal, impersonal, crisp exam English; active sentences.
+2. Bold key terms and facts as on-paper underlining would (e.g. **regional planning**, **Planning Commission**).
+3. Minimal bullets — real Mains answers are paragraphs. Bullets only for enumerable items (e.g. the target-area programmes) and then keep each bullet to one line.
+4. Markdown headers \`## **Introduction**\`, optional \`## **<short thematic heading>**\` for the body, \`## **Conclusion**\`. Headings are short and do not count toward the word limit.
+5. Total output must end at the word limit — the examiner stops reading beyond it.
+6. No citations, no [1]/[2], no footnotes, no URLs, no LaTeX; use Unicode arrows/symbols (→, ×, ≤).
+
+${wordLimitInstruction}
 
 QUESTION:
 ${question}
@@ -1255,6 +1282,7 @@ export function correctSubjectTypo(question, subject) {
 }
 
 export async function getMobileRagContext(req, res) {
+  const ragStartedAt = Date.now();
   try {
     const {
       question,
@@ -1290,13 +1318,19 @@ export async function getMobileRagContext(req, res) {
       );
     } catch {}
 
+    const isEssay = String(subject || "").trim().toLowerCase() === "essay";
     const requestedMaxChunks = Math.max(
       1,
-      Math.min(Number(maxChunks) || DEFAULT_MAX_CHUNKS, MOBILE_GEMINI_MAX_CHUNKS)
+      Math.min(
+        isEssay ? 35 : 20,
+        MOBILE_GEMINI_MAX_CHUNKS
+      )
     );
+    const desiredContextBudget = isEssay ? 60000 : 40000;
     const contextBudget = Math.min(
       MOBILE_GEMINI_MAX_CONTEXT_CHARS,
-      Math.max(300, Number(maxContextChars) || DEFAULT_MAX_CONTEXT_CHARS)
+      Math.max(300, Number(maxContextChars) || DEFAULT_MAX_CONTEXT_CHARS),
+      desiredContextBudget
     );
 
     const folderPatterns = subject ? (SUBJECT_FOLDER_MAP[subject] || [subject]) : null;
@@ -1309,7 +1343,7 @@ export async function getMobileRagContext(req, res) {
         prompt: resolvedQuestion,
         topK: requestedMaxChunks * 3,
         skipRerank: false,
-        subjectIds: folderPatterns?.map((f) => f.toLowerCase()),
+        subjectIds: folderPatterns ? folderPatterns.map((f) => f.toLowerCase()) : null,
         apiKey: userApiKey,
       });
     } catch (retrievalErr) {
@@ -1330,7 +1364,12 @@ export async function getMobileRagContext(req, res) {
     }
 
     const pgChunks = Array.isArray(vectorChunks)
-      ? vectorChunks.map((c) => ({
+      ? vectorChunks
+          .filter(
+            (c) =>
+              !(/_PYP|_PYQ|PYP_|PYQ_/i.test(c.metadata?.source_file || ""))
+          )
+          .map((c) => ({
           id: c.id,
           text: c.text,
           metadata: {
@@ -1361,7 +1400,7 @@ export async function getMobileRagContext(req, res) {
       .values();
     usefulChunks = Array.from(usefulChunks)
       .filter((chunk) => chunk.text.length >= MIN_USEFUL_CHUNK_CHARS);
-    usefulChunks = filterRelevantChunks(usefulChunks);
+    usefulChunks = filterRelevantChunks(usefulChunks, requestedMaxChunks * 2);
 
     let limitedChunks = [];
     let sourceFile = null;
@@ -1412,8 +1451,15 @@ export async function getMobileRagContext(req, res) {
           ? "sufficient"
           : "limited"
         : retrievalMode;
-    const targetTokens =
-      mode === "limited" && retrievalMode === "ranked" ? 800 : 3000;
+    const wordLimit = detectWordLimit(resolvedQuestion, subject);
+    const targetTokens = isEssay
+      ? 2600
+      : mode === "limited" && retrievalMode === "ranked"
+      ? 800
+      : 4600;
+    const cappedTargetTokens = wordLimit
+      ? Math.min(targetTokens, Math.round(wordLimit * 1.4))
+      : targetTokens;
 
     const rawBudgetedChunks =
       retrievalMode === "ranked"
@@ -1430,6 +1476,10 @@ export async function getMobileRagContext(req, res) {
     const sourceIssue = thinAssessment.thin
       ? THIN_EVIDENCE_MESSAGE
       : sourceAssessment.issue;
+
+    console.log(
+      `[rag-context] totalMs=${Date.now() - ragStartedAt} returnedChunks=${budgetedChunks.length} budgetChars=${contextBudget} mode=${mode}`
+    );
 
     return res.json({
       question,
@@ -1449,15 +1499,17 @@ export async function getMobileRagContext(req, res) {
       prompt: buildChunkAnswerPrompt({
         question: resolvedQuestion,
         chunks: budgetedChunks,
-        targetTokens,
+        targetTokens: cappedTargetTokens,
         mode,
+        wordLimit,
       }),
       generation: {
         runtime: "gemini-2.5-flash-strict-rag",
         local: false,
-        maxTokens: targetTokens,
+        maxTokens: cappedTargetTokens,
         temperature: 0,
       },
+      wordLimit,
     });
   } catch (err) {
     console.error("Mobile RAG context error:", err.message);

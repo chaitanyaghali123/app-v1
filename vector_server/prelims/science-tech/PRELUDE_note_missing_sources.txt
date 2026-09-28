@@ -1,0 +1,13 @@
+MISSING SOURCES - SCIENCE & TECHNOLOGY
+======================================
+
+Already in R2: Science NCERTs Cl6-10, Biology Cl11, Chemistry Part1, Physics
+Part1 & Part2 (Cl11), ISRO Annual Reports 23-24 & 24-25, DBT Annual Report
+24-25, DRDO Technology Focus 2026, DST Annual Report 24-25, NITI AI strategy
+docs, National Health Policy 2017, PIB BioE3 2024 - present.
+- Class 12 Biotechnology chapters - ADDED (Principles & Processes + and its
+  Applications), prelims/science-tech/
+- Class 12 Physics Part II (incl. Semiconductor + Communication Systems) -
+  ADDED as NCERT_Class12_Physics_PartII_full.pdf
+
+Nothing else missing for this subject.

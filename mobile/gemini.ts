@@ -1,4 +1,5 @@
 import * as SecureStore from "expo-secure-store";
+import { authHeaders, ensureAuth } from "./authApi";
 
 function generateDeviceId(): string {
   const chars = "abcdef0123456789";
@@ -81,6 +82,7 @@ type ProxyOptions = {
   question: string;
   chunks: GeminiChunk[];
   targetTokens: number;
+  subjectId?: string;
   mode?: string;
   onStatus?: (status: string) => void;
   onToken?: (token: string) => void;
@@ -97,17 +99,18 @@ type ProxyResult = {
 export async function generateWithGemini(
   options: ProxyOptions
 ): Promise<ProxyResult> {
-  const { backendUrl, deviceId, question, chunks, targetTokens, mode, onStatus, onToken, signal } = options;
+  const { backendUrl, deviceId, question, chunks, targetTokens, subjectId, mode, onStatus, onToken, signal } = options;
 
   onStatus?.("Connecting to backend Gemini proxy...");
 
+  await ensureAuth(backendUrl);
   const proxyUrl = `${backendUrl.replace(/\/+$/, "")}/api/gemini/proxy`;
 
   let response;
   try {
     response = await fetch(proxyUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: await authHeaders(),
       signal,
       body: JSON.stringify({
         deviceId,
@@ -119,6 +122,7 @@ export async function generateWithGemini(
         })),
         targetTokens,
         mode,
+        subjectId,
       }),
     });
   } catch (fetchError) {
@@ -201,11 +205,12 @@ export async function generateWithGemini(
 
 export async function storeApiKeyOnBackend(backendUrl: string, apiKey: string): Promise<void> {
   const deviceId = await getOrCreateDeviceId();
+  await ensureAuth(backendUrl);
   const url = `${backendUrl.replace(/\/+$/, "")}/api/gemini/store-key`;
 
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await authHeaders(),
     body: JSON.stringify({ deviceId, apiKey }),
   });
 
@@ -218,11 +223,12 @@ export async function storeApiKeyOnBackend(backendUrl: string, apiKey: string): 
 
 export async function deleteStoredApiKey(backendUrl: string): Promise<void> {
   const deviceId = await getOrCreateDeviceId();
+  await ensureAuth(backendUrl);
   const url = `${backendUrl.replace(/\/+$/, "")}/api/gemini/store-key`;
 
   const response = await fetch(url, {
     method: "DELETE",
-    headers: { "Content-Type": "application/json" },
+    headers: await authHeaders(),
     body: JSON.stringify({ deviceId }),
   });
 
