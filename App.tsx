@@ -431,9 +431,9 @@ export default function App() {
         backendUrl: cleanBackendUrl,
         question: cleanQuestion,
         subject: activeSubject.id,
-        maxChunks: 10,
-        maxContextChars: 36000,
-        targetTokens: 3000,
+        maxChunks: 6,
+        maxContextChars: 18000,
+        targetTokens: 900,
         onStatus: setStatus,
         onToken: (token) => {
           setAnswer(repairMojibake(token));

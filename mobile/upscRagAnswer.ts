@@ -17,6 +17,7 @@ type RagContextResponse = {
   sourceIssue?: string | null;
   mode?: string;
   targetTokens?: number;
+  generationReason?: string | null;
 };
 
 type AnswerOptions = {
@@ -29,10 +30,6 @@ type AnswerOptions = {
   onStatus?: (status: string) => void;
   onToken?: (answer: string) => void;
 };
-
-function countWords(text: string): number {
-  return text.match(/\b[\w'-]+\b/g)?.length || 0;
-}
 
 function numericValue(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -94,20 +91,21 @@ function normalizeChunkScores(chunks: RagChunk[], explicitScores?: number[]): nu
 }
 
 export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
+  const [{ getOrCreateDeviceId }, { authHeaders, ensureAuth }] = await Promise.all([
+    import("./gemini"),
+    import("./authApi"),
+  ]);
+  await ensureAuth(options.backendUrl);
+  const isEssay = String(options.subject || "").trim().toLowerCase() === "essay";
+
   let response;
   try {
-    const [{ getOrCreateDeviceId }, { authHeaders, ensureAuth }] = await Promise.all([
-      import("./gemini"),
-      import("./authApi"),
-    ]);
-    await ensureAuth(options.backendUrl);
-    const isEssay = String(options.subject || "").trim().toLowerCase() === "essay";
-    response = await fetch(`${options.backendUrl}/api/mobile/rag-context`, {
+    response = await fetch(`${options.backendUrl}/api/mobile/answer`, {
       method: "POST",
       headers: await authHeaders(),
       body: JSON.stringify({
         question: options.question,
-    subject: options.subject,
+        subject: options.subject,
         maxChunks: options.maxChunks ?? (isEssay ? 35 : 20),
         maxContextChars: options.maxContextChars ?? (isEssay ? 60000 : 40000),
         targetTokens: options.targetTokens ?? (isEssay ? 2600 : 3000),
@@ -121,7 +119,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
   }
 
   if (!response.ok) {
-    let message = `Unable to retrieve source chunks (${response.status}).`;
+    let message = `Unable to prepare the answer (${response.status}).`;
     let code: string | undefined;
     try {
       const body = (await response.json()) as { error?: string; code?: string };
@@ -135,93 +133,137 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
     throw err;
   }
 
-  const ragContext = (await response.json()) as RagContextResponse;
-  const chunks = ragContext.chunks ?? [];
-  const effectiveTargetTokens = ragContext.targetTokens ?? options.targetTokens ?? 1400;
-  const effectiveMode = ragContext.mode ?? "strict-rag";
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("Backend answer streaming not available.");
+  }
 
-  if (chunks.length === 0) {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let ragContext: RagContextResponse | null = null;
+  let fullAnswer = "";
+  let tokenCount = 0;
+  let sentenceScores: { sentence: string; score: number; bestChunkId: string; verdict: string }[] = [];
+  let chunkScores: number[] = [];
+  let generationReason: string | null = null;
+  let sawToken = false;
+
+  const processStreamEvent = (raw: string) => {
+    const line = raw.trim();
+    if (!line.startsWith("data: ")) return;
+    const jsonStr = line.slice(6).trim();
+    if (!jsonStr) return;
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(jsonStr);
+    } catch {
+      return;
+    }
+    switch (data.type) {
+      case "context": {
+        ragContext = data as unknown as RagContextResponse;
+        break;
+      }
+      case "status": {
+        if (typeof data.status === "string") options.onStatus?.(data.status);
+        break;
+      }
+      case "token": {
+        sawToken = true;
+        fullAnswer = String(data.text ?? "");
+        options.onToken?.(fullAnswer);
+        break;
+      }
+      case "done": {
+        fullAnswer = String(data.answer ?? "");
+        tokenCount = numericValue(data.tokenCount) ?? 0;
+        if (Array.isArray(data.sentenceScores)) sentenceScores = data.sentenceScores as typeof sentenceScores;
+        if (Array.isArray(data.chunkScores) && data.chunkScores.length) {
+          chunkScores = data.chunkScores as number[];
+        }
+        generationReason = typeof data.generationReason === "string" ? data.generationReason : null;
+        options.onToken?.(fullAnswer);
+        break;
+      }
+      case "error": {
+        throw new Error(
+          (data.error as string) || "Gemini request failed. Please try again."
+        );
+      }
+      default:
+        break;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) processStreamEvent(line);
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    for (const line of buffer.split("\n")) processStreamEvent(line);
+  }
+
+  const chunks = ragContext?.chunks ?? [];
+  const effectiveScores =
+    chunkScores.length > 0
+      ? chunkScores
+      : ragContext?.chunkScores?.length
+      ? ragContext.chunkScores
+      : [];
+
+  if (generationReason === "no_chunks" || chunks.length === 0) {
     return {
       answer: "",
       chunks: [],
       chunkCount: 0,
       tokenCount: 0,
+      sentenceScores: [],
+      chunkScores: [],
       generatedByLlm: false,
       generationReason: "no_chunks",
       runtime: "gemini-3.5-flash-strict-rag",
     };
   }
 
-  if (ragContext.sourceSufficient === false) {
+  if (generationReason === "strict_rag_insufficient") {
     const answer =
-      ragContext.sourceIssue ||
+      fullAnswer ||
+      ragContext?.sourceIssue ||
       "The retrieved source chunks do not contain enough information to answer this question.";
     options.onToken?.(answer);
     return {
       answer,
       chunks,
-      chunkCount: ragContext.chunkCount ?? chunks.length,
-      tokenCount: countWords(answer),
+      chunkCount: ragContext?.chunkCount ?? chunks.length,
+      tokenCount: 0,
       sentenceScores: [],
-      chunkScores: normalizeChunkScores(chunks, ragContext.chunkScores),
+      chunkScores: normalizeChunkScores(chunks, effectiveScores),
       generatedByLlm: false,
       generationReason: "strict_rag_insufficient",
       runtime: "gemini-3.5-flash-strict-rag",
     };
   }
 
-  const { generateWithGemini, getOrCreateDeviceId } = await import("./gemini");
-
-  options.onStatus?.("Sending retrieved chunks to Gemini 3.5 Flash...");
-
-  const generation = await generateWithGemini({
-    backendUrl: options.backendUrl,
-    deviceId: await getOrCreateDeviceId(),
-    question: options.question,
-    subjectId: options.subject,
-    chunks: chunks
-      .map((chunk) => ({
-        text: chunk.text ?? chunk.content ?? "",
-        facet:
-          typeof chunk.metadata?.rag_facet === "string"
-            ? chunk.metadata.rag_facet
-            : "supporting-evidence",
-        source:
-          typeof chunk.metadata?.source_file === "string"
-            ? chunk.metadata.source_file
-            : chunk.source,
-        subject_id:
-          Array.isArray(chunk.subject_id) && chunk.subject_id.length
-            ? chunk.subject_id
-            : typeof chunk.metadata?.subject_id === "string"
-            ? chunk.metadata.subject_id
-            : undefined,
-      }))
-      .filter((chunk) => Boolean(chunk.text)),
-    targetTokens: effectiveTargetTokens,
-    mode: effectiveMode,
-    onStatus: options.onStatus,
-    onToken: options.onToken,
-  });
-
-  if (!generation.answer.trim()) {
+  if (!fullAnswer.trim()) {
     throw new Error(
       "Gemini did not return a supported answer from the retrieved chunks."
     );
   }
 
   return {
-    answer: generation.answer,
+    answer: fullAnswer,
     chunks,
-    chunkCount: ragContext.chunkCount ?? chunks.length,
-    tokenCount: generation.tokenCount ?? 0,
-    sentenceScores: generation.sentenceScores ?? [],
-    chunkScores: normalizeChunkScores(
-      chunks,
-      generation.chunkScores?.length ? generation.chunkScores : ragContext.chunkScores
-    ),
-    generatedByLlm: true,
-    generationReason: "gemini_proxy_strict_rag",
-      runtime: "gemini-3.5-flash-strict-rag",
+    chunkCount: ragContext?.chunkCount ?? chunks.length,
+    tokenCount,
+    sentenceScores: sentenceScores ?? [],
+    chunkScores: normalizeChunkScores(chunks, effectiveScores),
+    generatedByLlm: sawToken || tokenCount > 0,
+    generationReason: generationReason ?? "gemini_proxy_strict_rag",
+    runtime: "gemini-3.5-flash-strict-rag",
   };
 }

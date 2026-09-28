@@ -53,6 +53,16 @@ export async function queryVector({ prompt, topK, skipRerank = false, subjectIds
       quotaErr.code = "GEMINI_QUOTA_EXCEEDED";
       throw quotaErr;
     }
+    if (status === 401 || status === 403) {
+      const keyErr = new Error(
+        err?.response?.data?.detail ||
+        err?.response?.data?.error ||
+        "Your stored Gemini API key was rejected (401). Update your API key in the app and try again."
+      );
+      keyErr.code = "GEMINI_KEY_UNAUTHORIZED";
+      keyErr.status = status;
+      throw keyErr;
+    }
     console.error("Vector retrieval failed:", err.message);
     return [];
   }

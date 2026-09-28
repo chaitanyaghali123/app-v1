@@ -1,7 +1,9 @@
 import { queryVector } from "../services/vector.service.js";
 import { pool } from "../services/db.service.js";
-import { getGeminiKeyRecord } from "../services/db.service.js";
-import { decryptGeminiApiKeyRecord } from "../services/gemini.service.js";
+import { getGeminiKeyRecord, markGeminiKeyFailure, markGeminiKeyValidated } from "../services/db.service.js";
+import { decryptGeminiApiKeyRecord, fingerprintGeminiApiKey, proxyGeminiCall, toPublicGeminiError } from "../services/gemini.service.js";
+import { enforceGeminiAbusePolicy, recordGeminiFailureForAbuse } from "../services/gemini-abuse.service.js";
+import { anonymizeIdentifier, logGeminiEvent, recordGeminiMetric } from "../services/gemini-monitoring.service.js";
 import { SUBJECT_FOLDER_MAP, GS_PAPER_FOLDER_MAP } from "./gsMapping.js";
 
 import fs from "fs";
@@ -1281,238 +1283,452 @@ export function correctSubjectTypo(question, subject) {
   return corrected === original ? null : corrected;
 }
 
+async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_MAX_CHUNKS, maxContextChars = DEFAULT_MAX_CONTEXT_CHARS, deviceId }) {
+  if (!question || typeof question !== "string") {
+    const err = new Error("question is required");
+    err.status = 400;
+    throw err;
+  }
+
+  let userApiKey = null;
+  if (deviceId && typeof deviceId === "string" && deviceId.length >= 8) {
+    try {
+      const keyRecord = await getGeminiKeyRecord(deviceId);
+      if (keyRecord?.encrypted_key) {
+        userApiKey = await decryptGeminiApiKeyRecord(keyRecord);
+      }
+    } catch (keyErr) {
+      console.warn("Mobile rag-context: failed to resolve user API key:", keyErr.message);
+    }
+  }
+  console.log(
+    `[rag-context] device=${deviceId ? `${deviceId.slice(0, 8)}…` : "NONE"} keyResolved=${Boolean(userApiKey)}`
+  );
+  try {
+    const fs = await import("fs");
+    fs.appendFileSync(
+      "/app/uploads/rag-debug.log",
+      `${new Date().toISOString()} device=${deviceId ? deviceId : "NONE"} keyResolved=${Boolean(userApiKey)} keyLen=${userApiKey?.length ?? 0} q=${question.slice(0, 40)}\n`
+    );
+  } catch {}
+
+  const isEssay = String(subject || "").trim().toLowerCase() === "essay";
+  const requestedMaxChunks = Math.max(
+    1,
+    Math.min(
+      Number(maxChunks) || (isEssay ? 35 : 20),
+      isEssay ? 35 : 20,
+      MOBILE_GEMINI_MAX_CHUNKS
+    )
+  );
+  const desiredContextBudget = isEssay ? 60000 : 40000;
+  const contextBudget = Math.min(
+    MOBILE_GEMINI_MAX_CONTEXT_CHARS,
+    Math.max(300, Number(maxContextChars) || DEFAULT_MAX_CONTEXT_CHARS),
+    desiredContextBudget
+  );
+
+  const folderPatterns = subject ? (SUBJECT_FOLDER_MAP[subject] || [subject]) : null;
+  const resolvedQuestion = correctSubjectTypo(question, subject) || question;
+  const broadCoverage = isBroadCoverageQuestion(resolvedQuestion, subject);
+
+  let vectorChunks;
+  try {
+    vectorChunks = await queryVector({
+      prompt: resolvedQuestion,
+      topK: requestedMaxChunks * 3,
+      skipRerank: false,
+      subjectIds: folderPatterns ? folderPatterns.map((f) => f.toLowerCase()) : null,
+      apiKey: userApiKey,
+    });
+  } catch (retrievalErr) {
+    if (retrievalErr?.code === "GEMINI_QUOTA_EXCEEDED") {
+      try {
+        const fs = await import("fs");
+        fs.appendFileSync(
+          "/app/uploads/rag-debug.log",
+          `${new Date().toISOString()} RETRIEVAL_QUOTA_FAIL device=${deviceId}\n`
+        );
+      } catch {}
+      const quotaErr = new Error(retrievalErr.message);
+      quotaErr.code = "GEMINI_QUOTA_EXCEEDED";
+      quotaErr.status = 429;
+      throw quotaErr;
+    }
+    throw retrievalErr;
+  }
+
+  const pgChunks = Array.isArray(vectorChunks)
+    ? vectorChunks
+        .filter(
+          (c) =>
+            !(/_PYP|_PYQ|PYP_|PYQ_/i.test(c.metadata?.source_file || ""))
+        )
+        .map((c) => ({
+        id: c.id,
+        text: c.text,
+        metadata: {
+          topic: c.metadata?.topic || "",
+          difficulty: c.metadata?.difficulty || "",
+          source_file: c.metadata?.source_file || "",
+          chunk_index: c.metadata?.chunk_index || 0,
+          heading_hierarchy: c.metadata?.heading_hierarchy || [],
+          source: "vector_server",
+          vector_score: c.vector_score ?? 0,
+          rerank_score: c.rerank_score ?? null,
+        },
+      }))
+    : [];
+
+  let usefulChunks = pgChunks
+    .reduce((map, chunk) => {
+      const id = chunk.id || chunk.chunk_id;
+      if (!map.has(id)) {
+        map.set(id, {
+          id,
+          text: cleanDisplayText(chunk.text || chunk.content || chunk.chunk_text || ""),
+          metadata: chunk.metadata || {},
+        });
+      }
+      return map;
+    }, new Map())
+    .values();
+  usefulChunks = Array.from(usefulChunks)
+    .filter((chunk) => chunk.text.length >= MIN_USEFUL_CHUNK_CHARS);
+  usefulChunks = filterRelevantChunks(usefulChunks, requestedMaxChunks * 2);
+
+  let limitedChunks = [];
+  let sourceFile = null;
+  let sourceChunkCount = 0;
+  let retrievalMode = "ranked";
+
+  if (broadCoverage) {
+    sourceFile = pickBestSourceFile(usefulChunks, resolvedQuestion);
+    const sourceChunks = await queryPostgresSourceFileChunks({
+      sourceFile,
+      maxChunks: MAX_FILE_COVERAGE_SOURCE_CHUNKS,
+    });
+    sourceChunkCount = sourceChunks.length;
+
+    if (sourceChunks.length > 0) {
+      limitedChunks = tagEvidenceFacets(
+        pickCoverageChunks(sourceChunks, requestedMaxChunks, resolvedQuestion),
+        resolvedQuestion
+      );
+      retrievalMode =
+        sourceChunks.length <= requestedMaxChunks
+          ? "full-file"
+          : "file-section-coverage";
+    }
+  }
+
+  if (limitedChunks.length === 0) {
+    limitedChunks = selectBalancedChunks(
+      usefulChunks,
+      resolvedQuestion,
+      requestedMaxChunks
+    );
+  }
+
+  if (limitedChunks.length === 0 && usefulChunks.length > 0) {
+    limitedChunks = [...usefulChunks]
+      .sort(
+        (a, b) =>
+          (numericValue(b.metadata?.rerank_score) ?? -Infinity) -
+          (numericValue(a.metadata?.rerank_score) ?? -Infinity)
+      )
+      .slice(0, requestedMaxChunks);
+  }
+
+  const mode =
+    retrievalMode === "ranked"
+      ? limitedChunks.length >= 3
+        ? "sufficient"
+        : "limited"
+      : retrievalMode;
+  const wordLimit = detectWordLimit(resolvedQuestion, subject);
+  const targetTokens = isEssay
+    ? 2600
+    : mode === "limited" && retrievalMode === "ranked"
+    ? 800
+    : 4600;
+  const cappedTargetTokens = wordLimit
+    ? Math.min(targetTokens, Math.round(wordLimit * 1.4))
+    : targetTokens;
+
+  const rawBudgetedChunks =
+    retrievalMode === "ranked"
+      ? budgetChunksFairly(limitedChunks, contextBudget, resolvedQuestion)
+      : budgetChunksForCoverage(limitedChunks, contextBudget);
+  const scoredContext = withNormalizedChunkScores(rawBudgetedChunks);
+  const budgetedChunks = scoredContext.chunks;
+  const sourceAssessment = assessSourceSufficiency(
+    resolvedQuestion,
+    budgetedChunks
+  );
+  const thinAssessment = isThinEvidence(budgetedChunks);
+  const sufficient = sourceAssessment.sufficient && !thinAssessment.thin;
+  const sourceIssue = thinAssessment.thin
+    ? THIN_EVIDENCE_MESSAGE
+    : sourceAssessment.issue;
+
+  return {
+    userApiKey,
+    deviceId,
+    question,
+    subject,
+    isEssay,
+    requestedMaxChunks,
+    contextBudget,
+    resolvedQuestion,
+    broadCoverage,
+    retrievalMode,
+    sourceFile,
+    sourceChunkCount,
+    mode,
+    wordLimit,
+    targetTokens,
+    cappedTargetTokens,
+    scoredContext,
+    budgetedChunks,
+    sufficient,
+    sourceIssue,
+  };
+}
+
+function toMobileRagError(err) {
+  if (err?.status === 429 && err?.code === "GEMINI_QUOTA_EXCEEDED") {
+    return { status: 429, body: { error: err.message, code: "GEMINI_QUOTA_EXCEEDED" } };
+  }
+  if (err?.code === "GEMINI_KEY_UNAUTHORIZED") {
+    return {
+      status: 401,
+      body: {
+        error:
+          "Your stored Gemini API key was rejected. It may be invalid or expired — update your API key in settings and try again.",
+        code: "GEMINI_KEY_UNAUTHORIZED",
+      },
+    };
+  }
+  if (err?.status === 400) {
+    return { status: 400, body: { error: err.message } };
+  }
+  return { status: 500, body: { error: "Failed to prepare mobile context" } };
+}
+
 export async function getMobileRagContext(req, res) {
   const ragStartedAt = Date.now();
   try {
-    const {
-      question,
-      subject,
-      maxChunks = DEFAULT_MAX_CHUNKS,
-      maxContextChars = DEFAULT_MAX_CONTEXT_CHARS,
-      deviceId,
-    } = req.body || {};
-
-    if (!question || typeof question !== "string") {
-      return res.status(400).json({ error: "question is required" });
-    }
-
-    let userApiKey = null;
-    if (deviceId && typeof deviceId === "string" && deviceId.length >= 8) {
-      try {
-        const keyRecord = await getGeminiKeyRecord(deviceId);
-        if (keyRecord?.encrypted_key) {
-          userApiKey = await decryptGeminiApiKeyRecord(keyRecord);
-        }
-      } catch (keyErr) {
-        console.warn("Mobile rag-context: failed to resolve user API key:", keyErr.message);
-      }
-    }
-    console.log(
-      `[rag-context] device=${deviceId ? `${deviceId.slice(0, 8)}…` : "NONE"} keyResolved=${Boolean(userApiKey)}`
-    );
-    try {
-      const fs = await import("fs");
-      fs.appendFileSync(
-        "/app/uploads/rag-debug.log",
-        `${new Date().toISOString()} device=${deviceId ? deviceId : "NONE"} keyResolved=${Boolean(userApiKey)} keyLen=${userApiKey?.length ?? 0} q=${question.slice(0, 40)}\n`
-      );
-    } catch {}
-
-    const isEssay = String(subject || "").trim().toLowerCase() === "essay";
-    const requestedMaxChunks = Math.max(
-      1,
-      Math.min(
-        isEssay ? 35 : 20,
-        MOBILE_GEMINI_MAX_CHUNKS
-      )
-    );
-    const desiredContextBudget = isEssay ? 60000 : 40000;
-    const contextBudget = Math.min(
-      MOBILE_GEMINI_MAX_CONTEXT_CHARS,
-      Math.max(300, Number(maxContextChars) || DEFAULT_MAX_CONTEXT_CHARS),
-      desiredContextBudget
-    );
-
-    const folderPatterns = subject ? (SUBJECT_FOLDER_MAP[subject] || [subject]) : null;
-    const resolvedQuestion = correctSubjectTypo(question, subject) || question;
-    const broadCoverage = isBroadCoverageQuestion(resolvedQuestion, subject);
-
-    let vectorChunks;
-    try {
-      vectorChunks = await queryVector({
-        prompt: resolvedQuestion,
-        topK: requestedMaxChunks * 3,
-        skipRerank: false,
-        subjectIds: folderPatterns ? folderPatterns.map((f) => f.toLowerCase()) : null,
-        apiKey: userApiKey,
-      });
-    } catch (retrievalErr) {
-      if (retrievalErr?.code === "GEMINI_QUOTA_EXCEEDED") {
-        try {
-          const fs = await import("fs");
-          fs.appendFileSync(
-            "/app/uploads/rag-debug.log",
-            `${new Date().toISOString()} RETRIEVAL_QUOTA_FAIL device=${deviceId}\n`
-          );
-        } catch {}
-        return res.status(429).json({
-          error: retrievalErr.message,
-          code: "GEMINI_QUOTA_EXCEEDED",
-        });
-      }
-      throw retrievalErr;
-    }
-
-    const pgChunks = Array.isArray(vectorChunks)
-      ? vectorChunks
-          .filter(
-            (c) =>
-              !(/_PYP|_PYQ|PYP_|PYQ_/i.test(c.metadata?.source_file || ""))
-          )
-          .map((c) => ({
-          id: c.id,
-          text: c.text,
-          metadata: {
-            topic: c.metadata?.topic || "",
-            difficulty: c.metadata?.difficulty || "",
-            source_file: c.metadata?.source_file || "",
-            chunk_index: c.metadata?.chunk_index || 0,
-            heading_hierarchy: c.metadata?.heading_hierarchy || [],
-            source: "vector_server",
-            vector_score: c.vector_score ?? 0,
-            rerank_score: c.rerank_score ?? null,
-          },
-        }))
-      : [];
-
-    let usefulChunks = pgChunks
-      .reduce((map, chunk) => {
-        const id = chunk.id || chunk.chunk_id;
-        if (!map.has(id)) {
-          map.set(id, {
-            id,
-            text: cleanDisplayText(chunk.text || chunk.content || chunk.chunk_text || ""),
-            metadata: chunk.metadata || {},
-          });
-        }
-        return map;
-      }, new Map())
-      .values();
-    usefulChunks = Array.from(usefulChunks)
-      .filter((chunk) => chunk.text.length >= MIN_USEFUL_CHUNK_CHARS);
-    usefulChunks = filterRelevantChunks(usefulChunks, requestedMaxChunks * 2);
-
-    let limitedChunks = [];
-    let sourceFile = null;
-    let sourceChunkCount = 0;
-    let retrievalMode = "ranked";
-
-    if (broadCoverage) {
-      sourceFile = pickBestSourceFile(usefulChunks, resolvedQuestion);
-      const sourceChunks = await queryPostgresSourceFileChunks({
-        sourceFile,
-        maxChunks: MAX_FILE_COVERAGE_SOURCE_CHUNKS,
-      });
-      sourceChunkCount = sourceChunks.length;
-
-      if (sourceChunks.length > 0) {
-        limitedChunks = tagEvidenceFacets(
-          pickCoverageChunks(sourceChunks, requestedMaxChunks, resolvedQuestion),
-          resolvedQuestion
-        );
-        retrievalMode =
-          sourceChunks.length <= requestedMaxChunks
-            ? "full-file"
-            : "file-section-coverage";
-      }
-    }
-
-    if (limitedChunks.length === 0) {
-      limitedChunks = selectBalancedChunks(
-        usefulChunks,
-        resolvedQuestion,
-        requestedMaxChunks
-      );
-    }
-
-    if (limitedChunks.length === 0 && usefulChunks.length > 0) {
-      limitedChunks = [...usefulChunks]
-        .sort(
-          (a, b) =>
-            (numericValue(b.metadata?.rerank_score) ?? -Infinity) -
-            (numericValue(a.metadata?.rerank_score) ?? -Infinity)
-        )
-        .slice(0, requestedMaxChunks);
-    }
-
-    const mode =
-      retrievalMode === "ranked"
-        ? limitedChunks.length >= 3
-          ? "sufficient"
-          : "limited"
-        : retrievalMode;
-    const wordLimit = detectWordLimit(resolvedQuestion, subject);
-    const targetTokens = isEssay
-      ? 2600
-      : mode === "limited" && retrievalMode === "ranked"
-      ? 800
-      : 4600;
-    const cappedTargetTokens = wordLimit
-      ? Math.min(targetTokens, Math.round(wordLimit * 1.4))
-      : targetTokens;
-
-    const rawBudgetedChunks =
-      retrievalMode === "ranked"
-        ? budgetChunksFairly(limitedChunks, contextBudget, resolvedQuestion)
-        : budgetChunksForCoverage(limitedChunks, contextBudget);
-    const scoredContext = withNormalizedChunkScores(rawBudgetedChunks);
-    const budgetedChunks = scoredContext.chunks;
-    const sourceAssessment = assessSourceSufficiency(
-      resolvedQuestion,
-      budgetedChunks
-    );
-    const thinAssessment = isThinEvidence(budgetedChunks);
-    const sufficient = sourceAssessment.sufficient && !thinAssessment.thin;
-    const sourceIssue = thinAssessment.thin
-      ? THIN_EVIDENCE_MESSAGE
-      : sourceAssessment.issue;
+    const ctx = await prepareMobileRagContext(req.body || {});
 
     console.log(
-      `[rag-context] totalMs=${Date.now() - ragStartedAt} returnedChunks=${budgetedChunks.length} budgetChars=${contextBudget} mode=${mode}`
+      `[rag-context] totalMs=${Date.now() - ragStartedAt} returnedChunks=${ctx.budgetedChunks.length} budgetChars=${ctx.contextBudget} mode=${ctx.mode}`
     );
 
     return res.json({
-      question,
-      subject,
-      chunks: budgetedChunks,
-      chunkScores: scoredContext.chunkScores,
-      chunkCount: budgetedChunks.length,
-      mode,
-      retrievalMode,
-      sourceFile,
-      sourceChunkCount,
+      question: ctx.question,
+      subject: ctx.subject,
+      chunks: ctx.budgetedChunks,
+      chunkScores: ctx.scoredContext.chunkScores,
+      chunkCount: ctx.budgetedChunks.length,
+      mode: ctx.mode,
+      retrievalMode: ctx.retrievalMode,
+      sourceFile: ctx.sourceFile,
+      sourceChunkCount: ctx.sourceChunkCount,
       strictRag: true,
-      sourceSufficient: sufficient,
-      sourceIssue,
+      sourceSufficient: ctx.sufficient,
+      sourceIssue: ctx.sourceIssue,
       suggestedSubject: null,
-      targetTokens,
+      targetTokens: ctx.targetTokens,
       prompt: buildChunkAnswerPrompt({
-        question: resolvedQuestion,
-        chunks: budgetedChunks,
-        targetTokens: cappedTargetTokens,
-        mode,
-        wordLimit,
+        question: ctx.resolvedQuestion,
+        chunks: ctx.budgetedChunks,
+        targetTokens: ctx.cappedTargetTokens,
+        mode: ctx.mode,
+        wordLimit: ctx.wordLimit,
       }),
       generation: {
         runtime: "gemini-2.5-flash-strict-rag",
         local: false,
-        maxTokens: cappedTargetTokens,
+        maxTokens: ctx.cappedTargetTokens,
         temperature: 0,
       },
-      wordLimit,
+      wordLimit: ctx.wordLimit,
     });
   } catch (err) {
     console.error("Mobile RAG context error:", err.message);
-    return res.status(500).json({ error: "Failed to prepare mobile context" });
+    const { status, body } = toMobileRagError(err);
+    return res.status(status).json(body);
+  }
+}
+
+export async function getMobileAnswer(req, res) {
+  const startedAt = Date.now();
+  let keyHash = null;
+  let contextChars = 0;
+
+  const prepareError = (err, res) => {
+    const parsed = toMobileRagError(err);
+    console.error("[mobile-answer] prepare error:", err.message);
+    if (res.headersSent) {
+      res.write(`data: ${JSON.stringify({ type: "error", ...parsed.body })}\n\n`);
+      return res.end();
+    }
+    return res.status(parsed.status).json(parsed.body);
+  };
+
+  try {
+    const ctx = await prepareMobileRagContext(req.body || {});
+    contextChars = ctx.budgetedChunks.reduce((sum, c) => sum + (c.text?.length || 0), 0);
+
+    if (!ctx.userApiKey) {
+      return res.status(404).json({
+        error: "No API key found for this device. Please store your key first.",
+        code: "GEMINI_KEY_NOT_FOUND",
+      });
+    }
+    keyHash = fingerprintGeminiApiKey(ctx.userApiKey);
+
+    await enforceGeminiAbusePolicy({
+      deviceId: ctx.deviceId,
+      ip: req.ip,
+      keyHash,
+      contextChars,
+      targetTokens: ctx.cappedTargetTokens,
+    });
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    if (req.socket) req.socket.setNoDelay(true);
+
+    const contextEvent = {
+      type: "context",
+      question: ctx.question,
+      subject: ctx.subject,
+      mode: ctx.mode,
+      retrievalMode: ctx.retrievalMode,
+      sourceFile: ctx.sourceFile,
+      sourceChunkCount: ctx.sourceChunkCount,
+      strictRag: true,
+      sourceSufficient: ctx.sufficient,
+      sourceIssue: ctx.sourceIssue,
+      chunkCount: ctx.budgetedChunks.length,
+      chunkScores: ctx.scoredContext.chunkScores,
+      chunks: ctx.budgetedChunks,
+      targetTokens: ctx.targetTokens,
+      wordLimit: ctx.wordLimit,
+    };
+    res.write(`data: ${JSON.stringify(contextEvent)}\n\n`);
+    if (typeof res.flush === "function") res.flush();
+
+    if (ctx.budgetedChunks.length === 0) {
+      res.write(
+        `data: ${JSON.stringify({ type: "done", answer: "", tokenCount: 0, sentenceScores: [], chunkScores: ctx.scoredContext.chunkScores, generationReason: "no_chunks" })}\n\n`
+      );
+      return res.end();
+    }
+
+    if (!ctx.sufficient) {
+      const answer = ctx.sourceIssue || "The retrieved source chunks do not contain enough information to answer this question.";
+      res.write(
+        `data: ${JSON.stringify({ type: "done", answer, tokenCount: 0, sentenceScores: [], chunkScores: ctx.scoredContext.chunkScores, generationReason: "strict_rag_insufficient" })}\n\n`
+      );
+      return res.end();
+    }
+
+    const result = await proxyGeminiCall(ctx.userApiKey, {
+      question: ctx.resolvedQuestion,
+      chunks: ctx.budgetedChunks.map((c) => ({
+        text: c.text,
+        facet: typeof c.metadata?.rag_facet === "string" ? c.metadata.rag_facet : "supporting-evidence",
+        source: typeof c.metadata?.source_file === "string" ? c.metadata.source_file : c.metadata?.source || "",
+        subject_id: Array.isArray(c.subject_id) && c.subject_id.length ? c.subject_id : c.metadata?.subject_id,
+      })).filter((c) => Boolean(c.text)),
+      targetTokens: ctx.cappedTargetTokens,
+      mode: ctx.mode,
+      subjectId: ctx.subject,
+      onToken: (token) => {
+        res.write(`data: ${JSON.stringify({ type: "token", text: token })}\n\n`);
+        if (typeof res.flush === "function") res.flush();
+      },
+      onStatus: (status) => {
+        res.write(`data: ${JSON.stringify({ type: "status", status })}\n\n`);
+        if (typeof res.flush === "function") res.flush();
+      },
+    });
+
+    await markGeminiKeyValidated(ctx.deviceId);
+    recordGeminiMetric({
+      route: "mobile-answer",
+      outcome: "success",
+      latencyMs: Date.now() - startedAt,
+      tokenCount: result.tokenCount || 0,
+      contextChars,
+    });
+    logGeminiEvent("mobile_answer_success", {
+      device: anonymizeIdentifier(ctx.deviceId),
+      key: anonymizeIdentifier(keyHash),
+      ip: anonymizeIdentifier(req.ip),
+      latencyMs: Date.now() - startedAt,
+      tokenCount: result.tokenCount || 0,
+      contextChars,
+    });
+    res.write(
+      `data: ${JSON.stringify({
+        type: "done",
+        answer: result.answer,
+        tokenCount: result.tokenCount,
+        sentenceScores: result.sentenceScores,
+        chunkScores: result.chunkScores,
+      })}\n\n`
+    );
+    return res.end();
+  } catch (err) {
+    const publicError = toPublicGeminiError(err);
+    recordGeminiMetric({
+      route: "mobile-answer",
+      outcome: "error",
+      code: publicError.body.code,
+      latencyMs: Date.now() - startedAt,
+      contextChars,
+    });
+    logGeminiEvent("mobile_answer_error", {
+      device: anonymizeIdentifier(req.body?.deviceId),
+      key: anonymizeIdentifier(keyHash),
+      ip: anonymizeIdentifier(req.ip),
+      code: publicError.body.code,
+      latencyMs: Date.now() - startedAt,
+    });
+    console.error("[mobile-answer] error:", err.code || err.message);
+
+    if (req.body?.deviceId && publicError.body.code) {
+      try {
+        await markGeminiKeyFailure(req.body.deviceId, publicError.body.code);
+        await recordGeminiFailureForAbuse({
+          deviceId: req.body.deviceId,
+          ip: req.ip,
+          keyHash,
+          code: publicError.body.code,
+        });
+      } catch (dbErr) {
+        console.error("[mobile-answer] failed to persist key health/abuse state:", dbErr.message);
+      }
+    }
+
+    if (res.headersSent) {
+      res.write(`data: ${JSON.stringify({ type: "error", ...publicError.body })}\n\n`);
+      return res.end();
+    }
+    if (publicError.body.retryAfter) {
+      res.setHeader("Retry-After", publicError.body.retryAfter);
+    }
+    if (err?.status === 429 || err?.status === 400) {
+      return prepareError(err, res);
+    }
+    return res.status(publicError.status).json(publicError.body);
   }
 }
