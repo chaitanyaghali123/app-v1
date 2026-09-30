@@ -1283,7 +1283,7 @@ export function correctSubjectTypo(question, subject) {
   return corrected === original ? null : corrected;
 }
 
-async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_MAX_CHUNKS, maxContextChars = DEFAULT_MAX_CONTEXT_CHARS, deviceId }) {
+async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_MAX_CHUNKS, maxContextChars = DEFAULT_MAX_CONTEXT_CHARS, targetTokens: requestedTargetTokens = 0, deviceId }) {
   if (!question || typeof question !== "string") {
     const err = new Error("question is required");
     err.status = 400;
@@ -1339,7 +1339,7 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
     const retrievalStartedAt = Date.now();
     vectorChunks = await queryVector({
       prompt: resolvedQuestion,
-      topK: Math.max(requestedMaxChunks * 2, 12),
+      topK: Math.max(requestedMaxChunks * 2, 8),
       skipRerank: false,
       subjectIds: folderPatterns ? folderPatterns.map((f) => f.toLowerCase()) : null,
       apiKey: userApiKey,
@@ -1457,7 +1457,9 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
         : "limited"
       : retrievalMode;
   const wordLimit = detectWordLimit(resolvedQuestion, subject);
-  const targetTokens = isEssay
+  const targetTokens = requestedTargetTokens > 0 && !isEssay
+    ? requestedTargetTokens
+    : isEssay
     ? 2600
     : mode === "limited" && retrievalMode === "ranked"
     ? 800

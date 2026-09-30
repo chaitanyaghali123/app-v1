@@ -106,9 +106,9 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
       body: JSON.stringify({
         question: options.question,
         subject: options.subject,
-        maxChunks: options.maxChunks ?? (isEssay ? 35 : 20),
-        maxContextChars: options.maxContextChars ?? (isEssay ? 60000 : 14000),
-        targetTokens: options.targetTokens ?? (isEssay ? 2600 : 3000),
+        maxChunks: options.maxChunks ?? (isEssay ? 35 : 4),
+        maxContextChars: options.maxContextChars ?? (isEssay ? 60000 : 10000),
+        targetTokens: options.targetTokens ?? (isEssay ? 2600 : 800),
         deviceId: await getOrCreateDeviceId(),
       }),
     });

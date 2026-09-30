@@ -491,7 +491,7 @@ const GEMINI_LAST_MODEL_PATIENCE_MS = Number(
   process.env.GEMINI_LAST_MODEL_PATIENCE_MS || 30000
 );
 const GEMINI_STREAM_TTFT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_TTFT_TIMEOUT_MS || 5000);
-const GEMINI_STREAM_ATTEMPT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_ATTEMPT_TIMEOUT_MS || 30000);
+const GEMINI_STREAM_ATTEMPT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_ATTEMPT_TIMEOUT_MS || 40000);
 const GEMINI_STREAM_HEADER_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_HEADER_TIMEOUT_MS || 8000);
 
 async function requestGemini(apiKey, url, init, {
@@ -777,8 +777,12 @@ The answer MUST have exactly three parts:
 - A balanced verdict (NOT a summary) tied to the specific entity/concept named in the question (e.g. conclude on "Hampi / Vijayanagara architecture", not "the past") + one short forward-looking line ("further reforms required", "sustained investment needed"). 2–3 sentences max.
 
 == EVIDENCE RULES ==
-- STRICT SOURCE-LOCK: the evidence chunks below are your ONLY source of facts — mine EVERY chunk for names, dates, acts, schemes, definitions, examples and use them; cover all chunks, not just the first. Do NOT bring in any outside or prior knowledge, even facts you are confident are true.
-- SOURCE-LOCKED ANSWERING — every name, date, number, scheme, and example in the answer MUST appear in the evidence chunks; assert nothing from memory. Where the chunks cannot support a point the question demands, OMIT that claim (or, only where necessary, state that the retrieved sources do not cover it) rather than filling it from prior knowledge. If a number, year, name, or quote is not certain, OMIT it rather than risk it; precision beats breadth. NEVER invent figures, statistics, dates, or quotes.
+- SOURCE-LOCK ENFORCEMENT (MANDATORY CONTRACT): The retrieved evidence chunks below are the factual boundary of this answer. Every factual claim, statistic, percentage, date, named study, institution, example, historical event, or causal assertion you write MUST be directly supported by the retrieved source chunks. Your role is organization, synthesis and language ONLY — never add facts.
+- Never: infer a statistic from a source (e.g. "0.8% of urban SCs" unless the chunk states that figure); generalize a study beyond its stated population/context; convert historical evidence into a present-day claim; invent examples; splice fragments from different chunks into an unsupported composite fact; or add UPSC-style "known facts" from pretrained knowledge — even facts you are confident are true.
+- PRESERVE EVIDENCE SCOPE: when the evidence is historical, explicitly keep its time period in the answer (e.g. "NSSO 55th Round data from 1999–2000 indicated…", "a study of industrial workplaces found…") — never present historical or study-specific evidence as a current universal condition. When evidence is limited to a population or setting, keep that scope ("urban SCs in the 1999–2000 survey", not "all SCs today").
+- ATTRIBUTION DISCIPLINE: a statistic or study can indicate, illustrate, or corroborate inequality; it does NOT by itself prove a broad causal conclusion. Prefer "illustrating the persistence of caste-linked economic disparities" over "proving that urban markets replicate caste advantages." Never present correlation as demonstrated causation.
+- If a requested analytical point is not supported by the chunks, either express it cautiously as an explicit analytical inference (clearly milder than an asserted fact) or omit the specific factual claim. Do NOT manufacture supporting evidence.
+- STRICT SOURCE-LOCK: mine EVERY chunk for names, dates, acts, schemes, definitions, examples and use them; cover all chunks, not just the first. If a number, year, name, or quote is not certain, OMIT it rather than risk it; precision beats breadth. NEVER invent figures, statistics, dates, or quotes.
 - DO NOT MANUFACTURE SPECIFICITY: never attribute a specific architectural element, technique, scheme, motive, or causation (“introduced X”, “first to”, “forced X to innovate”, exact technique origins) unless the retrieved evidence establishes it. Attribute real provenance (“built on earlier South Indian/Dravidian temple traditions”) rather than an exclusive lineage you cannot support. Prefer a broader, well-supported historical statement over an impressive but weakly supported attribution; avoid absolutes (“mortarless”, “literally”, “-all”) unless the source confirms them.
 - ANCHOR EVERY POINT IN A VERIFIED EXAMPLE: when the question asks for examples (“elucidate with examples”, “with examples”, “mention instances”), the body MUST be led by concrete, named examples drawn from the evidence chunks (named temples/sites, schemes, acts, institutions). 3–5 well-supported examples beat 10 uncertain ones; if an example is not supported by the evidence, omit THAT example rather than invent or go vague. Never answer an “with examples” question with a general analysis and zero named examples.
 - For amalgamation/synthesis/“past vs contemporary” questions, structure the body as natural thematic headings that make the old-vs-new synthesis explicit (e.g. “Continuity with Earlier Southern Traditions”, “Interaction with Contemporary Deccan Architecture”). Weave the past-vs-contemporary contrast inside each section with named examples. Do NOT print mechanical label pairs like “PAST TRADITION -> ... | CONTEMPORARY INFLUENCE -> ...” in the final answer.
@@ -1053,7 +1057,7 @@ export async function proxyGeminiCall(apiKey, options) {
   const subjectId = Array.isArray(rawSubjectId) ? rawSubjectId.find((s) => typeof s === "string") || null : rawSubjectId;
   const userPrompt = buildRagPrompt({ question, chunks, subjectId });
   const urls = buildGeminiUrls(":streamGenerateContent?alt=sse");
-  const maxOutputTokens = targetTokens > 0 ? Math.min(targetTokens + 4096, 65536) : 8192;
+  const maxOutputTokens = targetTokens > 0 ? Math.min(targetTokens, 65536) : 8192;
   const answerWordLimit = detectWordLimit(question, subjectId);
   const maxOutputTokensCapped = answerWordLimit ? Math.min(maxOutputTokens, Math.round(answerWordLimit * 1.55) + 100) : maxOutputTokens;
   const generationConfig = buildGeminiGenerationConfig({
@@ -1067,7 +1071,7 @@ export async function proxyGeminiCall(apiKey, options) {
 
   const requestBody = JSON.stringify({
     systemInstruction: {
-      parts: [{ text: "You are an expert UPSC Mains answer-writer. Follow the complete UPSC Mains answer instructions in the user message exactly: format (## **Introduction** / ## **Content** / ## **Conclusion**), demand analysis, directive roadmap, evidence rules (STRICT SOURCE-LOCK, verified examples), language rules, and the HARD WORD BUDGET. Every instruction there is authoritative — obey it in full." }],
+      parts: [{ text: "You are an expert UPSC Mains answer-writer. Follow the complete UPSC Mains answer instructions in the user message exactly: format (## **Introduction** / ## **Content** / ## **Conclusion**), demand analysis, directive roadmap, evidence rules (SOURCE-LOCK ENFORCEMENT, verified examples, scope preservation), language rules, and the HARD WORD BUDGET. Every instruction there is authoritative — obey it in full. The retrieved chunks are the factual boundary: you may only organize, synthesize, and write in your own words — never add facts not present in the chunks." }],
     },
     safetySettings: [
       { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
