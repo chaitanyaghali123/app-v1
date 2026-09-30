@@ -190,6 +190,9 @@ BM25_CANDIDATES = int(
 RERANK_CANDIDATES = int(
     os.getenv("RERANK_CANDIDATES", "40")
 )
+RERANK_MAX_LENGTH = int(
+    os.getenv("RERANK_MAX_LENGTH", "384")
+)
 MAX_CHUNK_CHARS = int(
 
     os.getenv("MAX_CHUNK_CHARS", "2000")
@@ -429,6 +432,33 @@ rerank_tokenizer = None
 model_lock = threading.Lock()
 reranker_load_attempted = False
 
+ONNX_OUTPUT_KEYS = ("logits",)
+
+
+def _cpu_thread_count():
+
+    try:
+        import os as _os
+        import multiprocessing as _mp
+        detected = _mp.cpu_count() or 4
+    except Exception:
+        detected = 4
+
+    try:
+        requested = int(_os.getenv("RERANKER_NUM_THREADS", "0"))
+    except ValueError:
+        requested = 0
+
+    if requested > 0:
+        return max(1, min(requested, detected))
+    return max(1, detected)
+
+
+class _OnnxRerankerOutput:
+    """Mimics the .logits surface rerank_chunks expects from a torch model."""
+
+    __slots__ = ("logits",)
+
 
 def get_reranker():
 
@@ -457,25 +487,114 @@ def get_reranker():
             import torch
             torch.set_grad_enabled(False)
 
-            num_threads = int(
-                os.getenv(
-                    "RERANKER_NUM_THREADS",
-                    "6"
-                )
-            )
+            num_threads = _cpu_thread_count()
 
             torch.set_num_threads(
-                max(1, num_threads)
+                num_threads
             )
 
-            from transformers import AutoTokenizer, AutoModelForSequenceClassification
+            from transformers import AutoTokenizer
 
-            logger.info(
-                f"Loading reranker: {RERANK_MODEL}"
+            onnx_path = os.getenv(
+                "RERANK_ONNX_PATH",
+                "/app/models/reranker_int8.onnx"
             )
 
             loaded_tokenizer = AutoTokenizer.from_pretrained(
                 RERANK_MODEL
+            )
+
+            if os.path.exists(onnx_path):
+                try:
+                    import onnxruntime as ort
+
+                    sess_opt = ort.SessionOptions()
+                    sess_opt.intra_op_num_threads = num_threads
+                    sess_opt.inter_op_num_threads = 1
+                    sess_opt.graph_optimization_level = (
+                        ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    )
+
+                    session = ort.InferenceSession(
+                        onnx_path,
+                        sess_opt,
+                        providers=["CPUExecutionProvider"],
+                    )
+
+                    output_keys = [
+                        o.name
+                        for o in session.get_outputs()
+                    ]
+                    input_keys = {
+                        i.name
+                        for i in session.get_inputs()
+                    }
+
+                    def onnx_call(**inputs):
+                        feed = {
+                            k: (
+                                v.cpu().numpy()
+                                if isinstance(v, torch.Tensor)
+                                else v
+                            )
+                            for k, v in inputs.items()
+                            if k in input_keys
+                        }
+                        res = session.run(output_keys, feed)
+                        out = _OnnxRerankerOutput()
+                        out.logits = torch.from_numpy(
+                            res[0]
+                        )
+                        return out
+
+                    logger.info(
+                        f"Reranker ONNX loaded: {onnx_path} "
+                        f"(threads={num_threads})"
+                    )
+
+                    try:
+                        import time as _t
+                        _warm_n = max(
+                            2,
+                            RERANK_CANDIDATES
+                        )
+                        _warm_inputs = loaded_tokenizer(
+                            ["what is the quit india movement"] * _warm_n,
+                            [
+                                "it was launched in august 1942 by "
+                                "mahatma gandhi"
+                            ] * _warm_n,
+                            padding=True,
+                            truncation=True,
+                            max_length=RERANK_MAX_LENGTH,
+                            return_tensors="pt",
+                        )
+                        _tw = _t.time()
+                        onnx_call(**_warm_inputs)
+                        logger.info(
+                            f"Reranker ONNX warmed ({_warm_n} pairs) in "
+                            f"{int((_t.time() - _tw) * 1000)}ms"
+                        )
+                    except Exception as warm_e:
+                        logger.warning(
+                            f"Reranker ONNX warm-up failed: {warm_e}"
+                        )
+
+                    rerank_tokenizer = loaded_tokenizer
+                    reranker = onnx_call
+                    return reranker, rerank_tokenizer
+
+                except Exception as onnx_e:
+                    logger.exception(
+                        f"ONNX reranker load failed ({onnx_path}), "
+                        f"falling back to torch: {onnx_e}"
+                    )
+                    reranker_load_attempted = False
+
+            from transformers import AutoModelForSequenceClassification
+
+            logger.info(
+                f"Loading torch reranker: {RERANK_MODEL}"
             )
 
             loaded_model = AutoModelForSequenceClassification.from_pretrained(
@@ -487,19 +606,35 @@ def get_reranker():
 
             try:
                 import time as _t
+
+                _warm_n = max(
+                    2,
+                    RERANK_CANDIDATES
+                )
+                _warm_query = (
+                    "What was the impact of Macaulay's Minute of 1835 on "
+                    "education and colonial administration in India?"
+                )
+                _warm_doc = (
+                    "The English Education Act of 1835, shaped by Thomas "
+                    "Babington Macaulay's Minute, prioritized English-medium "
+                    "instruction over traditional oriental learning, a decision "
+                    "that recast higher education in colonial India. "
+                ) * 8
                 warm_inputs = loaded_tokenizer(
-                    ["what is the quit india movement"],
-                    ["it was launched in august 1942 by mahatma gandhi"],
+                    [_warm_query] * _warm_n,
+                    [_warm_doc] * _warm_n,
                     padding=True,
                     truncation=True,
-                    max_length=512,
+                    max_length=RERANK_MAX_LENGTH,
                     return_tensors="pt",
                 )
                 _tw = _t.time()
                 with torch.no_grad():
                     loaded_model(**warm_inputs)
                 logger.info(
-                    f"Reranker warmed in {int((_t.time() - _tw) * 1000)}ms"
+                    f"Reranker warmed ({_warm_n} pairs) in "
+                    f"{int((_t.time() - _tw) * 1000)}ms"
                 )
             except Exception as warm_e:
                 logger.warning(
@@ -1652,7 +1787,7 @@ def rerank_chunks(
             docs,
             padding=True,
             truncation=True,
-            max_length=512,
+            max_length=RERANK_MAX_LENGTH,
             return_tensors="pt"
         )
 

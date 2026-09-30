@@ -261,6 +261,9 @@ const GEMINI_THINKING_BUDGET = Number(process.env.GEMINI_THINKING_BUDGET ?? 0);
 
 const RETRYABLE_GEMINI_STATUS_CODES = new Set([408, 409, 429, 500, 502, 503, 504]);
 
+const GEMINI_MODEL_BUSY_COOLDOWN_MS = Number(process.env.GEMINI_MODEL_BUSY_COOLDOWN_MS || 60000);
+const modelBusySince = new Map();
+
 export function getGeminiModel() {
   return GEMINI_MODEL;
 }
@@ -269,8 +272,20 @@ function getGeminiModelNameFromUrl(url) {
   return url.match(/models\/([^:?/]+)/)?.[1] || url;
 }
 
+function noteModelBusy(modelUrl) {
+  modelBusySince.set(getGeminiModelNameFromUrl(modelUrl), Date.now());
+}
+
 function buildGeminiUrls(action) {
-  return GEMINI_MODEL_CHAIN.map((model) => `${GEMINI_API_BASE}/${model}${action}`);
+  const now = Date.now();
+  const ordered = [...GEMINI_MODEL_CHAIN].sort((a, b) => {
+    const activeA = modelBusySince.get(a);
+    const activeB = modelBusySince.get(b);
+    const coolingA = activeA && now - activeA < GEMINI_MODEL_BUSY_COOLDOWN_MS ? activeA : -Infinity;
+    const coolingB = activeB && now - activeB < GEMINI_MODEL_BUSY_COOLDOWN_MS ? activeB : -Infinity;
+    return coolingA - coolingB;
+  });
+  return ordered.map((model) => `${GEMINI_API_BASE}/${model}${action}`);
 }
 
 function getGeminiThinkingConfig() {
@@ -452,16 +467,48 @@ function getRetryDelayMs(error, attempt) {
   return Math.min(750 * 2 ** attempt + jitter, 8000);
 }
 
+function readStreamWithDeadline(reader, controller, deadlineMs) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => controller.abort(), Math.max(0, deadlineMs - Date.now()));
+    reader.read().then(
+      (chunk) => {
+        clearTimeout(timer);
+        resolve({ timedOut: false, chunk });
+      },
+      (err) => {
+        clearTimeout(timer);
+        if (err?.name === "AbortError") {
+          resolve({ timedOut: true });
+        } else {
+          resolve({ timedOut: false, error: err });
+        }
+      }
+    );
+  });
+}
+
+const GEMINI_LAST_MODEL_PATIENCE_MS = Number(
+  process.env.GEMINI_LAST_MODEL_PATIENCE_MS || 30000
+);
+const GEMINI_STREAM_TTFT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_TTFT_TIMEOUT_MS || 5000);
+const GEMINI_STREAM_ATTEMPT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_ATTEMPT_TIMEOUT_MS || 30000);
+const GEMINI_STREAM_HEADER_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_HEADER_TIMEOUT_MS || 8000);
+
 async function requestGemini(apiKey, url, init, {
   operation,
   timeoutMs = GEMINI_REQUEST_TIMEOUT_MS,
   retries = GEMINI_MAX_RETRIES,
+  patienceMs = GEMINI_LAST_MODEL_PATIENCE_MS,
 } = {}) {
   const urls = Array.isArray(url) ? url : [url];
   let lastError;
 
   for (let modelIndex = 0; modelIndex < urls.length; modelIndex++) {
     const modelUrl = urls[modelIndex];
+    const isLastModel = modelIndex === urls.length - 1;
+    const patienceDeadline = isLastModel
+      ? Date.now() + patienceMs
+      : null;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       const controller = new AbortController();
@@ -479,8 +526,9 @@ async function requestGemini(apiKey, url, init, {
         });
 
         if (response.ok) {
+          response._geminiModel = getGeminiModelNameFromUrl(modelUrl);
           console.log(
-            `[gemini] ${operation} served by ${getGeminiModelNameFromUrl(modelUrl)} (attempt ${attempt + 1})`
+            `[gemini] ${operation} served by ${response._geminiModel} (attempt ${attempt + 1})`
           );
           return response;
         }
@@ -512,7 +560,29 @@ async function requestGemini(apiKey, url, init, {
         clearTimeout(timeout);
       }
 
-      if (!lastError?.retriable || attempt >= retries) {
+      if (!lastError?.retriable) {
+        break;
+      }
+
+      const busyWithFallback =
+        modelIndex < urls.length - 1 &&
+        lastError &&
+        (GEMINI_MODEL_BUSY_STATUSES.has(lastError.status) || lastError.status >= 500);
+      if (busyWithFallback) {
+        noteModelBusy(modelUrl);
+        break;
+      }
+
+      if (isLastModel && patienceDeadline && Date.now() < patienceDeadline) {
+        const wait = getRetryDelayMs(lastError, attempt);
+        if (Date.now() + wait <= patienceDeadline) {
+          await sleep(wait);
+          continue;
+        }
+        break;
+      }
+
+      if (attempt >= retries) {
         break;
       }
 
@@ -521,6 +591,7 @@ async function requestGemini(apiKey, url, init, {
 
     const isBusy = lastError && (GEMINI_MODEL_BUSY_STATUSES.has(lastError.status) || lastError.status >= 500);
     if (isBusy && modelIndex < urls.length - 1) {
+      noteModelBusy(modelUrl);
       console.warn(
         `[gemini] ${operation} failed on ${getGeminiModelNameFromUrl(modelUrl)} (${lastError.status}), trying fallback model`
       );
@@ -987,7 +1058,7 @@ export async function proxyGeminiCall(apiKey, options) {
   const rawSubjectId = options.subjectId || (chunks?.[0]?.subject_id) || null;
   const subjectId = Array.isArray(rawSubjectId) ? rawSubjectId.find((s) => typeof s === "string") || null : rawSubjectId;
   const userPrompt = buildRagPrompt({ question, chunks, subjectId });
-  const url = buildGeminiUrls(":streamGenerateContent?alt=sse");
+  const urls = buildGeminiUrls(":streamGenerateContent?alt=sse");
   const maxOutputTokens = targetTokens > 0 ? Math.min(targetTokens + 4096, 65536) : 8192;
   const answerWordLimit = detectWordLimit(question, subjectId);
   const maxOutputTokensCapped = answerWordLimit ? Math.min(maxOutputTokens, Math.round(answerWordLimit * 1.8) + 150) : maxOutputTokens;
@@ -1000,37 +1071,24 @@ export async function proxyGeminiCall(apiKey, options) {
     `[gemini] request config: mode=${mode || "limited"}, chunks=${chunks.length}, maxOutputTokens=${maxOutputTokensCapped}, thinking=${JSON.stringify(generationConfig.thinkingConfig || null)}`
   );
 
-  const response = await requestGemini(
-    apiKey,
-    url,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: "You are an expert UPSC Mains answer-writer. Follow the complete UPSC Mains answer instructions in the user message exactly: format (## **Introduction** / ## **Content** / ## **Conclusion**), demand analysis, directive roadmap, evidence rules (STRICT SOURCE-LOCK, verified examples), language rules, and the HARD WORD BUDGET. Every instruction there is authoritative — obey it in full." }],
-        },
-        safetySettings: [
-          { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-        ],
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: userPrompt }],
-          },
-        ],
-        generationConfig,
-      }),
+  const requestBody = JSON.stringify({
+    systemInstruction: {
+      parts: [{ text: "You are an expert UPSC Mains answer-writer. Follow the complete UPSC Mains answer instructions in the user message exactly: format (## **Introduction** / ## **Content** / ## **Conclusion**), demand analysis, directive roadmap, evidence rules (STRICT SOURCE-LOCK, verified examples), language rules, and the HARD WORD BUDGET. Every instruction there is authoritative — obey it in full." }],
     },
-    { operation: "stream_answer" }
-  );
-
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw new Error("Gemini streaming not available.");
-  }
+    safetySettings: [
+      { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+      { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+      { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+    ],
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: userPrompt }],
+      },
+    ],
+    generationConfig,
+  });
 
   const decoder = new TextDecoder();
   let buffer = "";
@@ -1041,7 +1099,8 @@ export async function proxyGeminiCall(apiKey, options) {
   let promptTokenCount = 0;
   let thoughtTokenCount = 0;
   let totalTokenCount = 0;
-  const STREAM_FLUSH_CHARS = 96;
+  let servedModel = "";
+  const STREAM_FLUSH_CHARS = 256;
   const processStreamLine = (line) => {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data: ")) return;
@@ -1083,15 +1142,148 @@ export async function proxyGeminiCall(apiKey, options) {
     }
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  for (let modelIndex = 0; modelIndex < urls.length; modelIndex++) {
+    const modelUrl = urls[modelIndex];
+    const isLastModel = modelIndex === urls.length - 1;
+    const attemptStart = Date.now();
+    const ttftDeadline = attemptStart + GEMINI_STREAM_TTFT_TIMEOUT_MS;
+    const attemptDeadline = attemptStart + GEMINI_STREAM_ATTEMPT_TIMEOUT_MS;
+    const controller = new AbortController();
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
+    buffer = "";
+    fullText = "";
+    lastEmitted = 0;
+    tokenCount = 0;
+    finishReason = "";
+    promptTokenCount = 0;
+    thoughtTokenCount = 0;
+    totalTokenCount = 0;
+    firstTokenAt = 0;
 
-    for (const line of lines) processStreamLine(line);
+    try {
+      const headerMs = Math.min(GEMINI_STREAM_HEADER_TIMEOUT_MS, GEMINI_STREAM_TTFT_TIMEOUT_MS);
+      const headerTimer = setTimeout(() => controller.abort(), headerMs);
+      let attemptResponse;
+      try {
+        attemptResponse = await fetch(modelUrl, {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": apiKey,
+          },
+          body: requestBody,
+        });
+        clearTimeout(headerTimer);
+        attemptResponse._geminiModel = getGeminiModelNameFromUrl(modelUrl);
+        servedModel = attemptResponse._geminiModel;
+      } catch (fetchErr) {
+        clearTimeout(headerTimer);
+        if (fetchErr?.name === "AbortError") {
+          console.warn(`[gemini] stream_answer header timeout (>${headerMs}ms) on ${getGeminiModelNameFromUrl(modelUrl)}`);
+          if (isLastModel) {
+            throw new GeminiApiError({
+              message: `Gemini header timeout after ${headerMs}ms on ${getGeminiModelNameFromUrl(modelUrl)}`,
+              status: 504,
+              code: "GEMINI_TIMEOUT",
+              userMessage: "Gemini took too long to respond. Please try again.",
+              retriable: true,
+              operation: "stream_answer",
+            });
+          }
+          noteModelBusy(modelUrl);
+          console.warn(`[gemini] stream_answer header timeout on ${getGeminiModelNameFromUrl(modelUrl)}, trying fallback model`);
+          continue;
+        }
+        throw fetchErr;
+      }
+
+      if (!attemptResponse.ok) {
+        const err = await buildGeminiError(attemptResponse, "stream_answer");
+        const busy = GEMINI_MODEL_BUSY_STATUSES.has(err.status) || err.status >= 500;
+        if (busy && !isLastModel) {
+          noteModelBusy(modelUrl);
+          console.warn(`[gemini] stream_answer failed on ${getGeminiModelNameFromUrl(modelUrl)} (${err.status}), trying fallback model`);
+          continue;
+        }
+        throw err;
+      }
+
+      console.log(`[gemini] stream_answer served by ${servedModel} (attempt ${modelIndex + 1}/${urls.length})`);
+
+      const reader = attemptResponse.body?.getReader();
+      if (!reader) {
+        throw new Error("Gemini streaming not available.");
+      }
+
+      let ttftAborted = false;
+      let attemptAborted = false;
+      while (true) {
+        const deadline = firstTokenAt ? attemptDeadline : ttftDeadline;
+        const { timedOut, chunk, error } = await readStreamWithDeadline(reader, controller, deadline);
+        if (timedOut) {
+          if (!firstTokenAt) {
+            ttftAborted = true;
+          } else {
+            attemptAborted = true;
+          }
+          break;
+        }
+        if (error) {
+          throw new GeminiApiError({
+            message: `Gemini stream error (${firstTokenAt ? "mid-generation" : "before first token"}): ${error?.message || error}`,
+            status: 502,
+            code: "GEMINI_NETWORK_ERROR",
+            userMessage: "Lost connection to Gemini while writing your answer. Please retry.",
+            retriable: true,
+            operation: "stream_answer",
+          });
+        }
+        const { done, value } = chunk;
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) processStreamLine(line);
+      }
+
+      console.log(
+        `[gemini] stream_answer attempt: ${servedModel} ttftMs=${firstTokenAt ? firstTokenAt - attemptStart : "none"} streamMs=${Date.now() - attemptStart}`
+      );
+
+      if (ttftAborted) {
+        if (isLastModel) {
+          throw new GeminiApiError({
+            message: `Gemini ${servedModel} produced no first token within ${GEMINI_STREAM_TTFT_TIMEOUT_MS}ms`,
+            status: 504,
+            code: "GEMINI_TIMEOUT",
+            userMessage: "Gemini took too long to start generating. Please try again.",
+            retriable: true,
+            operation: "stream_answer",
+          });
+        }
+        noteModelBusy(modelUrl);
+        console.warn(`[gemini] stream_answer TTFT timeout (>${GEMINI_STREAM_TTFT_TIMEOUT_MS}ms, no first token) on ${servedModel}, trying fallback model`);
+        continue;
+      }
+
+      if (attemptAborted) {
+        throw new GeminiApiError({
+          message: `Gemini ${servedModel} exceeded generation budget of ${GEMINI_STREAM_ATTEMPT_TIMEOUT_MS}ms`,
+          status: 504,
+          code: "GEMINI_TIMEOUT",
+          userMessage: "Gemini took too long to finish your answer. Please retry.",
+          retriable: true,
+          operation: "stream_answer",
+        });
+      }
+
+      break;
+    } catch (err) {
+      throw err;
+    }
   }
 
   buffer += decoder.decode();
@@ -1138,7 +1330,7 @@ export async function proxyGeminiCall(apiKey, options) {
   );
 
   console.log(
-    `[gemini] textgen: ttftMs=${firstTokenAt ? firstTokenAt - proxyStartedAt : -1} genMs=${Date.now() - proxyStartedAt} outputTokens=${tokenCount} tokPerSec=${tokenCount > 0 && Date.now() - proxyStartedAt > 0 ? Math.round((tokenCount / Math.max(1, Date.now() - proxyStartedAt)) * 1000) : 0}`
+    `[gemini] textgen: model=${servedModel}, ttftMs=${firstTokenAt ? firstTokenAt - proxyStartedAt : -1} genMs=${Date.now() - proxyStartedAt} outputTokens=${tokenCount} tokPerSec=${tokenCount > 0 && Date.now() - proxyStartedAt > 0 ? Math.round((tokenCount / Math.max(1, Date.now() - proxyStartedAt)) * 1000) : 0}`
   );
 
   const enforced = enforceWordLimit(cleaned, answerWordLimit);

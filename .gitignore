@@ -29,3 +29,6 @@ venv310/
 
 # R2 sync mirror (rebuilt from Cloudflare R2 on every ingestion run)
 vector_server/data/
+
+# Generated reranker ONNX exports (reproducible; ~22-266MB)
+vector_server/models/
