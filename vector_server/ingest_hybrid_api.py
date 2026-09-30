@@ -155,7 +155,7 @@ logger.info(
 
 RERANK_MODEL = os.getenv(
     "RERANK_MODEL",
-    "BAAI/bge-reranker-base"
+    "cross-encoder/ms-marco-MiniLM-L-6-v2"
 )
 
 ENABLE_RERANK = os.getenv(
@@ -188,7 +188,7 @@ BM25_CANDIDATES = int(
 )
 
 RERANK_CANDIDATES = int(
-    os.getenv("RERANK_CANDIDATES", "40")
+    os.getenv("RERANK_CANDIDATES", "15")
 )
 RERANK_MAX_LENGTH = int(
     os.getenv("RERANK_MAX_LENGTH", "384")

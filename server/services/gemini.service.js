@@ -244,7 +244,7 @@ export async function decryptGeminiApiKeyRecord(record) {
 }
 
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const GEMINI_MODEL_FALLBACKS = String(
   process.env.GEMINI_MODEL_FALLBACKS || ""
 )
