@@ -432,7 +432,7 @@ export default function App() {
         question: cleanQuestion,
         subject: activeSubject.id,
         maxChunks: 6,
-        maxContextChars: 18000,
+        maxContextChars: 14000,
         targetTokens: 900,
         onStatus: setStatus,
         onToken: (token) => {

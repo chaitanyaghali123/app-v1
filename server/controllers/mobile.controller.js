@@ -1339,7 +1339,7 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
     const retrievalStartedAt = Date.now();
     vectorChunks = await queryVector({
       prompt: resolvedQuestion,
-      topK: requestedMaxChunks * 3,
+      topK: Math.max(requestedMaxChunks * 2, 12),
       skipRerank: false,
       subjectIds: folderPatterns ? folderPatterns.map((f) => f.toLowerCase()) : null,
       apiKey: userApiKey,

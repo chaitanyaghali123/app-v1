@@ -107,7 +107,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
         question: options.question,
         subject: options.subject,
         maxChunks: options.maxChunks ?? (isEssay ? 35 : 20),
-        maxContextChars: options.maxContextChars ?? (isEssay ? 60000 : 40000),
+        maxContextChars: options.maxContextChars ?? (isEssay ? 60000 : 14000),
         targetTokens: options.targetTokens ?? (isEssay ? 2600 : 3000),
         deviceId: await getOrCreateDeviceId(),
       }),

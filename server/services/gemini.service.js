@@ -730,14 +730,8 @@ function buildRagPrompt({ question, chunks, subjectId }) {
   const wordLimitInstruction = wordLimit
     ? `
 HARD WORD BUDGET — ${wordLimit} words (headings excluded) — NON-NEGOTIABLE:
-- ${wordLimit === 1300 ? "Introduction = 100–120 words, Body = ~1080 words, Conclusion = 90–100 words." : "Introduction = 55–70 words, Body = ~480 words, Conclusion = 45–60 words."}
-- That body space buys you only ${wordLimit === 1300 ? "8–9" : "6"} body paragraphs of ${wordLimit === 1300 ? "120–140" : "75–95"} words each. PLAN the allocation BEFORE writing a single word.
-- PARAGRAPH-CLASS LENGTH CHECK: ${wordLimit === 1300 ? "every body paragraph alone must be at least 110 words" : "every body paragraph alone must be at least 75 words"} — silently count it IMMEDIATELY after writing it; if it is short, expand it with more evidence BEFORE starting the next paragraph. NEVER attempt a final word-count total as a substitute for this per-paragraph check.
-- VOLUME OVER VERBOSITY: the examiner grades depth, not compression — do NOT condense. Every point must be argued through to its full evidence-backed depth with named examples before you move on. A 400-word answer to a 600-word question is a fail. It is far better to write SLIGHTLY over the target and be trimmed than to under-answer.
-- HARD MINIMUM: the finished answer MUST be at least ${wordLimit === 1300 ? 1170 : 550} words (headings excluded). If, after writing your body paragraphs, you are below ${wordLimit === 1300 ? 1170 : 550} words, KEEP EXPANDING with new evidence-based paragraphs - NEVER write a Conclusion while under ${wordLimit === 1300 ? 1170 : 550} words. A Conclusion at the 3rd-of-budget mark is an automatic FAIL.
-- Write your COMPLETE answer within ${Math.round(wordLimit * 0.98)}–${wordLimit} words — a verdict over the limit is an automatic fail, so STAY UNDER.
-- Silently count before finishing. Cut ruthlessly: no filler, no restating the question, no re-listed points. If over, delete the weakest sentence in each body paragraph until within limit.
-- Before emitting the last paragraph, silently estimate the word count and stop immediately once you cross ${wordLimit}. NEVER begin a section you cannot finish inside the budget.`
+- ${wordLimit === 1300 ? "Introduction = 100–120 words, Body = ~1080 words, Conclusion = 90–100 words, using 8–9 body paragraphs." : "Introduction = 55–70 words, Body = ~480 words, Conclusion = 45–60 words, using 6 body paragraphs."}
+- Write the COMPLETE answer within ${Math.round(wordLimit * 0.98)}–${wordLimit} words — hard minimum ${wordLimit === 1300 ? 1170 : 550}, hard maximum ${wordLimit}. Write at full argument depth with evidence; never condense to an ungraded summary. Cut filler (no restating the question, no padding) rather than evidence.`
     : "";
 
   return `You are an expert UPSC Mains answer-writer for ${(subjectId || "general studies").toUpperCase()}. Produce a high-scoring, examiner-ready UPSC Mains answer — not a generic essay.
@@ -1061,7 +1055,7 @@ export async function proxyGeminiCall(apiKey, options) {
   const urls = buildGeminiUrls(":streamGenerateContent?alt=sse");
   const maxOutputTokens = targetTokens > 0 ? Math.min(targetTokens + 4096, 65536) : 8192;
   const answerWordLimit = detectWordLimit(question, subjectId);
-  const maxOutputTokensCapped = answerWordLimit ? Math.min(maxOutputTokens, Math.round(answerWordLimit * 1.8) + 150) : maxOutputTokens;
+  const maxOutputTokensCapped = answerWordLimit ? Math.min(maxOutputTokens, Math.round(answerWordLimit * 1.55) + 100) : maxOutputTokens;
   const generationConfig = buildGeminiGenerationConfig({
     temperature: 0.6,
     topP: 0.95,
