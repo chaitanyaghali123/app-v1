@@ -375,6 +375,7 @@ function classifyGeminiError(status, body, statusText, retryAfterSeconds, operat
   let code = "GEMINI_ERROR";
   let userMessage = "Gemini request failed. Please try again.";
   let publicStatus = status >= 500 ? 502 : status;
+  let isRetriable = retriable;
 
   if (
     combined.includes("api key not valid") ||
@@ -387,10 +388,30 @@ function classifyGeminiError(status, body, statusText, retryAfterSeconds, operat
     code = "GEMINI_BILLING_REQUIRED";
     publicStatus = 402;
     userMessage = "This Gemini key cannot be used because billing or API access is not enabled for its Google project.";
-  } else if (combined.includes("quota") || combined.includes("rate limit")) {
+  } else if (
+    combined.includes("quota exceeded") ||
+    combined.includes("quota metric") ||
+    combined.includes("resource_exhausted") ||
+    combined.includes("usage quota") ||
+    combined.includes("daily request limit") ||
+    combined.includes("daily token limit") ||
+    combined.includes("quota for quota")
+  ) {
     code = "GEMINI_QUOTA_EXCEEDED";
     publicStatus = 429;
-    userMessage = "This Gemini key has reached its quota or rate limit. Please wait and try again, or use another key.";
+    isRetriable = false;
+    userMessage = "This Gemini API key has reached its usage quota. Please use another key or wait for the quota to reset.";
+  } else if (
+    combined.includes("rate limit") ||
+    combined.includes("rate_limit") ||
+    combined.includes("ratelimited") ||
+    combined.includes("too many requests") ||
+    combined.includes("throttl") ||
+    combined.includes("slow down")
+  ) {
+    code = "GEMINI_RATE_LIMITED";
+    publicStatus = 429;
+    userMessage = "Gemini is temporarily rate-limiting this key. Please try again in a moment.";
   } else if (
     combined.includes("billing") ||
     combined.includes("payment")
@@ -407,9 +428,9 @@ function classifyGeminiError(status, body, statusText, retryAfterSeconds, operat
     publicStatus = 502;
     userMessage = "The configured Gemini model is not available for this key or region.";
   } else if (status === 429) {
-    code = "GEMINI_QUOTA_EXCEEDED";
+    code = "GEMINI_RATE_LIMITED";
     publicStatus = 429;
-    userMessage = "This Gemini key has reached its quota or rate limit. Please wait and try again, or use another key.";
+    userMessage = "Gemini is temporarily rate-limiting this key. Please try again in a moment.";
   } else if (status === 403) {
     code = "GEMINI_PERMISSION_DENIED";
     publicStatus = 403;
@@ -434,7 +455,7 @@ function classifyGeminiError(status, body, statusText, retryAfterSeconds, operat
     code,
     userMessage,
     retryAfterSeconds,
-    retriable,
+    retriable: isRetriable,
     operation,
     originalError: {
       httpStatus: status,

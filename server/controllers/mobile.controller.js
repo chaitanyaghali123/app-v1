@@ -1521,8 +1521,11 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
 }
 
 function toMobileRagError(err) {
-  if (err?.status === 429 && err?.code === "GEMINI_QUOTA_EXCEEDED") {
-    return { status: 429, body: { error: err.message, code: "GEMINI_QUOTA_EXCEEDED" } };
+  if (err?.code === "GEMINI_QUOTA_EXCEEDED" || (err?.status === 429 && err?.code === "GEMINI_QUOTA_EXCEEDED")) {
+    return { status: 429, body: { error: err.message || "This Gemini API key has reached its usage quota.", code: "GEMINI_QUOTA_EXCEEDED" } };
+  }
+  if (err?.status === 429 || err?.code === "GEMINI_RATE_LIMITED") {
+    return { status: 429, body: { error: err.message || "Gemini is temporarily rate-limiting this key.", code: "GEMINI_RATE_LIMITED" } };
   }
   if (err?.code === "GEMINI_KEY_UNAUTHORIZED") {
     return {

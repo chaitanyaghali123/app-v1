@@ -136,6 +136,7 @@ export async function recordGeminiFailureForAbuse({ deviceId, ip, code }) {
     "GEMINI_PERMISSION_DENIED",
     "GEMINI_BILLING_REQUIRED",
     "GEMINI_QUOTA_EXCEEDED",
+    "GEMINI_RATE_LIMITED",
   ]);
   if (!trackedCodes.has(code)) return;
 
