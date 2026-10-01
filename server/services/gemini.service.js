@@ -244,7 +244,7 @@ export async function decryptGeminiApiKeyRecord(record) {
 }
 
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const GEMINI_MODEL_FALLBACKS = String(
   process.env.GEMINI_MODEL_FALLBACKS || ""
 )
@@ -512,8 +512,8 @@ const GEMINI_LAST_MODEL_PATIENCE_MS = Number(
   process.env.GEMINI_LAST_MODEL_PATIENCE_MS || 30000
 );
 const GEMINI_STREAM_TTFT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_TTFT_TIMEOUT_MS || 5000);
-const GEMINI_STREAM_ATTEMPT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_ATTEMPT_TIMEOUT_MS || 40000);
-const GEMINI_STREAM_HEADER_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_HEADER_TIMEOUT_MS || 8000);
+const GEMINI_STREAM_ATTEMPT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_ATTEMPT_TIMEOUT_MS || 12000);
+const GEMINI_STREAM_HEADER_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_HEADER_TIMEOUT_MS || 4000);
 
 async function requestGemini(apiKey, url, init, {
   operation,
@@ -755,65 +755,24 @@ HARD WORD BUDGET — ${wordLimit} words (headings excluded) — NON-NEGOTIABLE:
 - Write the COMPLETE answer within ${Math.round(wordLimit * 0.98)}–${wordLimit} words — hard minimum ${wordLimit === 1300 ? 1170 : 550}, hard maximum ${wordLimit}. Write at full argument depth with evidence; never condense to an ungraded summary. Cut filler (no restating the question, no padding) rather than evidence.`
     : "";
 
-  return `You are an expert UPSC Mains answer-writer for ${(subjectId || "general studies").toUpperCase()}. Produce a high-scoring, examiner-ready UPSC Mains answer — not a generic essay.
+  return `You are an expert UPSC Mains answer-writer for ${(subjectId || "general studies").toUpperCase()} (${wordLimit ? `${wordLimit} words` : "concise"}).
 
-== DEMAND ANALYSIS (FIRST, BEFORE WRITING) ==
-- Identify the exact demand: the command verb + what is being asked. Then answer ONLY that.
-- If the demand is enumerative ("Discuss the distinctive features of X", "What are the factors/causes/features", "Mention the characteristics"), present your answer as an explicit ENUMERATED LIST of the features/factors with a bolded name + 1–2 concrete examples/facts each — examiners award marks for identifiable points.
-- If the question contains TWO or more separate directives ("Mention the challenges... Discuss the significance...", "Discuss the causes... and suggest suitable measures"), the body MUST answer EVERY part explicitly — allocate body paragraphs to each part in proportion to its demand and never collapse or skip any part.
-- If the demand is comparative ("Compare/Analyse the relationship"), give a clear comparative treatment of both sides.
-- If the demand is directive ("Examine the statement", "Comment"), take a clear, examinable position against the statement.
-
-== DIRECTIVE ROADMAP (match the answer skeleton to the verb) ==
-- **Evaluate / Assess**: name the criteria up front, then weigh evidence criterion-by-criterion, and close with an explicit verdict ("on balance..."). Never just describe.
-- **"To what extent" / "How far"**: open by taking an extent position, argue the magnitude (the extent AND its limits), close with the extent band you determined — a stated conclusion, not an open question.
-- **"Examine the statement" / "Critically examine"**: build evidence FOR the statement then AGAINST it, then your reasoned judgment as the deciding paragraph.
-- **Discuss / Comment**: balanced treatment of both/all sides, weighted 2:1 toward the side your thesis commits to.
-- **Causes... and its consequences/effects**: sequence causes → effects with explicit causal links ("stemming from...", "leading to..."), one paragraph per link group, not a mixed list.
-- **Mention / list verbs** ("Mention", "list the features"): plain enumerated list; each item = bolded term + a one-line factual anchor, no long prose.
-- **Distinguish / differentiate**: point-by-point contrast on shared criteria (criterion | X vs Y), NOT two separate descriptions written back-to-back.
-
-== FORMAT ==
-The answer MUST have exactly three parts:
-
-## **Introduction** (short)
-- ONE compact paragraph: a crisp definition or one-line context, then a single thesis sentence that directly answers the question's directive verb.
-- Open the FIRST clause by naming the question's central entity (e.g. "Himalayan geo-resources", "mangrove ecosystems", "Home Rule Movement") in your own words — anchored on the strongest evidence fact — then compress the verdict/thesis into the closing clause.
-- Never quote or restate the question verbatim, never open with padding ("In modern times", "India is a diverse country").
-
-## **Content** — 6 dense thematic paragraphs (600-word Mains) or 8–9 (1300-word Essay)
-- Each body paragraph = ONE clear argument with a bolded keyword opening and 1–2 concrete supporting facts. Structure: Point → Evidence → Tie-back to the verb.
-- The analysis must follow the question's command verb:
-  * Analyze → cause–effect, dimensions, dynamics.
-  * Discuss / Comment → balanced treatment of both sides.
-  * Critically examine / Examine → evidence for AND against, then a judgment.
-  * Elucidate → explain with characteristics and examples.
-  * Evaluate → criteria-led verdict (use the social/political/economic/cultural lenses if the question names them).
-  * "To what extent" / "How far" → extent bands: argue magnitude, then state the determined extent.
-  * Distinguish / Differentiate → point-by-point contrast on shared criteria.
-  * Describe / "distinctive features" / "characteristics" → numbered feature-by-feature list, each with example.
-- Use exam salting: names, dates, Acts, Commissions, schemes, institutions, case data — the specifics that separate a 10/15-marker from a list.
-
-## **Conclusion** — ONE short paragraph
-- A balanced verdict (NOT a summary) tied to the specific entity/concept named in the question (e.g. conclude on "Hampi / Vijayanagara architecture", not "the past") + one short forward-looking line ("further reforms required", "sustained investment needed"). 2–3 sentences max.
+== HOW TO ANSWER ==
+- Match structure to the command verb: enumerations become bolded point lists; "compare/distinguish" becomes point-by-point contrast; "examine/critically examine" argues FOR then AGAINST with a final judgment; "to what extent" states a determined extent; "evaluate" weighs criteria and closes with a verdict; "causes→effects" sequences with explicit causal links; multiple directives are all answered in proportion.
+- Use Introduction → Body → Conclusion exactly. Body = one argument per paragraph: bolded keyword opening + 1–2 concrete supporting facts, following the verb's logic. Conclusion = 2–3 sentence balanced verdict, no summary, no restating the question.
+- Sprinkle exam specifics from the evidence: names, dates, Acts, schemes, institutions, case data.
 
 == EVIDENCE RULES ==
-- SOURCE-LOCK ENFORCEMENT (MANDATORY CONTRACT): the evidence chunks below are the factual boundary of this answer. Every factual claim, statistic, percentage, date, named study, institution, example, historical event, or causal assertion you write MUST be directly supported by the chunks — your role is organization, synthesis and language ONLY. Never: infer a statistic from a source; generalize a study beyond its stated scope; convert historical evidence into a present-day claim; invent examples; splice fragments from different chunks into a composite fact; or add pretrained "known facts" — even facts you are confident are true. Mine EVERY chunk; if a number, year, name, or quote is not certain, OMIT it — precision beats breadth. Never fabricate citations, studies, or sources.
-- PRESERVE EVIDENCE SCOPE: historical evidence keeps its time period ("NSSO 55th Round data from 1999–2000 indicated…"); study evidence keeps its population/setting ("urban SCs in that survey", not "all SCs today").
-- ATTRIBUTION DISCIPLINE: a statistic or study indicates, illustrates, or corroborates — it does NOT by itself prove a broad causal conclusion ("illustrating the persistence of caste-linked economic disparities", not "proving that urban markets replicate caste advantages"). Never present correlation as demonstrated causation.
-- UNSUPPORTED POINTS: if a requested analytical point is not supported by the chunks, express it cautiously as an explicit analytical inference (clearly milder than an asserted fact) or omit the specific factual claim. Do NOT manufacture supporting evidence.
-- DO NOT MANUFACTURE SPECIFICITY: never attribute a scheme, technique, motive, or causation ("introduced X", "first to", exact origins) unless the evidence establishes it; prefer a broader, well-supported statement over a weakly supported attribution; avoid absolutes ("mortarless", "literally") unless the source confirms them.
-- VERIFIED EXAMPLES: for "with examples" demands, the body MUST be led by concrete, named examples from the chunks — 3–5 well-supported examples beat 10 uncertain ones; otherwise omit rather than go vague. For amalgamation / past-vs-contemporary questions, weave the contrast inside each natural thematic section with named examples ("Continuity with Earlier Southern Traditions") — never mechanical "PAST -> CONTEMPORARY" label pairs. Give the majority of examples from the SUBJECT being asked about, not its broad background.
-- ORIGINALITY: rephrase ALL explanatory prose in your own words — never copy chunk prose word-for-word; you may keep dates, names, facts, and figures exactly as stated.
+- SOURCE-LOCK (MANDATORY): the chunks below are the factual boundary. Every fact, statistic, date, name, study, example or causal claim MUST come from them. Never infer, generalize, convert historical evidence to present-day, splice fragments into composite facts, or add pretrained "known facts" — even confident ones. If a detail is uncertain, OMIT it. Never fabricate sources.
+- PRESERVE SCOPE: keep each chunk's time period and population ("NSSO 55th Round (1999–2000) indicated…", "urban SCs in that survey", not "all SCs today").
+- ATTRIBUTION: figures/studies illustrate or corroborate — never "prove" causation; avoid absolutes unless the source confirms them.
+- UNSUPPORTED POINTS: express cautiously as an explicit analytical inference, or omit — do not manufacture evidence.
+- EXAMPLES: for "with examples", lead the body with named evidence-based examples (3–5 solid beats 10 vague); majority from the asked subject, not its background.
+- ORIGINALITY: rephrase all prose in your own words; keep dates, names, figures exactly as stated; never copy chunk sentences.
 
-== LANGUAGE & PRESENTATION ==
-1. Formal, impersonal, crisp exam English; active sentences.
-2. Bold key terms and facts as on-paper underlining would (e.g. **regional planning**, **Planning Commission**).
-3. Minimal bullets — real Mains answers are paragraphs. Block numbered lists are allowed for 250-word enumerative demands ("list features/factors") and management-measure parts; for 150-word answers prefer dense prose with bolded keywords inline over block lists.
-4. Markdown headers \`## **Introduction**\`, optional \`## **<short thematic heading>**\` for the body, \`## **Conclusion**\`. Headings are short and do not count toward the word limit.
-5. No citations, no [EVIDENCE X], no footnotes, no URLs, no LaTeX; use Unicode arrows/symbols (→, ×, ≤).
-6. If an evidence chunk contains an ASCII/box diagram, describe its structure in your own words in simple text — do not reproduce raw box-drawing characters.
-7. Separate every heading and paragraph with a blank line.
+== FORMAT ==
+- \`## **Introduction**\` / \`## **<short thematic heading>**\` / \`## **Conclusion**\`. Headings excluded from word count.
+- Formal, crisp, active English; bold key terms (**Planning Commission**); prose paragraphs (block lists only for enumerative demands); no citations, [EVIDENCE X], URLs, or LaTeX — Unicode arrows OK; blank line between headings/paragraphs.
 
 ${wordLimitInstruction}
 
@@ -1086,7 +1045,7 @@ export async function proxyGeminiCall(apiKey, options) {
 
   const requestBody = JSON.stringify({
     systemInstruction: {
-      parts: [{ text: "You are an expert UPSC Mains answer-writer. Follow the complete UPSC Mains answer instructions in the user message exactly: format (## **Introduction** / ## **Content** / ## **Conclusion**), demand analysis, directive roadmap, evidence rules (SOURCE-LOCK ENFORCEMENT, verified examples, scope preservation), language rules, and the HARD WORD BUDGET. Every instruction there is authoritative — obey it in full. The retrieved chunks are the factual boundary: you may only organize, synthesize, and write in your own words — never add facts not present in the chunks." }],
+      parts: [{ text: "You are an expert UPSC Mains answer-writer. Obey the instructions in the user message exactly: the verb-matched answer structure, the three-part format (## **Introduction** / ## **Content** / ## **Conclusion**), the SOURCE-LOCK evidence rules, and the HARD WORD BUDGET. The retrieved chunks are the factual boundary: organize, synthesize, and write in your own words only — never add facts absent from the chunks." }],
     },
     safetySettings: [
       { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
@@ -1213,6 +1172,13 @@ export async function proxyGeminiCall(apiKey, options) {
 
       if (!attemptResponse.ok) {
         const err = await buildGeminiError(attemptResponse, "stream_answer");
+        console.error(
+          `[gemini] stream_answer HTTP failure: model=${getGeminiModelNameFromUrl(modelUrl)} ` +
+            `http=${err.originalError?.httpStatus} ` +
+            `status=${err.originalError?.apiStatus || "unknown"} ` +
+            `code=${err.originalError?.apiCode || "unknown"} ` +
+            `message=${err.originalError?.apiMessage || err.message}`
+        );
         const busy = GEMINI_MODEL_BUSY_STATUSES.has(err.status) || err.status >= 500;
         if (busy && !isLastModel) {
           noteModelBusy(modelUrl);

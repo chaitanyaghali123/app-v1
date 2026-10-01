@@ -186,9 +186,24 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
         break;
       }
       case "error": {
-        throw new Error(
-          (data.error as string) || "Gemini request failed. Please try again."
-        );
+        const apiMessage =
+          typeof data.apiMessage === "string" ? (data.apiMessage as string) : "";
+        const apiStatus =
+          typeof data.apiStatus === "string" ? (data.apiStatus as string) : "";
+        const httpStatus =
+          typeof data.httpStatus === "number" ? (data.httpStatus as number) : null;
+
+        const message =
+          apiMessage ||
+          (data.error as string) ||
+          (data.detail as string) ||
+          "Gemini request failed. Please try again.";
+
+        const diagnostic = [httpStatus ? `HTTP ${httpStatus}` : "", apiStatus]
+          .filter(Boolean)
+          .join(" · ");
+
+        throw new Error(diagnostic ? `${message} (${diagnostic})` : message);
       }
       default:
         break;
