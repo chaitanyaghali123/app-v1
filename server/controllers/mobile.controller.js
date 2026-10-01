@@ -1466,10 +1466,10 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
     : isEssay
     ? 2600
     : mode === "limited" && retrievalMode === "ranked"
-    ? 720
+    ? 850
     : 4600;
   const cappedTargetTokens = wordLimit
-    ? Math.min(targetTokens, Math.round(wordLimit * 1.4))
+    ? Math.min(targetTokens, Math.round(wordLimit * 1.55))
     : targetTokens;
 
   const rawBudgetedChunks =
@@ -1712,13 +1712,16 @@ export async function getMobileAnswer(req, res) {
       contextChars,
     });
     console.log(
-      `[mobile-answer] success: prepareMs=${prepareMs} genMs=${Date.now() - startedAt - prepareMs} totalMs=${Date.now() - startedAt} tokens=${result.tokenCount || 0}`
+      `[mobile-answer] success: prepareMs=${prepareMs} genMs=${Date.now() - startedAt - prepareMs} totalMs=${Date.now() - startedAt} tokens=${result.tokenCount || 0} words=${result.wordCount || 0} truncated=${Boolean(result.truncated)}`
     );
     res.write(
       `data: ${JSON.stringify({
         type: "done",
         answer: result.answer,
         tokenCount: result.tokenCount,
+        wordCount: result.wordCount,
+        truncated: Boolean(result.truncated),
+        finishReason: result.finishReason || null,
         sentenceScores: result.sentenceScores,
         chunkScores: result.chunkScores,
       })}\n\n`

@@ -512,7 +512,7 @@ const GEMINI_LAST_MODEL_PATIENCE_MS = Number(
   process.env.GEMINI_LAST_MODEL_PATIENCE_MS || 30000
 );
 const GEMINI_STREAM_TTFT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_TTFT_TIMEOUT_MS || 5000);
-const GEMINI_STREAM_ATTEMPT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_ATTEMPT_TIMEOUT_MS || 12000);
+const GEMINI_STREAM_ATTEMPT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_ATTEMPT_TIMEOUT_MS || 20000);
 const GEMINI_STREAM_HEADER_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_HEADER_TIMEOUT_MS || 4000);
 
 async function requestGemini(apiKey, url, init, {
@@ -752,7 +752,10 @@ function buildRagPrompt({ question, chunks, subjectId }) {
     ? `
 HARD WORD BUDGET — ${wordLimit} words (headings excluded) — NON-NEGOTIABLE:
 - ${wordLimit === 1300 ? "Introduction = 100–120 words, Body = ~1080 words, Conclusion = 90–100 words, using 8–9 body paragraphs." : "Introduction = 55–70 words, Body = ~480 words, Conclusion = 45–60 words, using 6 body paragraphs."}
-- Write the COMPLETE answer within ${Math.round(wordLimit * 0.98)}–${wordLimit} words — hard minimum ${wordLimit === 1300 ? 1170 : 550}, hard maximum ${wordLimit}. Write at full argument depth with evidence; never condense to an ungraded summary. Cut filler (no restating the question, no padding) rather than evidence.`
+- Write the COMPLETE answer within ${Math.round(wordLimit * 0.98)}–${wordLimit} words — hard minimum ${wordLimit === 1300 ? 1170 : 550}, hard maximum ${wordLimit}. Write at full argument depth with evidence; never condense to an ungraded summary. Cut filler (no restating the question, no padding) rather than evidence.
+- COMPLETION FIRST: finish the entire answer, including the Conclusion, before stopping. Never end mid-sentence or mid-paragraph. If you feel the budget tightening, compress wording (shorter clauses, fewer adjectives, drop throat-clearing) rather than omitting the conclusion or trailing argument.
+- NO REPETITION: state each provision, example, statistic, and argument exactly once. Do not re-explain a concept already defined or evidenced earlier, and do not restate a point in the conclusion that the body has already established. Never open a paragraph by defining a basic textbook term ("Fundamental rights are rights given and protected by the Constitution…") unless the question explicitly asks for a definition.
+- NO FILLER: skip generic praise, moral framing, and "it is important to note" throat-clearing. Every sentence must advance the argument or supply evidence.`
     : "";
 
   return `You are an expert UPSC Mains answer-writer for ${(subjectId || "general studies").toUpperCase()} (${wordLimit ? `${wordLimit} words` : "concise"}).
@@ -1282,10 +1285,16 @@ export async function proxyGeminiCall(apiKey, options) {
 
   if (finishReason && finishReason !== "STOP") {
     if (finishReason === "MAX_TOKENS" && cleaned.length > 0) {
-      console.warn(`[gemini] answer truncated at MAX_TOKENS (${tokenCount} output tokens), returning partial answer`);
+      console.warn(`[gemini] answer truncated at MAX_TOKENS (${tokenCount} output tokens), returning partial answer with truncated flag`);
+      const enforcedPartial = enforceWordLimit(cleaned, answerWordLimit);
       return {
-        answer: `${cleaned}\n\n_[Answer truncated — Gemini hit its token limit while writing. Ask again with a more specific question.]_`,
+        answer: enforcedPartial.answer,
         tokenCount,
+        wordCount: enforcedPartial.wordCount,
+        wordLimit: answerWordLimit || null,
+        wordLimitClamped: enforcedPartial.clamped,
+        truncated: true,
+        finishReason,
       };
     }
     throw new GeminiApiError({

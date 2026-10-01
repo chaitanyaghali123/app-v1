@@ -433,7 +433,7 @@ export default function App() {
         subject: activeSubject.id,
         maxChunks: 4,
         maxContextChars: 10000,
-        targetTokens: 720,
+        targetTokens: 850,
         onStatus: setStatus,
         onToken: (token) => {
           setAnswer(repairMojibake(token));

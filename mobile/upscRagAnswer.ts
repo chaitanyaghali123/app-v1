@@ -108,7 +108,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
         subject: options.subject,
         maxChunks: options.maxChunks ?? (isEssay ? 35 : 4),
         maxContextChars: options.maxContextChars ?? (isEssay ? 60000 : 10000),
-        targetTokens: options.targetTokens ?? (isEssay ? 2600 : 720),
+        targetTokens: options.targetTokens ?? (isEssay ? 2600 : 850),
         deviceId: await getOrCreateDeviceId(),
       }),
     });
@@ -146,6 +146,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
   let sentenceScores: { sentence: string; score: number; bestChunkId: string; verdict: string }[] = [];
   let chunkScores: number[] = [];
   let generationReason: string | null = null;
+  let truncatedAnswer = false;
   let sawToken = false;
 
   const processStreamEvent = (raw: string) => {
@@ -182,6 +183,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
           chunkScores = data.chunkScores as number[];
         }
         generationReason = typeof data.generationReason === "string" ? data.generationReason : null;
+        truncatedAnswer = data.truncated === true;
         options.onToken?.(fullAnswer);
         break;
       }
@@ -270,8 +272,12 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
     );
   }
 
+  const finalAnswer = truncatedAnswer
+    ? `${fullAnswer.trimEnd()}\n\n*_Answer shortened to fit the response limit._`
+    : fullAnswer;
+
   return {
-    answer: fullAnswer,
+    answer: finalAnswer,
     chunks,
     chunkCount: ragContext?.chunkCount ?? chunks.length,
     tokenCount,
