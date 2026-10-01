@@ -24,8 +24,8 @@
 //  - Chunks are never dropped, merged, or reordered across groups, so evidence
 //    coverage is identical to before. Only the order WITHIN a contiguous
 //    same-source run changes, and only when such a run exists.
-//  - page_number is not surfaced by the retrieval layer, so chunk_index is the
-//    document-order key. See NOTE at the bottom.
+//  - page_number is carried when the retrieval layer provides it; chunk_index
+//    remains the document-order key. See NOTE at the bottom.
 
 // Two chunks are treated as contiguous when they come from the same source and
 // their chunk_index values differ by no more than this. Consecutive chunks are
@@ -33,6 +33,7 @@
 const MAX_CONTIGUOUS_INDEX_GAP = 2;
 
 function asInt(value) {
+  if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : null;
 }
@@ -161,7 +162,7 @@ export function formatEvidenceChunks(chunks, layout, options = {}) {
       const bits = [];
       const src = shortSource(info.source);
       if (src) bits.push(src);
-      if (info.page != null) bits.push(`p.${info.page}`);
+      if (info.page != null && info.page > 0) bits.push(`p.${info.page}`);
       else if (info.chunkIndex != null) bits.push(`chunk ${info.chunkIndex}`);
       if (info.heading) bits.push(info.heading);
       else if (info.topic) bits.push(info.topic);
@@ -175,9 +176,9 @@ export function formatEvidenceChunks(chunks, layout, options = {}) {
     .join("\n\n");
 }
 
-// The one part of the hierarchy picture we cannot show the model: the retrieval
-// layer does not surface page_number, even though the column exists in Postgres
-// (upsc_chunks_history.page_number) and db.service.js carries the migration.
-// Restoring it means changing the Python vector_server response, not this file.
-// chunk_index is monotonic within a document, so document order is still
-// recoverable without it.
+// page_number is available: vector_server returns it in chunk metadata and the
+// column exists in Postgres (upsc_chunks_history.page_number). The controller's
+// metadata mapper used to rebuild each chunk field-by-field and drop it; that
+// mapper now passes page_number through, so the header renders "p.N" when known
+// and falls back to "chunk N" otherwise. chunk_index remains the document-order
+// key either way.

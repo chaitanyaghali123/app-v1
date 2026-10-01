@@ -1142,7 +1142,7 @@ async function queryPostgresSourceFileChunks({ sourceFile, maxChunks }) {
   try {
     let result = await pool.query(
       `
-      SELECT id, chunk, topic, difficulty, source_file, chunk_index
+      SELECT id, chunk, topic, difficulty, source_file, chunk_index, page_number
       FROM upsc_chunks
       WHERE source_file = $1
       ORDER BY COALESCE(chunk_index, 0), id
@@ -1154,7 +1154,7 @@ async function queryPostgresSourceFileChunks({ sourceFile, maxChunks }) {
     if (result.rows.length === 0 && sourceBaseName) {
       result = await pool.query(
         `
-        SELECT id, chunk, topic, difficulty, source_file, chunk_index
+        SELECT id, chunk, topic, difficulty, source_file, chunk_index, page_number
         FROM upsc_chunks
         WHERE source_file ILIKE $1
         ORDER BY COALESCE(chunk_index, 0), id
@@ -1172,6 +1172,7 @@ async function queryPostgresSourceFileChunks({ sourceFile, maxChunks }) {
         difficulty: row.difficulty,
         source_file: row.source_file,
         chunk_index: row.chunk_index,
+        page_number: row.page_number ?? null,
         source: "postgres-file-coverage",
       },
     }));
@@ -1203,6 +1204,7 @@ async function queryPostgresExpandedChunks({ question, maxChunks, sourceFiles, s
         difficulty,
         source_file,
         chunk_index,
+        page_number,
         ts_rank(search_vector, websearch_to_tsquery('english', $1)) AS score
       FROM upsc_chunks
       WHERE search_vector @@ websearch_to_tsquery('english', $1)
@@ -1221,6 +1223,7 @@ async function queryPostgresExpandedChunks({ question, maxChunks, sourceFiles, s
         difficulty: row.difficulty,
         source_file: row.source_file,
         chunk_index: row.chunk_index,
+        page_number: row.page_number ?? null,
         source: "postgres-expanded",
         search_score: Number(row.score || 0),
       },
@@ -1386,6 +1389,7 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
           difficulty: c.metadata?.difficulty || "",
           source_file: c.metadata?.source_file || "",
           chunk_index: c.metadata?.chunk_index || 0,
+          page_number: c.metadata?.page_number ?? null,
           heading_hierarchy: c.metadata?.heading_hierarchy || [],
           source: "vector_server",
           vector_score: c.vector_score ?? 0,
