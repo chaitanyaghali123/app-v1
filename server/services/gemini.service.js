@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { verifyGrounding } from "./grounding.service.js";
 
 const ENCRYPTION_ALGORITHM = "aes-256-gcm";
 const KEY_LENGTH = 32;
@@ -1283,10 +1284,27 @@ export async function proxyGeminiCall(apiKey, options) {
 
   const cleaned = restoreExactDiagrams(cleanModelOutput(fullText), chunks);
 
+  // Programmatic source-lock check against the exact chunks we sent.
+  const grounding = verifyGrounding(cleaned, chunks, {
+    enforceLowSupport: process.env.GEMINI_GROUNDING_ENFORCE_LOW_SUPPORT === "true",
+  });
+  if (grounding.removed.length || grounding.flagged.length) {
+    console.warn(
+      `[gemini] grounding: support=${grounding.supportAvg} removed=${grounding.removed.length} flagged=${grounding.flagged.length} sentences=${grounding.total}`
+    );
+    for (const r of grounding.removed) {
+      console.warn(`[gemini] grounding removed (${r.reason}): "${r.text}"`);
+    }
+    for (const f of grounding.flagged) {
+      console.warn(`[gemini] grounding flagged [${f.support}]: "${f.text}"`);
+    }
+  }
+  const groundedText = grounding.answer;
+
   if (finishReason && finishReason !== "STOP") {
-    if (finishReason === "MAX_TOKENS" && cleaned.length > 0) {
+    if (finishReason === "MAX_TOKENS" && groundedText.length > 0) {
       console.warn(`[gemini] answer truncated at MAX_TOKENS (${tokenCount} output tokens), returning partial answer with truncated flag`);
-      const enforcedPartial = enforceWordLimit(cleaned, answerWordLimit);
+      const enforcedPartial = enforceWordLimit(groundedText, answerWordLimit);
       return {
         answer: enforcedPartial.answer,
         tokenCount,
@@ -1295,6 +1313,12 @@ export async function proxyGeminiCall(apiKey, options) {
         wordLimitClamped: enforcedPartial.clamped,
         truncated: true,
         finishReason,
+        grounding: {
+          supportAvg: grounding.supportAvg,
+          removed: grounding.removed.length,
+          flagged: grounding.flagged.length,
+          grounded: grounding.grounded,
+        },
       };
     }
     throw new GeminiApiError({
@@ -1321,7 +1345,7 @@ export async function proxyGeminiCall(apiKey, options) {
     `[gemini] textgen: model=${servedModel}, ttftMs=${firstTokenAt ? firstTokenAt - proxyStartedAt : -1} genMs=${Date.now() - proxyStartedAt} outputTokens=${tokenCount} tokPerSec=${tokenCount > 0 && Date.now() - proxyStartedAt > 0 ? Math.round((tokenCount / Math.max(1, Date.now() - proxyStartedAt)) * 1000) : 0}`
   );
 
-  const enforced = enforceWordLimit(cleaned, answerWordLimit);
+  const enforced = enforceWordLimit(groundedText, answerWordLimit);
   if (enforced.clamped) {
     console.warn(
       `[gemini] word-limit clamp: ${enforced.wordCount} words (limit ${answerWordLimit}) after enforcing`
@@ -1343,6 +1367,12 @@ export async function proxyGeminiCall(apiKey, options) {
     wordCount: enforced.wordCount,
     wordLimit: answerWordLimit || null,
     wordLimitClamped: enforced.clamped,
+    grounding: {
+      supportAvg: grounding.supportAvg,
+      removed: grounding.removed.length,
+      flagged: grounding.flagged.length,
+      grounded: grounding.grounded,
+    },
   };
 }
 

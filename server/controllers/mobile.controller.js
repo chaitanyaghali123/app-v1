@@ -1712,7 +1712,7 @@ export async function getMobileAnswer(req, res) {
       contextChars,
     });
     console.log(
-      `[mobile-answer] success: prepareMs=${prepareMs} genMs=${Date.now() - startedAt - prepareMs} totalMs=${Date.now() - startedAt} tokens=${result.tokenCount || 0} words=${result.wordCount || 0} truncated=${Boolean(result.truncated)}`
+      `[mobile-answer] success: prepareMs=${prepareMs} genMs=${Date.now() - startedAt - prepareMs} totalMs=${Date.now() - startedAt} tokens=${result.tokenCount || 0} words=${result.wordCount || 0} truncated=${Boolean(result.truncated)} grounding=${JSON.stringify(result.grounding || null)}`
     );
     res.write(
       `data: ${JSON.stringify({
@@ -1722,6 +1722,7 @@ export async function getMobileAnswer(req, res) {
         wordCount: result.wordCount,
         truncated: Boolean(result.truncated),
         finishReason: result.finishReason || null,
+        grounding: result.grounding || null,
         sentenceScores: result.sentenceScores,
         chunkScores: result.chunkScores,
       })}\n\n`

@@ -147,6 +147,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
   let chunkScores: number[] = [];
   let generationReason: string | null = null;
   let truncatedAnswer = false;
+  let groundingReport: { supportAvg?: number; removed?: number; flagged?: number; grounded?: boolean } | null = null;
   let sawToken = false;
 
   const processStreamEvent = (raw: string) => {
@@ -184,6 +185,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
         }
         generationReason = typeof data.generationReason === "string" ? data.generationReason : null;
         truncatedAnswer = data.truncated === true;
+        groundingReport = (data.grounding as { supportAvg?: number; removed?: number; flagged?: number; grounded?: boolean }) || null;
         options.onToken?.(fullAnswer);
         break;
       }
@@ -272,8 +274,15 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
     );
   }
 
-  const finalAnswer = truncatedAnswer
-    ? `${fullAnswer.trimEnd()}\n\n*_Answer shortened to fit the response limit._`
+  const notes: string[] = [];
+  if (truncatedAnswer) notes.push("*_Answer shortened to fit the response limit._");
+  if (groundingReport && (groundingReport.removed || 0) > 0) {
+    notes.push(
+      `*_${groundingReport.removed} unsupported detail${(groundingReport.removed || 0) > 1 ? "s" : ""} removed to keep this answer source-grounded._`
+    );
+  }
+  const finalAnswer = notes.length
+    ? `${fullAnswer.trimEnd()}\n\n${notes.join("\n\n")}`
     : fullAnswer;
 
   return {
