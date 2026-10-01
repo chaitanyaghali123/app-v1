@@ -147,6 +147,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
   let chunkScores: number[] = [];
   let generationReason: string | null = null;
   let truncatedAnswer = false;
+  let timedOutAnswer = false;
   let groundingReport: { supportAvg?: number; removed?: number; flagged?: number; grounded?: boolean } | null = null;
   let sawToken = false;
 
@@ -185,6 +186,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
         }
         generationReason = typeof data.generationReason === "string" ? data.generationReason : null;
         truncatedAnswer = data.truncated === true;
+        timedOutAnswer = data.timedOut === true;
         groundingReport = (data.grounding as { supportAvg?: number; removed?: number; flagged?: number; grounded?: boolean }) || null;
         options.onToken?.(fullAnswer);
         break;
@@ -275,7 +277,13 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
   }
 
   const notes: string[] = [];
-  if (truncatedAnswer) notes.push("*_Answer shortened to fit the response limit._");
+  if (timedOutAnswer) {
+    notes.push(
+      "*_This answer was cut short by a generation timeout. What you see is the complete part that finished before the limit — the ending may be incomplete._"
+    );
+  } else if (truncatedAnswer) {
+    notes.push("*_Answer shortened to fit the response limit._");
+  }
   if (groundingReport && (groundingReport.removed || 0) > 0) {
     notes.push(
       `*_${groundingReport.removed} unsupported detail${(groundingReport.removed || 0) > 1 ? "s" : ""} removed to keep this answer source-grounded._`

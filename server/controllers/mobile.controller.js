@@ -1721,6 +1721,7 @@ export async function getMobileAnswer(req, res) {
         tokenCount: result.tokenCount,
         wordCount: result.wordCount,
         truncated: Boolean(result.truncated),
+        timedOut: Boolean(result.timedOut),
         finishReason: result.finishReason || null,
         grounding: result.grounding || null,
         sentenceScores: result.sentenceScores,

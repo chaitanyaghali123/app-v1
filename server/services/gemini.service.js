@@ -515,6 +515,16 @@ const GEMINI_LAST_MODEL_PATIENCE_MS = Number(
 const GEMINI_STREAM_TTFT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_TTFT_TIMEOUT_MS || 5000);
 const GEMINI_STREAM_ATTEMPT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_ATTEMPT_TIMEOUT_MS || 20000);
 const GEMINI_STREAM_HEADER_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_HEADER_TIMEOUT_MS || 4000);
+// Minimum characters required to treat a timed-out stream as a usable partial
+// answer rather than surfacing an error. Below this we have too little content
+// to show the user, so a clean error is the better outcome.
+const MIN_USABLE_PARTIAL_CHARS = Number(process.env.GEMINI_MIN_USABLE_PARTIAL_CHARS || 200);
+// TEST-ONLY hook. When set, it shortens the per-attempt generation budget so
+// the timeout/recovery path can be exercised deterministically without waiting
+// for real upstream degradation. Never set in production.
+const GEMINI_TEST_ABORT_AFTER_MS = process.env.GEMINI_TEST_ABORT_AFTER_MS
+  ? Number(process.env.GEMINI_TEST_ABORT_AFTER_MS)
+  : 0;
 
 async function requestGemini(apiKey, url, init, {
   operation,
@@ -749,14 +759,19 @@ function buildRagPrompt({ question, chunks, subjectId }) {
 
   const wordLimit = detectWordLimit(question, subjectId);
 
+  const mainsStructure =
+    "Introduction (~55–70 words) → Body with 6 distinct substantive dimensions (~60–70 words each) → Conclusion (~45–60 words).";
+  const essayStructure =
+    "Introduction = 100–120 words, Body = ~1080 words, Conclusion = 90–100 words, using 8–9 body paragraphs.";
   const wordLimitInstruction = wordLimit
     ? `
-HARD WORD BUDGET — ${wordLimit} words (headings excluded) — NON-NEGOTIABLE:
-- ${wordLimit === 1300 ? "Introduction = 100–120 words, Body = ~1080 words, Conclusion = 90–100 words, using 8–9 body paragraphs." : "Introduction = 55–70 words, Body = ~480 words, Conclusion = 45–60 words, using 6 body paragraphs."}
-- Write the COMPLETE answer within ${Math.round(wordLimit * 0.98)}–${wordLimit} words — hard minimum ${wordLimit === 1300 ? 1170 : 550}, hard maximum ${wordLimit}. Write at full argument depth with evidence; never condense to an ungraded summary. Cut filler (no restating the question, no padding) rather than evidence.
-- COMPLETION FIRST: finish the entire answer, including the Conclusion, before stopping. Never end mid-sentence or mid-paragraph. If you feel the budget tightening, compress wording (shorter clauses, fewer adjectives, drop throat-clearing) rather than omitting the conclusion or trailing argument.
-- NO REPETITION: state each provision, example, statistic, and argument exactly once. Do not re-explain a concept already defined or evidenced earlier, and do not restate a point in the conclusion that the body has already established. Never open a paragraph by defining a basic textbook term ("Fundamental rights are rights given and protected by the Constitution…") unless the question explicitly asks for a definition.
-- NO FILLER: skip generic praise, moral framing, and "it is important to note" throat-clearing. Every sentence must advance the argument or supply evidence.`
+LENGTH TARGET — approximately ${wordLimit === 1300 ? "1170–1300" : "500–600"} words (headings excluded). This is a soft target: never sacrifice completeness to hit a number.
+- Structure: ${wordLimit === 1300 ? essayStructure : mainsStructure}
+- COMPLETE THE ENTIRE ANSWER: finish every dimension and the Conclusion before stopping. Never truncate and never end mid-sentence. If the budget tightens, compress wording (shorter clauses, fewer adjectives) rather than cutting a dimension or the conclusion.
+- EACH BODY DIMENSION MUST BE DISTINCT: every dimension carries a separate argument directly relevant to the question, supported by its own evidence from the chunks. Do not repeat an earlier argument in different words.
+- If the evidence does not support a dimension, do NOT invent information to fill it — substitute a different dimension the evidence does support.
+- NO REPETITION: state each provision, example, statistic, and argument exactly once. Do not lean repeatedly on the same framing terms (e.g. "development", "equity", "vulnerability", "inclusive growth", "social progress") — vary the vocabulary and let each term carry a distinct idea.
+- NO FILLER: no generic praise, no moral framing, no "it is important to note" throat-clearing, and no textbook-definition openers unless the question explicitly asks for a definition. Every sentence must advance a distinct argument or supply its evidence.`
     : "";
 
   return `You are an expert UPSC Mains answer-writer for ${(subjectId || "general studies").toUpperCase()} (${wordLimit ? `${wordLimit} words` : "concise"}).
@@ -1029,6 +1044,17 @@ export async function proxyGeminiCall(apiKey, options) {
   const { question, chunks, targetTokens, mode, onToken, onStatus } = options;
   const proxyStartedAt = Date.now();
   let firstTokenAt = 0;
+  // --- stream timing instrumentation (diagnostic only; no behavior change) ---
+  let lastTokenAt = 0;
+  let chunkCount = 0;
+  let lastGapMs = 0;
+  let maxGapMs = 0;
+  // Best partial output seen from any model in the chain. Retained so that a
+  // mid-generation timeout on a later attempt can still yield a usable answer.
+  let bestPartial = { text: "", model: "", elapsedMs: 0, estTokens: 0 };
+  // Set when the model chain was exhausted by timeouts but usable partial text
+  // was retained, so the caller can label the answer as incomplete.
+  let timeoutPartial = false;
 
   onStatus?.("writing mains answer");
   const rawSubjectId = options.subjectId || (chunks?.[0]?.subject_id) || null;
@@ -1087,7 +1113,14 @@ export async function proxyGeminiCall(apiKey, options) {
       const parts = data?.candidates?.[0]?.content?.parts || [];
       const text = parts.map((part) => part?.text || "").join("");
       if (text) {
-        if (!firstTokenAt) firstTokenAt = Date.now();
+        const nowMs = Date.now();
+        if (!firstTokenAt) firstTokenAt = nowMs;
+        if (lastTokenAt) {
+          lastGapMs = nowMs - lastTokenAt;
+          if (lastGapMs > maxGapMs) maxGapMs = lastGapMs;
+        }
+        lastTokenAt = nowMs;
+        chunkCount += 1;
         fullText += text;
         if (onToken && fullText.length - lastEmitted >= STREAM_FLUSH_CHARS) {
           lastEmitted = fullText.length;
@@ -1118,12 +1151,19 @@ export async function proxyGeminiCall(apiKey, options) {
     }
   };
 
+  // Model chain. Wrapped so that a hard failure (quota/HTTP/network) on a later
+  // model can still fall back to text already captured from an earlier attempt.
+  try {
   for (let modelIndex = 0; modelIndex < urls.length; modelIndex++) {
     const modelUrl = urls[modelIndex];
     const isLastModel = modelIndex === urls.length - 1;
     const attemptStart = Date.now();
+    const testAbortApplies =
+      GEMINI_TEST_ABORT_AFTER_MS > 0 &&
+      (process.env.GEMINI_TEST_ABORT_PRIMARY_ONLY !== "true" || modelIndex === 0);
+    const attemptBudgetMs = testAbortApplies ? GEMINI_TEST_ABORT_AFTER_MS : GEMINI_STREAM_ATTEMPT_TIMEOUT_MS;
     const ttftDeadline = attemptStart + GEMINI_STREAM_TTFT_TIMEOUT_MS;
-    const attemptDeadline = attemptStart + GEMINI_STREAM_ATTEMPT_TIMEOUT_MS;
+    const attemptDeadline = attemptStart + attemptBudgetMs;
     const controller = new AbortController();
 
     buffer = "";
@@ -1135,6 +1175,10 @@ export async function proxyGeminiCall(apiKey, options) {
     thoughtTokenCount = 0;
     totalTokenCount = 0;
     firstTokenAt = 0;
+    lastTokenAt = 0;
+    chunkCount = 0;
+    lastGapMs = 0;
+    maxGapMs = 0;
 
     try {
       const headerMs = Math.min(GEMINI_STREAM_HEADER_TIMEOUT_MS, GEMINI_STREAM_TTFT_TIMEOUT_MS);
@@ -1156,6 +1200,11 @@ export async function proxyGeminiCall(apiKey, options) {
       } catch (fetchErr) {
         clearTimeout(headerTimer);
         if (fetchErr?.name === "AbortError") {
+          console.warn(
+            `[gemini] ABORT_METRIC abortReason=HEADER_TIMEOUT model=${getGeminiModelNameFromUrl(modelUrl)} ` +
+              `modelIndex=${modelIndex + 1}/${urls.length} isLastModel=${isLastModel} elapsedMs=${Date.now() - attemptStart} ` +
+              `budgetMs=${headerMs} chunks=0 chars=0 estOutputTokens=0 lastTokenAgeMs=null maxGapMs=0`
+          );
           console.warn(`[gemini] stream_answer header timeout (>${headerMs}ms) on ${getGeminiModelNameFromUrl(modelUrl)}`);
           if (isLastModel) {
             throw new GeminiApiError({
@@ -1235,8 +1284,20 @@ export async function proxyGeminiCall(apiKey, options) {
       console.log(
         `[gemini] stream_answer attempt: ${servedModel} ttftMs=${firstTokenAt ? firstTokenAt - attemptStart : "none"} streamMs=${Date.now() - attemptStart}`
       );
+      console.log(
+        `[gemini] COMPLETE_METRIC model=${servedModel} modelIndex=${modelIndex + 1}/${urls.length} ` +
+          `ttftMs=${firstTokenAt ? firstTokenAt - attemptStart : "none"} elapsedMs=${Date.now() - attemptStart} ` +
+          `chunks=${chunkCount} chars=${fullText.length} outputTokens=${tokenCount} finishReason=${finishReason || "STOP"} ` +
+          `maxGapMs=${maxGapMs} lastTokenAgeMs=${lastTokenAt ? Date.now() - lastTokenAt : "n/a"}`
+      );
 
       if (ttftAborted) {
+        console.warn(
+          `[gemini] ABORT_METRIC abortReason=TTFT_TIMEOUT model=${servedModel} ` +
+            `modelIndex=${modelIndex + 1}/${urls.length} isLastModel=${isLastModel} elapsedMs=${Date.now() - attemptStart} ` +
+            `budgetMs=${GEMINI_STREAM_TTFT_TIMEOUT_MS} chunks=${chunkCount} chars=${fullText.length} ` +
+            `estOutputTokens=${Math.round(fullText.length / 4)} lastTokenAgeMs=${lastTokenAt ? Date.now() - lastTokenAt : null} maxGapMs=${maxGapMs}`
+        );
         if (isLastModel) {
           throw new GeminiApiError({
             message: `Gemini ${servedModel} produced no first token within ${GEMINI_STREAM_TTFT_TIMEOUT_MS}ms`,
@@ -1253,8 +1314,56 @@ export async function proxyGeminiCall(apiKey, options) {
       }
 
       if (attemptAborted) {
+        const abortAt = Date.now();
+        const stallSinceLastToken = lastTokenAt ? abortAt - lastTokenAt : null;
+        const elapsedMs = abortAt - attemptStart;
+        const estOutputTokens = Math.round(fullText.length / 4);
+        console.warn(
+          `[gemini] ABORT_METRIC abortReason=ATTEMPT_BUDGET_EXCEEDED model=${servedModel} ` +
+            `modelIndex=${modelIndex + 1}/${urls.length} isLastModel=${isLastModel} ` +
+            `attemptStartOffsetMs=${attemptStart - proxyStartedAt} ttftMs=${firstTokenAt ? firstTokenAt - attemptStart : "none"} ` +
+            `elapsedMs=${elapsedMs} budgetMs=${attemptBudgetMs} ` +
+            `chunks=${chunkCount} chars=${fullText.length} estOutputTokens=${estOutputTokens} reportedTokens=${tokenCount} ` +
+            `lastTokenAgeMs=${stallSinceLastToken} maxGapMs=${maxGapMs} lastGapMs=${lastGapMs} ` +
+            `hasConclusion=${/##\s*\*\*?conclusion/i.test(fullText)} streamHealthy=${stallSinceLastToken !== null && stallSinceLastToken < 2000}`
+        );
+
+        // Retain any usable text from this attempt before moving on. A longer
+        // partial from an earlier model always wins, so we never regress to a
+        // shorter fragment.
+        if (fullText.length > bestPartial.text.length) {
+          bestPartial = {
+            text: fullText,
+            model: servedModel,
+            elapsedMs,
+            estTokens: estOutputTokens,
+          };
+        }
+
+        if (!isLastModel) {
+          // Fall back to the next model in the chain rather than discarding work.
+          // The retained partial stays available if the fallback also fails.
+          noteModelBusy(modelUrl);
+          console.warn(
+            `[gemini] stream_answer mid-generation timeout on ${servedModel}, ` +
+              `retaining ${bestPartial.text.length} chars as fallback and trying next model`
+          );
+          continue;
+        }
+
+        // Last model in the chain timed out. If we captured meaningful text we
+        // return it as a partial answer; otherwise surface a real error.
+        if (bestPartial.text.trim().length >= MIN_USABLE_PARTIAL_CHARS) {
+          console.warn(
+            `[gemini] stream_answer last model timed out; returning retained partial ` +
+              `(${bestPartial.text.length} chars from ${bestPartial.model || servedModel})`
+          );
+          timeoutPartial = true;
+          break;
+        }
+
         throw new GeminiApiError({
-          message: `Gemini ${servedModel} exceeded generation budget of ${GEMINI_STREAM_ATTEMPT_TIMEOUT_MS}ms`,
+          message: `Gemini ${servedModel} exceeded generation budget of ${attemptBudgetMs}ms before producing usable output`,
           status: 504,
           code: "GEMINI_TIMEOUT",
           userMessage: "Gemini took too long to finish your answer. Please retry.",
@@ -1268,10 +1377,34 @@ export async function proxyGeminiCall(apiKey, options) {
       throw err;
     }
   }
+  } catch (chainErr) {
+    // A model in the chain failed outright (e.g. quota, HTTP, or a network
+    // error). If an earlier attempt already produced usable text, prefer that
+    // partial over surfacing a hard error the user never asked for.
+    if (bestPartial.text.trim().length >= MIN_USABLE_PARTIAL_CHARS) {
+      console.warn(
+        `[gemini] stream chain failed (${chainErr?.code || chainErr?.message || "unknown"}); ` +
+          `returning retained partial of ${bestPartial.text.length} chars from ${bestPartial.model}`
+      );
+      fullText = bestPartial.text;
+      servedModel = bestPartial.model || servedModel;
+      timeoutPartial = true;
+    } else {
+      throw chainErr;
+    }
+  }
 
   buffer += decoder.decode();
   if (buffer.trim()) {
     for (const line of buffer.split("\n")) processStreamLine(line);
+  }
+
+  // If every model in the chain timed out, fall back to the best partial we
+  // retained rather than surfacing an error over text the user already saw.
+  if (!fullText && bestPartial.text.trim().length >= MIN_USABLE_PARTIAL_CHARS) {
+    fullText = bestPartial.text;
+    servedModel = bestPartial.model || servedModel;
+    timeoutPartial = true;
   }
 
   if (!fullText) {
@@ -1300,6 +1433,32 @@ export async function proxyGeminiCall(apiKey, options) {
     }
   }
   const groundedText = grounding.answer;
+
+  // Every model in the chain timed out; we are returning a retained partial.
+  // Grounding still runs over it so the safeguard applies to partial answers too.
+  if (timeoutPartial) {
+    console.warn(
+      `[gemini] answer incomplete: model chain exhausted by timeouts, returning retained partial ` +
+        `(${groundedText.length} chars, estTokens=${bestPartial.estTokens})`
+    );
+    const enforcedPartial = enforceWordLimit(groundedText, answerWordLimit);
+    return {
+      answer: enforcedPartial.answer,
+      tokenCount: tokenCount || bestPartial.estTokens,
+      wordCount: enforcedPartial.wordCount,
+      wordLimit: answerWordLimit || null,
+      wordLimitClamped: enforcedPartial.clamped,
+      truncated: true,
+      timedOut: true,
+      finishReason: "TIMEOUT_PARTIAL",
+      grounding: {
+        supportAvg: grounding.supportAvg,
+        removed: grounding.removed.length,
+        flagged: grounding.flagged.length,
+        grounded: grounding.grounded,
+      },
+    };
+  }
 
   if (finishReason && finishReason !== "STOP") {
     if (finishReason === "MAX_TOKENS" && groundedText.length > 0) {
