@@ -137,18 +137,20 @@ const LOW_SUPPORT_THRESHOLD = 0.25; // below this, sentence is suspicious (flag,
 // Markers that assert a factual link between two things. Split into strong
 // (unambiguously evidential) and soft (often legitimate analytical connective).
 const STRONG_RELATIONAL_MARKERS = [
-  "caused", "causes", "causing", "led to", "leads to", "resulted in", "results in",
+  "caused", "causes", "causing", "cause", "led to", "leads to", "resulted in", "results in",
   "resulting in", "resulted from", "responsible for", "gave rise to", "giving rise to",
-  "enabled", "enabling", "demonstrates", "demonstrate", "proves", "proved", "proving",
-  "necessitated", "necessitates", "paved the way", "contributed to", "stemmed from",
-  "attributable to", "owing to", "on account of",
+  "enabled", "enables", "enabling", "enable", "demonstrates", "demonstrate", "demonstrated",
+  "demonstrating", "proves", "prove", "proved", "proving", "necessitated", "necessitates",
+  "necessitate", "paved the way", "pave the way", "contributed to", "contribute to",
+  "stemmed from", "originated in", "triggered", "spurred", "bolstered", "reinforced",
+  "underpinned", "attributable to", "owing to", "on account of",
 ];
 
 const SOFT_RELATIONAL_MARKERS = [
   "because", "due to", "therefore", "consequently", "thus", "hence",
-  "strengthened", "strengthen", "weakened", "weaken", "provided", "provides",
-  "allowed", "facilitated", "reflects", "reflecting", "inferred", "suggests",
-  "indicating", "as a result", "insofar as", "which means",
+  "strengthened", "strengthen", "weakened", "weaken", "provided", "provides", "provide",
+  "allowed", "facilitated", "facilitate", "reflects", "reflecting", "reflect",
+  "inferred", "suggests", "suggest", "indicating", "as a result", "insofar as", "which means",
 ];
 
 // Require this many distinctive terms from EACH side of the relation to appear in
@@ -166,15 +168,29 @@ function stemSet(sentence) {
   return new Set(contentWords(sentence).map(stem));
 }
 
+// Word-boundary matching is required, not cosmetic. Plain substring matching
+// made "cause" fire inside "because" (silently reclassifying an analytical clause
+// as a hard evidential claim) and "stem" fire inside "system".
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const STRONG_RELATIONAL_RE = new RegExp(
+  `\\b(?:${STRONG_RELATIONAL_MARKERS.map(escapeRe).join("|")})\\b`,
+  "i"
+);
+const SOFT_RELATIONAL_RE = new RegExp(
+  `\\b(?:${SOFT_RELATIONAL_MARKERS.map(escapeRe).join("|")})\\b`,
+  "i"
+);
+
 function findRelationalMarker(sentence) {
-  const text = normalize(sentence);
-  for (const marker of STRONG_RELATIONAL_MARKERS) {
-    if (text.includes(marker)) return { marker, strength: "strong" };
+  const text = String(sentence);
+  const strong = STRONG_RELATIONAL_RE.exec(text);
+  const soft = SOFT_RELATIONAL_RE.exec(text);
+  if (!strong && !soft) return null;
+  // Earliest marker wins; strong wins a tie.
+  if (strong && (!soft || strong.index <= soft.index)) {
+    return { marker: strong[0].toLowerCase(), index: strong.index, length: strong[0].length, strength: "strong" };
   }
-  for (const marker of SOFT_RELATIONAL_MARKERS) {
-    if (text.includes(marker)) return { marker, strength: "soft" };
-  }
-  return null;
+  return { marker: soft[0].toLowerCase(), index: soft.index, length: soft[0].length, strength: "soft" };
 }
 
 // Precompute per-evidence-sentence stem sets once, so the relational check is a
@@ -217,6 +233,25 @@ function countOverlaps(stems, evidenceStems) {
   return n;
 }
 
+// Best single-window support for one side of a relation.
+function sideSupport(stems, evidenceIndex) {
+  let max = 0;
+  for (const ev of evidenceIndex) {
+    const n = countOverlaps(stems, ev);
+    if (n > max) max = n;
+  }
+  return max;
+}
+
+// Conditional / hedged / normative framing marks a sentence as reasoning rather
+// than assertion. "Relying SOLELY on economic and judicial mechanisms proves
+// insufficient WHEN addressing systemic ecological crises" states a defensible
+// analytical position; "early elections PROVED the viability of mass democracy"
+// asserts a source-attributable conclusion the chunks never make. Both contain a
+// strong marker, so framing is what separates them.
+const HEDGE_FRAMING_RE =
+  /\b(solely|only|merely|when|where|if|unless|although|though|may|might|could|would|should|must|ought|arguably|perhaps|generally|typically|usually|insofar|whether|it follows|one may)\b/;
+
 // Layer 3 exemption: commentary ABOUT the evidence is analytical glue, not a
 // factual claim about the past, so the relational check does not apply to it.
 // e.g. "These limitations necessitate a cautious interpretation because
@@ -253,13 +288,9 @@ function checkRelationalClaim(sentence, evidenceIndex) {
   if (!hit) return null;
 
   const raw = String(sentence);
-  // Locate the marker in the ORIGINAL string so slicing keeps original casing.
-  const lower = raw.toLowerCase();
-  const idx = lower.indexOf(hit.marker);
-  if (idx < 0) return null;
-
+  const idx = hit.index;
   const left = raw.slice(0, idx);
-  const right = raw.slice(idx + hit.marker.length);
+  const right = raw.slice(idx + hit.length);
   const leftStems = stemSet(left);
   const rightStems = stemSet(right);
 
@@ -281,11 +312,66 @@ function checkRelationalClaim(sentence, evidenceIndex) {
       countOverlaps(leftStems, ev) >= MIN_LINK_TERMS_PER_SIDE &&
       countOverlaps(rightStems, ev) >= MIN_LINK_TERMS_PER_SIDE
     ) {
-      return { established: true, marker: hit.marker, strength: hit.strength };
+      return { established: true, marker: hit.marker, strength: hit.strength, severity: "none" };
     }
   }
 
-  return { established: false, marker: hit.marker, strength: hit.strength };
+  // Link not stated. Classify how confident we are that this is a real
+  // invention rather than acceptable synthesis, so a strict policy can act on
+  // the confident cases only.
+  //
+  //  "spliced" = both halves are individually well supported by the evidence but
+  //  never co-occur. That is the signature of a relationship manufactured by
+  //  joining two separately sourced facts.
+  const leftMax = sideSupport(leftStems, evidenceIndex);
+  const rightMax = sideSupport(rightStems, evidenceIndex);
+  const spliced =
+    leftMax >= MIN_LINK_TERMS_PER_SIDE && rightMax >= MIN_LINK_TERMS_PER_SIDE;
+
+  const hedged = HEDGE_FRAMING_RE.test(String(sentence).toLowerCase());
+
+  let severity;
+  if (hedged) {
+    // Conditional/normative reasoning: keep regardless of marker.
+    severity = "soft";
+  } else if (leftMax < MIN_LINK_TERMS_PER_SIDE) {
+    // The subject itself is not grounded, so we cannot claim the RELATION was
+    // invented - only that its wording is ungrounded, which is Layer 1's job.
+    //
+    // Observed live: "This violent conflict triggered deep anguish and
+    // repentance, turning the ruler toward an intense study, love, and
+    // instruction of Dhamma" scored severity=hard purely on the strong marker
+    // "triggered", even though the chunk states that relation outright ("This is
+    // the repentance of Devanampiya on account of his conquest"). Only the
+    // paraphrase differed - NCERT says "slaughter, death and deportation" where
+    // the answer said "violent conflict" - so a hard marker must not by itself
+    // authorise deletion.
+    severity = "soft";
+  } else if (hit.strength === "strong") {
+    // Unconditional evidential assertion ("X caused/enabled/proved Y") between
+    // two individually grounded halves that the evidence never joins.
+    severity = "hard";
+  } else if (spliced) {
+    // Soft marker, but two individually sourced facts welded into a link that
+    // the evidence never states. This is the Ashoka "provided a palaeographic
+    // baseline" shape.
+    severity = "elevated";
+  } else {
+    // Soft marker and the halves are not both grounded: most likely ordinary
+    // analytical connective tissue.
+    severity = "soft";
+  }
+
+  return {
+    established: false,
+    marker: hit.marker,
+    strength: hit.strength,
+    severity,
+    spliced,
+    hedged,
+    leftSupport: leftMax,
+    rightSupport: rightMax,
+  };
 }
 
 /**
@@ -320,6 +406,8 @@ export function verifyGrounding(answerText, chunks, options = {}) {
   const evidenceNorm = normalize(evidence.map((c) => (typeof c === "string" ? c : c?.text || "")).join("  \n  "));
   const dryRun = options.dryRun === true;
   const enforceLowSupport = options.enforceLowSupport === true; // opt-in, off by default
+  // "hard" | "all" | false — strict source-lock tiers for Layer 2, off by default.
+  const enforceRelational = options.enforceRelational || false;
 
   if (!answerText || !evidenceNorm) {
     return {
@@ -374,15 +462,38 @@ export function verifyGrounding(answerText, chunks, options = {}) {
       // present in the evidence, which is the class of claim Layer 1 misses.
       const rel = checkRelationalClaim(sentence, evidenceIndex);
       if (rel && !rel.established) {
-        relational.push({
+        const entry = {
           text: sentence.slice(0, 200),
           support: Number(sc.support.toFixed(2)),
           marker: rel.marker,
           strength: rel.strength,
+          severity: rel.severity,
+          spliced: rel.spliced,
           reason:
             `asserts a ${rel.strength} relationship ("${rel.marker}") that the retrieved ` +
             "chunks do not state — synthesis may be inferred rather than sourced",
-        });
+        };
+        relational.push(entry);
+
+        // Strict source-lock policy. OFF by default: measured precision of this
+        // layer is ~50%, so deleting on it unconditionally would silently gut
+        // legitimate analysis. "hard" removes only unconditional evidential
+        // assertions; "all" additionally removes spliced soft-marker claims.
+        const reject =
+          enforceRelational === "all"
+            ? rel.severity === "hard" || rel.severity === "elevated"
+            : enforceRelational === "hard" && rel.severity === "hard";
+        if (reject) {
+          removed.push({
+            text: entry.text,
+            support: entry.support,
+            marker: rel.marker,
+            severity: rel.severity,
+            reason: `unsupported ${rel.severity} causal/relational claim ("${rel.marker}")`,
+          });
+          relational.pop();
+          return false;
+        }
       }
     }
     kept++;

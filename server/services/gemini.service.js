@@ -1420,6 +1420,15 @@ export async function proxyGeminiCall(apiKey, options) {
   // Programmatic source-lock check against the exact chunks we sent.
   const grounding = verifyGrounding(cleaned, chunks, {
     enforceLowSupport: process.env.GEMINI_GROUNDING_ENFORCE_LOW_SUPPORT === "true",
+    // Strict source-lock tiers for Layer 2. Default off: this layer's measured
+    // precision is ~50%, so enforcing it unconditionally would delete legitimate
+    // UPSC analysis. "hard" = unconditional evidential claims only;
+    // "all" = also spliced soft-marker claims.
+    enforceRelational: ["hard", "all"].includes(
+      (process.env.GEMINI_GROUNDING_ENFORCE_RELATIONAL || "").toLowerCase()
+    )
+      ? process.env.GEMINI_GROUNDING_ENFORCE_RELATIONAL.toLowerCase()
+      : false,
   });
   if (grounding.removed.length || grounding.flagged.length || grounding.relational.length) {
     console.warn(
@@ -1433,7 +1442,7 @@ export async function proxyGeminiCall(apiKey, options) {
     }
     for (const rel of grounding.relational) {
       console.warn(
-        `[gemini] grounding relational [${rel.strength}/${rel.marker} support=${rel.support}]: "${rel.text}"`
+        `[gemini] grounding relational [severity=${rel.severity} marker=${rel.marker} strength=${rel.strength} spliced=${rel.spliced} support=${rel.support}]: "${rel.text}"`
       );
     }
   }
