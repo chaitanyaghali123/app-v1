@@ -1337,15 +1337,19 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
   let vectorChunks;
   try {
     const retrievalStartedAt = Date.now();
-    vectorChunks = await queryVector({
+    const vectorResult = await queryVector({
       prompt: resolvedQuestion,
       topK: Math.max(requestedMaxChunks * 2, 8),
       skipRerank: false,
       subjectIds: folderPatterns ? folderPatterns.map((f) => f.toLowerCase()) : null,
       apiKey: userApiKey,
     });
+    vectorChunks = vectorResult.chunks;
     const retrievalMs = Date.now() - retrievalStartedAt;
-    console.log(`[rag-prep] stage vector_retrieval..${retrievalMs}ms query=${resolvedQuestion.slice(0, 60)}`);
+    const vt = vectorResult.timings || {};
+    console.log(
+      `[rag-prep] stage vector_retrieval..${retrievalMs}ms query=${resolvedQuestion.slice(0, 60)} embedMs=${vt.embed_ms ?? "-"} pgvectorMs=${vt.pgvector_ms ?? "-"} bm25Ms=${vt.bm25_ms ?? "-"} rerankMs=${vt.rerank_ms ?? "-"} postRerankMs=${vt.post_rerank_ms ?? "-"}`
+    );
     stageMark(`retrieval:${retrievalMs}`);
   } catch (retrievalErr) {
     if (retrievalErr?.code === "GEMINI_QUOTA_EXCEEDED") {
@@ -1462,7 +1466,7 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
     : isEssay
     ? 2600
     : mode === "limited" && retrievalMode === "ranked"
-    ? 800
+    ? 720
     : 4600;
   const cappedTargetTokens = wordLimit
     ? Math.min(targetTokens, Math.round(wordLimit * 1.4))

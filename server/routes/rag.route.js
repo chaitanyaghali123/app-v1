@@ -117,13 +117,13 @@ async function handleStream(req, res) {
 
     let vectorChunks;
     try {
-      vectorChunks = await queryVector({
+      vectorChunks = (await queryVector({
         prompt,
         topK: 25,
         skipRerank: false,
         subjectIds: subjectFilter,
         apiKey,
-      });
+      })).chunks;
     } catch (retrievalErr) {
       res.write(
         `data: ${JSON.stringify({

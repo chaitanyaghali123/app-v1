@@ -38,10 +38,12 @@ export async function queryVector({ prompt, topK, skipRerank = false, subjectIds
       timeout: VECTOR_TIMEOUT_MS
     });
     const chunks = resp.data.chunks || [];
+    const timings = resp.data.timings || {};
+    const retrievalMs = Date.now() - t0;
     console.log(
-      `[vector] retrievalMs=${Date.now() - t0} topK=${topK} skipRerank=${skipRerank} returned=${chunks.length}`
+      `[vector] retrievalMs=${retrievalMs} topK=${topK} skipRerank=${skipRerank} returned=${chunks.length} embedMs=${timings.embed_ms ?? "-"} pgvectorMs=${timings.pgvector_ms ?? "-"} bm25Ms=${timings.bm25_ms ?? "-"} rerankMs=${timings.rerank_ms ?? "-"} postRerankMs=${timings.post_rerank_ms ?? "-"}`
     );
-    return chunks;
+    return { chunks, timings, retrievalMs };
   } catch (err) {
     const status = err?.response?.status;
     const upstreamCode = err?.response?.data?.code;

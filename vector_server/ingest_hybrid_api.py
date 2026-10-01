@@ -1853,9 +1853,10 @@ async def hybrid_retrieval(
     cached = get_cache(cache_key)
 
     if cached:
-        return cached
+        return cached, {}
 
     _stage_t = time.time()
+    timings = {}
 
     q_emb = (
         await generate_embeddings(
@@ -1865,7 +1866,8 @@ async def hybrid_retrieval(
         )
     )[0]
 
-    logger.info(f"⏱ embed_ms={int((time.time() - _stage_t) * 1000)}")
+    timings["embed_ms"] = int((time.time() - _stage_t) * 1000)
+    logger.info(f"⏱ embed_ms={timings['embed_ms']}")
     _stage_t = time.time()
 
     vector_results = await run_in_threadpool(
@@ -1875,7 +1877,8 @@ async def hybrid_retrieval(
         subject_ids
     )
 
-    logger.info(f"⏱ pgvector_ms={int((time.time() - _stage_t) * 1000)}")
+    timings["pgvector_ms"] = int((time.time() - _stage_t) * 1000)
+    logger.info(f"⏱ pgvector_ms={timings['pgvector_ms']}")
     _stage_t = time.time()
 
     bm25_results = await run_in_threadpool(
@@ -1885,7 +1888,8 @@ async def hybrid_retrieval(
         subject_ids
     )
 
-    logger.info(f"⏱ bm25_ms={int((time.time() - _stage_t) * 1000)}")
+    timings["bm25_ms"] = int((time.time() - _stage_t) * 1000)
+    logger.info(f"⏱ bm25_ms={timings['bm25_ms']}")
     _stage_t = time.time()
 
     fused = reciprocal_rank_fusion(
@@ -1915,7 +1919,8 @@ async def hybrid_retrieval(
 
         fused = fused[:top_k]
 
-    logger.info(f"⏱ rerank_ms={int((time.time() - _stage_t) * 1000)}")
+    timings["rerank_ms"] = int((time.time() - _stage_t) * 1000)
+    logger.info(f"⏱ rerank_ms={timings['rerank_ms']}")
     _stage_t = time.time()
 
     fused = diversify_chunks(
@@ -1945,9 +1950,10 @@ async def hybrid_retrieval(
         final
     )
 
-    logger.info(f"⏱ post_rerank_ms={int((time.time() - _stage_t) * 1000)}")
+    timings["post_rerank_ms"] = int((time.time() - _stage_t) * 1000)
+    logger.info(f"⏱ post_rerank_ms={timings['post_rerank_ms']}")
 
-    return final
+    return final, timings
 
 # ==========================================================
 # REQUEST LOGGING
@@ -2235,7 +2241,7 @@ async def chunks_api(
             else None
         )
 
-        chunks = await hybrid_retrieval(
+        chunks, timings = await hybrid_retrieval(
             query=query,
             top_k=top_k,
             topic=topic,
@@ -2271,6 +2277,7 @@ async def chunks_api(
                 use_rerank and ENABLE_RERANK and reranker is not None
             ),
             "hybrid_search": True,
+            "timings": timings,
             "chunks": chunks
         }
 

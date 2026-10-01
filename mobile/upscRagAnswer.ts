@@ -108,7 +108,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
         subject: options.subject,
         maxChunks: options.maxChunks ?? (isEssay ? 35 : 4),
         maxContextChars: options.maxContextChars ?? (isEssay ? 60000 : 10000),
-        targetTokens: options.targetTokens ?? (isEssay ? 2600 : 800),
+        targetTokens: options.targetTokens ?? (isEssay ? 2600 : 720),
         deviceId: await getOrCreateDeviceId(),
       }),
     });
