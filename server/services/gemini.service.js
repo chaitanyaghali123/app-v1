@@ -1421,15 +1421,20 @@ export async function proxyGeminiCall(apiKey, options) {
   const grounding = verifyGrounding(cleaned, chunks, {
     enforceLowSupport: process.env.GEMINI_GROUNDING_ENFORCE_LOW_SUPPORT === "true",
   });
-  if (grounding.removed.length || grounding.flagged.length) {
+  if (grounding.removed.length || grounding.flagged.length || grounding.relational.length) {
     console.warn(
-      `[gemini] grounding: support=${grounding.supportAvg} removed=${grounding.removed.length} flagged=${grounding.flagged.length} sentences=${grounding.total}`
+      `[gemini] grounding: support=${grounding.supportAvg} removed=${grounding.removed.length} flagged=${grounding.flagged.length} relational=${grounding.relational.length} sentences=${grounding.total}`
     );
     for (const r of grounding.removed) {
       console.warn(`[gemini] grounding removed (${r.reason}): "${r.text}"`);
     }
     for (const f of grounding.flagged) {
       console.warn(`[gemini] grounding flagged [${f.support}]: "${f.text}"`);
+    }
+    for (const rel of grounding.relational) {
+      console.warn(
+        `[gemini] grounding relational [${rel.strength}/${rel.marker} support=${rel.support}]: "${rel.text}"`
+      );
     }
   }
   const groundedText = grounding.answer;
@@ -1476,6 +1481,7 @@ export async function proxyGeminiCall(apiKey, options) {
           supportAvg: grounding.supportAvg,
           removed: grounding.removed.length,
           flagged: grounding.flagged.length,
+          relational: grounding.relational.length,
           grounded: grounding.grounded,
         },
       };
@@ -1530,6 +1536,7 @@ export async function proxyGeminiCall(apiKey, options) {
       supportAvg: grounding.supportAvg,
       removed: grounding.removed.length,
       flagged: grounding.flagged.length,
+      relational: grounding.relational.length,
       grounded: grounding.grounded,
     },
   };

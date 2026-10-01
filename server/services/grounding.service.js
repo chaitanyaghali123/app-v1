@@ -115,17 +115,205 @@ function scoreSentence(sentence, evidenceNorm) {
 // non-destructively flagged, so this threshold trades signal quality, not safety.
 const LOW_SUPPORT_THRESHOLD = 0.25; // below this, sentence is suspicious (flag, not delete)
 
+// ---------------------------------------------------------------------------
+// Layer 2: relational / causal claim verification.
+//
+// Layer 1 checks whether individual facts (figures, words) are present in the
+// evidence. It cannot see a *newly invented relationship between two separately
+// supported facts*. Observed in the Ashoka test:
+//
+//   "The successful decipherment of Asokan Brahmi in 1838 provided scholars with
+//    a reliable palaeographic baseline to date other ancient texts."
+//
+// The evidence states "1838 Decipherment of Asokan Brahmi by James Prinsep" AND
+// separately "dated on the basis of palaeography". Every word is supported. The
+// *link* (decipherment -> provided a dating baseline) is not stated anywhere.
+//
+// This layer is fully deterministic and local: no second model call, so latency
+// impact is sub-millisecond. It never deletes; unsupported links are flagged so a
+// human can judge whether the synthesis is defensible.
+// ---------------------------------------------------------------------------
+
+// Markers that assert a factual link between two things. Split into strong
+// (unambiguously evidential) and soft (often legitimate analytical connective).
+const STRONG_RELATIONAL_MARKERS = [
+  "caused", "causes", "causing", "led to", "leads to", "resulted in", "results in",
+  "resulting in", "resulted from", "responsible for", "gave rise to", "giving rise to",
+  "enabled", "enabling", "demonstrates", "demonstrate", "proves", "proved", "proving",
+  "necessitated", "necessitates", "paved the way", "contributed to", "stemmed from",
+  "attributable to", "owing to", "on account of",
+];
+
+const SOFT_RELATIONAL_MARKERS = [
+  "because", "due to", "therefore", "consequently", "thus", "hence",
+  "strengthened", "strengthen", "weakened", "weaken", "provided", "provides",
+  "allowed", "facilitated", "reflects", "reflecting", "inferred", "suggests",
+  "indicating", "as a result", "insofar as", "which means",
+];
+
+// Require this many distinctive terms from EACH side of the relation to appear in
+// the same evidence sentence before we accept the link as sourced. A single
+// shared word is not evidence of a relationship: in the Ashoka case the sentence
+// "Names of rulers such as Ajatasattu and Asoka, known from Prakrit texts" links
+// "Asoka" and "texts" but establishes nothing about decipherment.
+const MIN_LINK_TERMS_PER_SIDE = 2;
+
+function stem(word) {
+  return word.length > 7 ? word.slice(0, 6) : word;
+}
+
+function stemSet(sentence) {
+  return new Set(contentWords(sentence).map(stem));
+}
+
+function findRelationalMarker(sentence) {
+  const text = normalize(sentence);
+  for (const marker of STRONG_RELATIONAL_MARKERS) {
+    if (text.includes(marker)) return { marker, strength: "strong" };
+  }
+  for (const marker of SOFT_RELATIONAL_MARKERS) {
+    if (text.includes(marker)) return { marker, strength: "soft" };
+  }
+  return null;
+}
+
+// Precompute per-evidence-sentence stem sets once, so the relational check is a
+// set-intersection scan rather than repeated substring searches over the corpus.
+function splitEvidenceUnits(text) {
+  // Split on newlines first: bullet/timeline chunks would otherwise collapse into
+  // one kitchen-sink "sentence" whose stems could establish links that no single
+  // statement actually makes.
+  return String(text || "")
+    .split("\n")
+    .flatMap((line) => splitSentences(line))
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function buildEvidenceIndex(evidence) {
+  const windows = [];
+  for (const c of evidence) {
+    const text = typeof c === "string" ? c : c?.text || "";
+    const units = splitEvidenceUnits(text).map((s) => ({ text: s, stems: stemSet(s) }));
+    for (let i = 0; i < units.length; i++) {
+      if (units[i].stems.size > 0) windows.push(units[i].stems);
+      // Also index the union of each adjacent pair. Source sentences routinely
+      // split a single relation across two statements, e.g. the Kalinga evidence
+      // puts "had been ruling for eight years ... was conquered by him" in one
+      // sentence and "One hundred and fifty thousand men were deported" in the
+      // next. Requiring the whole relation inside ONE sentence under-sourced it.
+      if (i + 1 < units.length && units[i + 1].stems.size > 0) {
+        const merged = new Set([...units[i].stems, ...units[i + 1].stems]);
+        windows.push(merged);
+      }
+    }
+  }
+  return windows;
+}
+
+function countOverlaps(stems, evidenceStems) {
+  let n = 0;
+  for (const w of stems) if (evidenceStems.has(w)) n++;
+  return n;
+}
+
+// Layer 3 exemption: commentary ABOUT the evidence is analytical glue, not a
+// factual claim about the past, so the relational check does not apply to it.
+// e.g. "These limitations necessitate a cautious interpretation because
+// epigraphy alone does not provide a full understanding..." is a defensible
+// conclusion built on supported evidence, and must not be treated as invention.
+const META_INTERPRETIVE_TERMS = new Set(
+  ("cautious cautiously careful carefully prudent prudence interpret interpretation interpretive " +
+    "supplement supplementary corroborate corroborating corroboration tentative qualify qualified " +
+    "contextual context perspective perspectives bias biased omission omissions gap gaps silence " +
+    "necessitate necessitates necessitated warrant warranted caution mindful limitation limitations " +
+    "uncertain uncertainty incomplete complementary limited caveat caution evidentiary")
+    .split(/\s+/)
+);
+
+function countMetaTerms(sentence) {
+  let n = 0;
+  for (const w of contentWords(sentence)) if (META_INTERPRETIVE_TERMS.has(w)) n++;
+  return n;
+}
+
+
+/**
+ * Decide whether a causal/relational assertion is established by the evidence.
+ *
+ * Returns null when the sentence is not a relational claim, or when the claim
+ * looks like ordinary analytical connective tissue (too little substance on
+ * either side to assert anything checkable). Otherwise returns a verdict object.
+ */
+function checkRelationalClaim(sentence, evidenceIndex) {
+  // Layer 3: skip pure analytical/meta commentary before doing anything else.
+  if (countMetaTerms(sentence) >= 2) return null;
+
+  const hit = findRelationalMarker(sentence);
+  if (!hit) return null;
+
+  const raw = String(sentence);
+  // Locate the marker in the ORIGINAL string so slicing keeps original casing.
+  const lower = raw.toLowerCase();
+  const idx = lower.indexOf(hit.marker);
+  if (idx < 0) return null;
+
+  const left = raw.slice(0, idx);
+  const right = raw.slice(idx + hit.marker.length);
+  const leftStems = stemSet(left);
+  const rightStems = stemSet(right);
+
+  // Need enough substance on both sides to assert a checkable relationship.
+  if (leftStems.size < 2 || rightStems.size < 2) return null;
+
+  // The marker verb itself should not count as evidence for either side.
+  for (const part of hit.marker.split(" ")) {
+    const s = stem(part);
+    leftStems.delete(s);
+    rightStems.delete(s);
+  }
+  if (leftStems.size < 2 || rightStems.size < 2) return null;
+
+  // Is the link itself stated? Require >= MIN_LINK_TERMS_PER_SIDE distinctive
+  // terms from both halves inside one evidence sentence, or an adjacent pair.
+  for (const ev of evidenceIndex) {
+    if (
+      countOverlaps(leftStems, ev) >= MIN_LINK_TERMS_PER_SIDE &&
+      countOverlaps(rightStems, ev) >= MIN_LINK_TERMS_PER_SIDE
+    ) {
+      return { established: true, marker: hit.marker, strength: hit.strength };
+    }
+  }
+
+  return { established: false, marker: hit.marker, strength: hit.strength };
+}
+
 /**
  * Verify an answer against its evidence chunks.
  *
- * Two tiers, deliberately asymmetric:
- *  - ENFORCE (sentence removed): asserts a significant figure absent from the
- *    evidence. This is a provable fabrication, so removal carries no false-positive risk.
- *  - FLAG (sentence kept, reported): little of its vocabulary is in the evidence.
- *    This can be either a legitimate paraphrase or a recalled detail, and lexical
- *    overlap alone cannot tell them apart — so we surface it instead of deleting it.
+ * Three layers, deliberately asymmetric, and never destructive beyond provable
+ * fabrication:
  *
- * Returns the cleaned answer plus a report describing what was removed and flagged.
+ *  Layer 1 — hard factual grounding
+ *   - ENFORCE (sentence removed): asserts a significant figure absent from the
+ *     evidence. This is a provable fabrication, so removal carries no
+ *     false-positive risk.
+ *   - FLAG (sentence kept, reported): little of its vocabulary is in the
+ *     evidence. This can be either legitimate paraphrase or a recalled detail,
+ *     and lexical overlap alone cannot tell them apart.
+ *
+ *  Layer 2 — relational / causal grounding
+ *   - FLAG (sentence kept, reported): the words are supported but the asserted
+ *     relationship between them is not stated in any single evidence sentence.
+ *     This is the "newly invented link" failure mode that Layer 1 cannot see.
+ *     Local and deterministic — no extra model call.
+ *
+ *  Layer 3 — analytical glue is explicitly allowed. Reasonable UPSC synthesis
+ *   is not penalised merely for low literal overlap, and conclusions are not
+ *   deleted.
+ *
+ * Returns the cleaned answer plus a report describing what was removed, flagged,
+ * and which relational links could not be traced to the evidence.
  */
 export function verifyGrounding(answerText, chunks, options = {}) {
   const evidence = Array.isArray(chunks) ? chunks : [];
@@ -138,6 +326,7 @@ export function verifyGrounding(answerText, chunks, options = {}) {
       answer: answerText,
       removed: [],
       flagged: [],
+      relational: [],
       kept: 0,
       total: 0,
       supportAvg: 1,
@@ -147,8 +336,10 @@ export function verifyGrounding(answerText, chunks, options = {}) {
   }
 
   const blocks = splitBlocks(answerText);
+  const evidenceIndex = buildEvidenceIndex(evidence);
   const removed = [];
   const flagged = [];
+  const relational = [];
   let kept = 0;
   let total = 0;
   const supportAll = [];
@@ -177,6 +368,22 @@ export function verifyGrounding(answerText, chunks, options = {}) {
         support: Number(sc.support.toFixed(2)),
         reason: "low lexical support in retrieved chunks — may be recalled knowledge",
       });
+    } else {
+      // Layer 2: the sentence is lexically supported, so Layer 1 has nothing to
+      // say about it. Check whether the RELATIONSHIP it asserts is actually
+      // present in the evidence, which is the class of claim Layer 1 misses.
+      const rel = checkRelationalClaim(sentence, evidenceIndex);
+      if (rel && !rel.established) {
+        relational.push({
+          text: sentence.slice(0, 200),
+          support: Number(sc.support.toFixed(2)),
+          marker: rel.marker,
+          strength: rel.strength,
+          reason:
+            `asserts a ${rel.strength} relationship ("${rel.marker}") that the retrieved ` +
+            "chunks do not state — synthesis may be inferred rather than sourced",
+        });
+      }
     }
     kept++;
     return true;
@@ -228,14 +435,16 @@ export function verifyGrounding(answerText, chunks, options = {}) {
     answer: dryRun ? answerText : cleaned,
     removed,
     flagged,
+    relational,
     kept,
     total,
     supportAvg: Number(supportAvg.toFixed(3)),
     applied: !dryRun && removed.length > 0,
-    grounded: removed.length === 0 && flagged.length === 0,
+    grounded: removed.length === 0 && flagged.length === 0 && relational.length === 0,
   };
 }
 
 export const GROUNDING_THRESHOLDS = {
   lowSupport: LOW_SUPPORT_THRESHOLD,
+  minLinkTermsPerSide: MIN_LINK_TERMS_PER_SIDE,
 };
