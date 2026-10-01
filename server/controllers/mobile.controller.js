@@ -5,6 +5,7 @@ import { decryptGeminiApiKeyRecord, fingerprintGeminiApiKey, proxyGeminiCall, to
 import { enforceGeminiAbusePolicy, recordGeminiFailureForAbuse } from "../services/gemini-abuse.service.js";
 import { anonymizeIdentifier, logGeminiEvent, recordGeminiMetric } from "../services/gemini-monitoring.service.js";
 import { SUBJECT_FOLDER_MAP, GS_PAPER_FOLDER_MAP } from "./gsMapping.js";
+import { orderChunksBySourceProximity, formatEvidenceChunks } from "../services/evidence-hierarchy.service.js";
 
 import fs from "fs";
 import path from "path";
@@ -664,9 +665,10 @@ function detectWordLimit(question, subject) {
 }
 
 function buildChunkAnswerPrompt({ question, chunks, targetTokens, mode, wordLimit }) {
-  const context = chunks
-    .map((chunk, index) => `[${index + 1}] ${chunk.text}`)
-    .join("\n\n");
+  // Same hierarchy handling as the production prompt, so an audit of this route
+  // reflects what the answer path actually receives.
+  const { chunks: orderedChunks, layout } = orderChunksBySourceProximity(chunks);
+  const context = formatEvidenceChunks(orderedChunks, layout, { label: (index) => `[${index + 1}]` });
 
   const wordLimitInstruction = wordLimit
     ? `
@@ -702,6 +704,8 @@ The answer MUST have exactly three parts:
 - The reference chunks are your ONLY source of facts (strict source-lock) — mine every chunk for names, dates, acts, schemes, definitions, examples and use them.
 - STRICT SOURCE-LOCK — every name, date, number, scheme, and example in the answer MUST come from the reference chunks. Never add outside or prior knowledge, even confidently-known UPSC facts. If the chunks cannot support a needed point, omit it rather than fill from memory — NEVER invent figures, statistics, dates, or quotes.
 - Never fabricate citations, studies, or sources.
+- PRESERVE DIRECTION: keep every stated relationship pointing the way the evidence states it — cause→effect, parent→child, superior→subordinate, earlier→later. Never reverse a relationship, and never assert a relationship the evidence does not state. Joining two supported facts with an unsupported link ("A enabled B", "A proves B") is a source-lock violation even when both facts are quoted correctly.
+- READ CONTIGUOUS CHUNKS AS ONE PASSAGE: each chunk is labelled with its source and position. Chunks marked as continuing the passage above belong to the same section and must be read as continuous text, not as unrelated evidence.
 
 == LANGUAGE & PRESENTATION ==
 1. Formal, impersonal, crisp exam English; active sentences.
@@ -1681,6 +1685,10 @@ export async function getMobileAnswer(req, res) {
         facet: typeof c.metadata?.rag_facet === "string" ? c.metadata.rag_facet : "supporting-evidence",
         source: typeof c.metadata?.source_file === "string" ? c.metadata.source_file : c.metadata?.source || "",
         subject_id: Array.isArray(c.subject_id) && c.subject_id.length ? c.subject_id : c.metadata?.subject_id,
+        // Carry the source coordinates through so the prompt can label each chunk
+        // with its origin and position. Without this the evidence arrives as an
+        // unattributed bag of text and stated relationships have no direction.
+        metadata: c.metadata,
       })).filter((c) => Boolean(c.text)),
       targetTokens: ctx.cappedTargetTokens,
       mode: ctx.mode,

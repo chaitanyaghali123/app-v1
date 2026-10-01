@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { verifyGrounding } from "./grounding.service.js";
+import { orderChunksBySourceProximity, formatEvidenceChunks } from "./evidence-hierarchy.service.js";
 
 const ENCRYPTION_ALGORITHM = "aes-256-gcm";
 const KEY_LENGTH = 32;
@@ -753,9 +754,11 @@ function buildRagPrompt({ question, chunks, subjectId }) {
     throw new Error("No evidence chunks provided to buildRagPrompt");
   }
 
-  const chunkText = chunks
-    .map((chunk, idx) => `EVIDENCE ${idx + 1}:\n${chunk.text.trim()}`)
-    .join("\n\n");
+  // Preserve the source's own structure: keep contiguous same-source chunks
+  // together in document order and label each chunk with its origin, so the model
+  // can attribute a statement and see the direction of a stated relationship.
+  const { chunks: orderedChunks, layout } = orderChunksBySourceProximity(chunks);
+  const chunkText = formatEvidenceChunks(orderedChunks, layout, { label: (i) => `EVIDENCE ${i + 1}` });
 
   const wordLimit = detectWordLimit(question, subjectId);
 
@@ -784,6 +787,8 @@ LENGTH TARGET — approximately ${wordLimit === 1300 ? "1170–1300" : "500–60
 == EVIDENCE RULES ==
 - SOURCE-LOCK (MANDATORY): the chunks below are the factual boundary. Every fact, statistic, date, name, study, example or causal claim MUST come from them. Never infer, generalize, convert historical evidence to present-day, splice fragments into composite facts, or add pretrained "known facts" — even confident ones. If a detail is uncertain, OMIT it. Never fabricate sources.
 - PRESERVE SCOPE: keep each chunk's time period and population ("NSSO 55th Round (1999–2000) indicated…", "urban SCs in that survey", not "all SCs today").
+- PRESERVE DIRECTION: keep every stated relationship pointing the way the evidence states it — cause→effect, parent→child, superior→subordinate, earlier→later. Never reverse a relationship, and never assert a relationship the evidence does not state. Joining two supported facts with an unsupported link ("A enabled B", "A proves B") is a source-lock violation even when both facts are quoted correctly.
+- READ CONTIGUOUS CHUNKS AS ONE PASSAGE: each chunk is labelled with its source and position. Chunks marked as continuing the passage above belong to the same section and must be read as continuous text, not as unrelated evidence.
 - ATTRIBUTION: figures/studies illustrate or corroborate — never "prove" causation; avoid absolutes unless the source confirms them.
 - UNSUPPORTED POINTS: express cautiously as an explicit analytical inference, or omit — do not manufacture evidence.
 - EXAMPLES: for "with examples", lead the body with named evidence-based examples (3–5 solid beats 10 vague); majority from the asked subject, not its background.
