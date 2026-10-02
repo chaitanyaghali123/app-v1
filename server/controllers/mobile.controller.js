@@ -697,22 +697,24 @@ function buildChunkAnswerPrompt({ question, chunks, targetTokens, mode, wordLimi
   const wordLimitInstruction = wordLimit
     ? `
 WORD LIMIT (${wordLimit} words) - NON-NEGOTIABLE:
-- ${wordLimit === 1300 ? "This is a 1300-word Essay paper question. Introduction should be 100-120 words, Body = ~1080 words, Conclusion = 90-100 words." : "This is a 600-word Mains question. Introduction 60-70 words, Conclusion 45-60 words; everything else is the body."}
-- ${wordLimit === 1300 ? "Total essay words (headings excluded) must be ≤ 1300: write 1170-1300 words across 8-9 body paragraphs of 120-140 words each. PLAN the allocation BEFORE writing a single word. - HARD MINIMUM: the finished answer MUST be at least 1170 words (headings excluded). If, after writing your body paragraphs, you are below 1170 words, KEEP EXPANDING with new evidence-based paragraphs - NEVER write a Conclusion while under 1170 words. A Conclusion at the 3rd-of-budget mark is an automatic FAIL." : "Total answer words (headings excluded) must be ≤ 600: write 550-600 words across 4 body paragraphs of 90-110 words each. PLAN the allocation BEFORE writing a single word. - HARD MINIMUM: the finished answer MUST be at least 550 words (headings excluded). If, after writing your body paragraphs, you are below 550 words, KEEP EXPANDING with new evidence-based paragraphs - NEVER write a Conclusion while under 550 words."}
+- ${wordLimit === 1300 ? "This is a 1300-word Essay paper question. Introduction should be 100-120 words, Body = ~1080 words, Conclusion = 90-100 words." : "This is a 600-word Mains question. Introduction 50-70 words, Conclusion 40-60 words; the middle is 4-6 short thematic sections."}
+- ${wordLimit === 1300 ? "Total essay words (headings excluded) must be ≤ 1300: write 1170-1300 words across 8-9 body paragraphs of 120-140 words each. PLAN the allocation BEFORE writing a single word. - HARD MINIMUM: the finished answer MUST be at least 1170 words (headings excluded). If, after writing your body paragraphs, you are below 1170 words, KEEP EXPANDING with new evidence-based paragraphs - NEVER write a Conclusion while under 1170 words. A Conclusion at the 3rd-of-budget mark is an automatic FAIL." : "Total answer words (headings excluded) must be ≤ 600: write 550-600 words across 4-6 thematic sections. PLAN the allocation BEFORE writing a single word. - HARD MINIMUM: the finished answer MUST be at least 550 words (headings excluded). If, after writing your sections, you are below 550 words, KEEP EXPANDING with new evidence-based arguments - NEVER write a Conclusion while under 550 words."}
 - Silently count before finishing. Cut ruthlessly: no filler, no restating the question, no re-listed points. If over, delete the weakest sentence in each body paragraph until within limit.`
     : "";
 
   return `You are an expert UPSC Mains answer-writer. Write the answer in EXACTLY the standard UPSC Mains format examiners expect.
 
 == FORMAT ==
-The answer MUST have exactly three parts:
+The answer MUST have exactly three parts, with the middle part made of question-specific thematic sections:
 
 ## **Introduction** (short)
 - ONE compact paragraph: a crisp definition or one-line context, then a single thesis sentence that directly answers the question's directive verb.
 - Never restate the question, never open with padding ("In modern times", "India is a diverse country").
 
-## **Body** — 4 dense thematic paragraphs (600-word Mains) or 8–9 (1300-word Essay)
-- Each body paragraph = ONE clear argument with a bolded keyword opening and 1–2 concrete supporting facts. Structure: Point → Evidence → Tie-back to the verb.
+## **Thematic sections** — question-specific, never a fixed count
+- First analyse what the question demands (its causal chain, its axes of comparison, the dimensions it names, the judgment it wants), then construct the most appropriate thematic headings from that demand and the retrieved evidence. Do not force predefined headings or a fixed number of body sections.
+- Do not create a generic "Body" or "Content" heading. Each section develops one distinct argument or dimension, and its heading names that argument rather than restating the question.
+- Each section = ONE clear argument with a bolded keyword opening and 1–2 concrete supporting facts. Structure: Point → Evidence → Tie-back to the verb.
 - The analysis must follow the question's command verb:
   * Analyze → cause–effect, dimensions, dynamics.
   * Discuss / Comment → balanced treatment of both sides.
@@ -1499,10 +1501,15 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
     : isEssay
     ? 2600
     : mode === "limited" && retrievalMode === "ranked"
-    ? 850
+    ? 1000
     : 4600;
+  // 700-word answers need ~950 output tokens (English prose runs ~1.35 tokens per
+  // word). The previous 1.55x multiplier against a 600-word limit capped output at
+  // 930 and the client asked for only 850, so a long answer hit MAX_TOKENS around
+  // 550 words and was returned truncated. 1.8x leaves headroom for the top of the
+  // 500-700 range without changing the nominal word limit.
   const cappedTargetTokens = wordLimit
-    ? Math.min(targetTokens, Math.round(wordLimit * 1.55))
+    ? Math.min(targetTokens, Math.round(wordLimit * 1.8))
     : targetTokens;
 
   // Parent-context expansion is budget-funded, not budget-additive. When enabled a
