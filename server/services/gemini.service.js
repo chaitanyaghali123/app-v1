@@ -513,9 +513,19 @@ function readStreamWithDeadline(reader, controller, deadlineMs) {
 const GEMINI_LAST_MODEL_PATIENCE_MS = Number(
   process.env.GEMINI_LAST_MODEL_PATIENCE_MS || 30000
 );
-const GEMINI_STREAM_TTFT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_TTFT_TIMEOUT_MS || 5000);
-const GEMINI_STREAM_ATTEMPT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_ATTEMPT_TIMEOUT_MS || 20000);
-const GEMINI_STREAM_HEADER_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_HEADER_TIMEOUT_MS || 4000);
+// Streaming timing. These three values cannot be tuned independently:
+//   headerMs = min(HEADER, TTFT)
+//   first token must land by attemptStart + TTFT
+//   attempt ends at attemptStart + ATTEMPT
+// All deadlines are absolute from the start of a model attempt, so raising TTFT
+// without also raising ATTEMPT silently shortens the window left for generation.
+// ATTEMPT - TTFT is the generation budget, so the defaults below keep that at 20s
+// while giving Gemini 10s to start streaming, which a ~10k-char evidence prompt can
+// legitimately need. At 4s/5s/20s both models aborted on header timeout before
+// producing anything, surfacing "Gemini took too long to respond".
+const GEMINI_STREAM_TTFT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_TTFT_TIMEOUT_MS || 10000);
+const GEMINI_STREAM_ATTEMPT_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_ATTEMPT_TIMEOUT_MS || 30000);
+const GEMINI_STREAM_HEADER_TIMEOUT_MS = Number(process.env.GEMINI_STREAM_HEADER_TIMEOUT_MS || 10000);
 // Minimum characters required to treat a timed-out stream as a usable partial
 // answer rather than surfacing an error. Below this we have too little content
 // to show the user, so a clean error is the better outcome.
