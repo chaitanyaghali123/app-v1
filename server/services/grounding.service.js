@@ -534,8 +534,12 @@ export function verifyGrounding(answerText, chunks, options = {}) {
     }
   }
 
+  // Rejoin with a blank line after every heading. Joining blocks with a single "\n"
+  // is legal CommonMark, but any renderer that splits on blank lines then renders
+  // "## Heading" and the paragraph beneath it as one run-on line - which is what
+  // clients were displaying. The blank line is what makes the heading a block.
   const cleaned = pruned
-    .map((b) => b.lines.join("\n"))
+    .flatMap((b) => (b.type === "heading" ? [b.lines.join("\n"), ""] : [b.lines.join("\n")]))
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

@@ -739,14 +739,30 @@ function countWords(text) {
 }
 
 function clampAnswerToLimit(text, wordLimit) {
-  const words = String(text || "").replace(/\s+/g, " ").trim().split(" ");
-  let boundary = -1;
+  const src = String(text || "");
+  const limit = Number(wordLimit);
+  if (!src.trim() || !Number.isFinite(limit) || limit <= 0) return src.trim();
+
+  // Walk the original string instead of a whitespace-split copy. "\s" matches
+  // newlines, so splitting on it and rejoining with " " returned the entire answer
+  // as a single line with every "## Heading" flattened into the prose around it.
+  // That only surfaced on the runs where the answer exceeded the word limit, which
+  // is why it looked intermittent. Slicing the source preserves headings, paragraph
+  // breaks and blank lines.
   let end = 0;
-  for (let i = 0; i < words.length && i < wordLimit; i++) {
-    if (/[.!?]["')\]*]{0,2}$/.test(words[i])) boundary = i;
-    end = i + 1;
+  let boundary = -1;
+  let words = 0;
+  let i = 0;
+  while (words < limit) {
+    while (i < src.length && /\s/.test(src[i])) i++;
+    if (i >= src.length) break;
+    const start = i;
+    while (i < src.length && !/\s/.test(src[i])) i++;
+    words++;
+    end = i;
+    if (/[.!?]["')\]*]{0,2}$/.test(src.slice(start, i))) boundary = i;
   }
-  return words.slice(0, boundary >= 0 ? boundary + 1 : end).join(" ");
+  return src.slice(0, boundary >= 0 ? boundary : end).trim();
 }
 
 function enforceWordLimit(answer, wordLimit) {
