@@ -159,6 +159,8 @@ export function formatEvidenceChunks(chunks, layout, options = {}) {
     .map((chunk, i) => {
       const info = describeChunk(chunk);
       const slot = (layout && layout[i]) || { contiguous: false, reordered: false };
+      const meta = chunk?.metadata || {};
+      const isContext = meta.rag_facet === "context-continuation";
       const bits = [];
       const src = shortSource(info.source);
       if (src) bits.push(src);
@@ -166,11 +168,24 @@ export function formatEvidenceChunks(chunks, layout, options = {}) {
       else if (info.chunkIndex != null) bits.push(`chunk ${info.chunkIndex}`);
       if (info.heading) bits.push(info.heading);
       else if (info.topic) bits.push(info.topic);
-      // Mark contiguity so the model reads a same-section run as one passage.
-      if (slot.contiguous && !slot.isFirst) bits.push("continues above");
-      else if (slot.contiguous && slot.isFirst && slot.sectionLength > 1) bits.push("passage start");
 
-      const head = bits.length ? `${label(i)} [${bits.join(" | ")}]:\n` : `${label(i)}:\n`;
+      // A context unit is neighbouring text pulled in because the evidence budget
+      // truncated the chunk it continues. Label it as such so the model reads it as
+      // the missing middle of a passage rather than as an independent source, and
+      // names the chunk it belongs with.
+      if (isContext) {
+        const role = meta.context_role === "continues-before" ? "BEFORE" : "AFTER";
+        bits.push(
+          `CONTEXT ${role} chunk ${meta.context_anchor_chunk ?? "?"}`
+        );
+      } else if (slot.contiguous && !slot.isFirst) {
+        bits.push("continues above");
+      } else if (slot.contiguous && slot.isFirst && slot.sectionLength > 1) {
+        bits.push("passage start");
+      }
+
+      const tag = isContext ? `${label(i)}-CONTEXT` : label(i);
+      const head = bits.length ? `${tag} [${bits.join(" | ")}]:\n` : `${tag}:\n`;
       return head + String(chunk?.text || chunk || "").trim();
     })
     .join("\n\n");

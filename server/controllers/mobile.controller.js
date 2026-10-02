@@ -6,6 +6,7 @@ import { enforceGeminiAbusePolicy, recordGeminiFailureForAbuse } from "../servic
 import { anonymizeIdentifier, logGeminiEvent, recordGeminiMetric } from "../services/gemini-monitoring.service.js";
 import { SUBJECT_FOLDER_MAP, GS_PAPER_FOLDER_MAP } from "./gsMapping.js";
 import { orderChunksBySourceProximity, formatEvidenceChunks } from "../services/evidence-hierarchy.service.js";
+import { expandWithParentContext, isParentContextEnabled } from "../services/parent-context.service.js";
 
 import fs from "fs";
 import path from "path";
@@ -22,6 +23,10 @@ const MOBILE_GEMINI_MAX_CONTEXT_CHARS = Math.max(
 );
 const MAX_FILE_COVERAGE_SOURCE_CHUNKS = 240;
 const MIN_USEFUL_CHUNK_CHARS = 20;
+// Share of the character budget reserved for parent-context units when
+// PARENT_CONTEXT_ENABLED is on. Reserved before primaries are cut, so context is
+// funded out of the same budget and the total can never exceed contextBudget.
+const PARENT_CONTEXT_BUDGET_RATIO = 0.18;
 const SEARCH_STOP_WORDS = new Set([
   "about",
   "define",
@@ -388,9 +393,20 @@ function budgetChunksFairly(chunks, contextBudget, question) {
 
   return chunks
     .map((chunk) => {
+      const original = cleanDisplayText(chunk.text);
       const text = relevantChunkWindow(chunk.text, question, quota);
       if (text.length < MIN_USEFUL_CHUNK_CHARS) return null;
-      return { ...chunk, text };
+      // Record that the budget cut this chunk. The sentence that continues it
+      // lives in the next chunk of the same document, so parent-context expansion
+      // uses this flag to decide which chunks are worth fetching neighbours for.
+      const truncated = text.length < original.length;
+      return {
+        ...chunk,
+        text,
+        metadata: truncated
+          ? { ...(chunk.metadata || {}), budget_truncated: true }
+          : chunk.metadata,
+      };
     })
     .filter(Boolean);
 }
@@ -413,9 +429,17 @@ function budgetChunksForCoverage(chunks, contextBudget) {
 
   return chunks
     .map((chunk) => {
-      const text = cleanDisplayText(chunk.text).slice(0, quota).trim();
+      const original = cleanDisplayText(chunk.text);
+      const text = original.slice(0, quota).trim();
       if (text.length < MIN_USEFUL_CHUNK_CHARS) return null;
-      return { ...chunk, text };
+      const truncated = text.length < original.length;
+      return {
+        ...chunk,
+        text,
+        metadata: truncated
+          ? { ...(chunk.metadata || {}), budget_truncated: true }
+          : chunk.metadata,
+      };
     })
     .filter(Boolean);
 }
@@ -706,6 +730,7 @@ The answer MUST have exactly three parts:
 - Never fabricate citations, studies, or sources.
 - PRESERVE DIRECTION: keep every stated relationship pointing the way the evidence states it — cause→effect, parent→child, superior→subordinate, earlier→later. Never reverse a relationship, and never assert a relationship the evidence does not state. Joining two supported facts with an unsupported link ("A enabled B", "A proves B") is a source-lock violation even when both facts are quoted correctly.
 - READ CONTIGUOUS CHUNKS AS ONE PASSAGE: each chunk is labelled with its source and position. Chunks marked as continuing the passage above belong to the same section and must be read as continuous text, not as unrelated evidence.
+- READ CONTEXT CHUNKS AS PART OF THEIR PASSAGE: a unit labelled \`CONTEXT BEFORE/AFTER chunk N\` is the neighbouring text of chunk N, retrieved because the evidence budget truncated chunk N. It is the missing beginning or end of that argument — read it as continuous prose with chunk N, never as a separate source, and never attribute it to a different chapter, period or author.
 
 == LANGUAGE & PRESENTATION ==
 1. Formal, impersonal, crisp exam English; active sentences.
@@ -1480,11 +1505,47 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
     ? Math.min(targetTokens, Math.round(wordLimit * 1.55))
     : targetTokens;
 
+  // Parent-context expansion is budget-funded, not budget-additive. When enabled a
+  // slice of the budget is reserved BEFORE primaries are cut, so context can only
+  // exist by taking chars from the primaries' quota - the total can never exceed
+  // contextBudget. Reserving afterwards would be self-defeating: primaries already
+  // consume the budget exactly, so any context added after the fact would have to
+  // be trimmed straight back to zero.
+  const contextEnabled = isParentContextEnabled();
+  const contextReserve = contextEnabled ? Math.floor(contextBudget * PARENT_CONTEXT_BUDGET_RATIO) : 0;
+  const primaryBudget = contextBudget - contextReserve;
+
   const rawBudgetedChunks =
     retrievalMode === "ranked"
-      ? budgetChunksFairly(limitedChunks, contextBudget, resolvedQuestion)
-      : budgetChunksForCoverage(limitedChunks, contextBudget);
-  const scoredContext = withNormalizedChunkScores(rawBudgetedChunks);
+      ? budgetChunksFairly(limitedChunks, primaryBudget, resolvedQuestion)
+      : budgetChunksForCoverage(limitedChunks, primaryBudget);
+
+  // Expansion runs AFTER budgeting, on the final evidence set, and never changes
+  // which chunks were selected. It only recovers text the character budget cut off,
+  // which lives in the neighbouring chunk of the same document. Context units are
+  // appended to the SAME array that is rendered into the prompt and scored by the
+  // grounding layer, so they can never support a claim the safeguard has not seen.
+  let contextAdded = 0;
+  let contextChars = 0;
+  let contextMs = 0;
+  let evidenceChunks = rawBudgetedChunks;
+  if (contextEnabled) {
+    const expansionStartedAt = Date.now();
+    const expansion = await expandWithParentContext(rawBudgetedChunks, {
+      pool,
+      contextBudget: contextReserve,
+      subjectIds: folderPatterns ? folderPatterns.map((f) => f.toLowerCase()) : null,
+    });
+    contextMs = Date.now() - expansionStartedAt;
+    contextAdded = expansion.added || 0;
+    contextChars = expansion.chars || 0;
+    if (contextAdded > 0) evidenceChunks = expansion.chunks;
+    console.log(
+      `[rag-prep] stage parent_context..${contextMs}ms added=${contextAdded} chars=${contextChars} reserve=${contextReserve} primaryBudget=${primaryBudget}`
+    );
+  }
+
+  const scoredContext = withNormalizedChunkScores(evidenceChunks);
   const budgetedChunks = scoredContext.chunks;
   const sourceAssessment = assessSourceSufficiency(
     resolvedQuestion,
