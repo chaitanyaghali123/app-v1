@@ -5,9 +5,23 @@ type Block =
   | { type: "fence"; content: string }
   | { type: "heading"; level: number; content: string }
   | { type: "hr" }
-  | { type: "bullet"; content: string }
-  | { type: "ordered"; number: number; content: string }
+  | { type: "bullet"; content: string; depth: number }
+  | { type: "ordered"; number: number; content: string; depth: number }
+  | { type: "table"; header: string[]; rows: string[][] }
   | { type: "paragraph"; content: string };
+
+const isTableRow = (line: string) => /\|.*\|/.test(line.trim());
+const isTableDivider = (line: string) =>
+  /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(line.trim()) && line.includes("-");
+
+function splitRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
 
 function parseBlocks(text: string): Block[] {
   const lines = String(text || "").split("\n");
@@ -21,7 +35,8 @@ function parseBlocks(text: string): Block[] {
     }
   };
 
-  for (const rawLine of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
     const trimmed = rawLine.trim();
 
     if (fence !== null) {
@@ -40,6 +55,20 @@ function parseBlocks(text: string): Block[] {
 
     if (!trimmed) continue;
 
+    // A table needs a pipe row followed by a |---|---| divider.
+    if (isTableRow(trimmed) && isTableDivider(lines[i + 1] || "")) {
+      const header = splitRow(trimmed);
+      const rows: string[][] = [];
+      let j = i + 2;
+      while (j < lines.length && isTableRow(lines[j])) {
+        rows.push(splitRow(lines[j]));
+        j++;
+      }
+      blocks.push({ type: "table", header, rows });
+      i = j - 1;
+      continue;
+    }
+
     const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
       blocks.push({
@@ -55,9 +84,12 @@ function parseBlocks(text: string): Block[] {
       continue;
     }
 
+    const indent = rawLine.match(/^\s*/)?.[0].length || 0;
+    const depth = Math.min(2, Math.floor(indent / 2));
+
     const bullet = trimmed.match(/^[-*]\s+(.*)$/);
     if (bullet) {
-      blocks.push({ type: "bullet", content: bullet[1] });
+      blocks.push({ type: "bullet", content: bullet[1], depth });
       continue;
     }
 
@@ -67,6 +99,7 @@ function parseBlocks(text: string): Block[] {
         type: "ordered",
         number: parseInt(ordered[1], 10),
         content: ordered[2],
+        depth,
       });
       continue;
     }
@@ -126,16 +159,46 @@ export default function MarkdownAnswer({ text }: { text: string }) {
             return <View key={i} style={styles.hr} />;
           case "bullet":
             return (
-              <View key={i} style={styles.row}>
+              <View
+                key={i}
+                style={[styles.row, block.depth ? styles.nested : null]}
+              >
                 <Text style={styles.marker}>•</Text>
                 <InlineText content={block.content} style={styles.body} />
               </View>
             );
           case "ordered":
             return (
-              <View key={i} style={styles.row}>
+              <View
+                key={i}
+                style={[styles.row, block.depth ? styles.nested : null]}
+              >
                 <Text style={styles.marker}>{block.number}.</Text>
                 <InlineText content={block.content} style={styles.body} />
+              </View>
+            );
+          case "table":
+            return (
+              <View key={i} style={styles.table}>
+                <View style={[styles.tableRow, styles.tableHeadRow]}>
+                  {block.header.map((cell, c) => (
+                    <Text key={c} style={[styles.tableCell, styles.tableHead]}>
+                      {cell.replace(/\*\*/g, "")}
+                    </Text>
+                  ))}
+                </View>
+                {block.rows.map((row, r) => (
+                  <View
+                    key={r}
+                    style={[styles.tableRow, r % 2 ? styles.tableStripe : null]}
+                  >
+                    {row.map((cell, c) => (
+                      <Text key={c} style={styles.tableCell}>
+                        {cell}
+                      </Text>
+                    ))}
+                  </View>
+                ))}
               </View>
             );
           default:
@@ -179,6 +242,42 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     marginTop: 2,
     marginBottom: 2,
+  },
+  nested: {
+    marginLeft: 16,
+  },
+  table: {
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    borderRadius: 8,
+    overflow: "hidden",
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  tableRow: {
+    flexDirection: "row",
+    borderBottomWidth: 1,
+    borderBottomColor: "#e5e7eb",
+  },
+  tableHeadRow: {
+    backgroundColor: "#f9fafb",
+    borderBottomWidth: 2,
+    borderBottomColor: "#d1d5db",
+  },
+  tableStripe: {
+    backgroundColor: "#f9fafb",
+  },
+  tableCell: {
+    flex: 1,
+    color: "#374151",
+    fontSize: 13,
+    lineHeight: 19,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+  },
+  tableHead: {
+    color: "#111827",
+    fontWeight: "700",
   },
   marker: {
     color: "#374151",
