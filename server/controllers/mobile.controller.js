@@ -1519,13 +1519,14 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
     : mode === "limited" && retrievalMode === "ranked"
     ? 1000
     : 4600;
-  // 700-word answers need ~950 output tokens (English prose runs ~1.35 tokens per
-  // word). The previous 1.55x multiplier against a 600-word limit capped output at
-  // 930 and the client asked for only 850, so a long answer hit MAX_TOKENS around
-  // 550 words and was returned truncated. 1.8x leaves headroom for the top of the
-  // 500-700 range without changing the nominal word limit.
+  // A 700-word answer needs ~950 tokens of prose, plus heading tokens, plus the
+  // model's reasoning - and for gemini-3.x that reasoning is drawn from the SAME
+  // maxOutputTokens budget. At 1.8x a 600-word limit capped output at 1080 while
+  // the client asked for only 1000, so min() picked 1000 and a long answer hit
+  // MAX_TOKENS around 550 words and came back truncated. 2.6x leaves the cap above
+  // the client's 1400 request so the model stops on its own STOP instead.
   const cappedTargetTokens = wordLimit
-    ? Math.min(targetTokens, Math.round(wordLimit * 1.8))
+    ? Math.min(targetTokens, Math.round(wordLimit * 2.6))
     : targetTokens;
 
   // Parent-context expansion is budget-funded, not budget-additive. When enabled a

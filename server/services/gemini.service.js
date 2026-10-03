@@ -795,6 +795,7 @@ function buildRagPrompt({ question, chunks, subjectId }) {
   const wordLimitInstruction = wordLimit
     ? `
 LENGTH TARGET — ${wordLimit === 1300 ? "1170–1300" : "500–700"} words (headings excluded). This is a RANGE with a hard floor and a hard ceiling, not a soft suggestion: an answer under 500 words is too short to score, and one over 700 has stopped answering the question. Aim near the middle (~600 words).
+- GIVE EACH DIMENSION A WORD FLOOR, then count as you go. Divide the budget across the dimensions you have chosen, subtract the Introduction and Conclusion, and give every remaining dimension an equal share — roughly ${wordLimit === 1300 ? "150" : "95"}–${wordLimit === 1300 ? "200" : "130"} words each. With 4 dimensions that is about 110 words per section; with 5, about 95. A dimension is not finished when you have stated it: it is finished when you have explained WHY it matters, given the concrete evidence for it, and drawn out its significance to the question. Two thin sentences under a heading is the single most common way to fall short of the floor.
 - COUNT AS YOU GO: before you finish, check the running total. Under 500 words? Expand the thinnest sections with additional evidence from the chunks. Over 700 words? Cut the weakest material, and never the verdict the verb asks for.
 - Structure: ${wordLimit === 1300 ? essayStructure : mainsStructure}
 - COMPLETE THE ENTIRE ANSWER: finish every section, and any verdict the verb calls for, before stopping. Never truncate and never end mid-sentence. If the budget tightens, compress wording (shorter clauses, fewer adjectives) rather than cutting a section.
@@ -1125,7 +1126,7 @@ export async function proxyGeminiCall(apiKey, options) {
   const urls = buildGeminiUrls(":streamGenerateContent?alt=sse");
   const maxOutputTokens = targetTokens > 0 ? Math.min(targetTokens, 65536) : 8192;
   const answerWordLimit = detectWordLimit(question, subjectId);
-  const maxOutputTokensCapped = answerWordLimit ? Math.min(maxOutputTokens, Math.round(answerWordLimit * 1.55) + 100) : maxOutputTokens;
+  const maxOutputTokensCapped = answerWordLimit ? Math.min(maxOutputTokens, Math.round(answerWordLimit * 2.4) + 200) : maxOutputTokens;
   const generationConfig = buildGeminiGenerationConfig({
     temperature: 0.6,
     topP: 0.95,
