@@ -722,14 +722,14 @@ The answer MUST NOT follow a fixed Introduction → Body → Conclusion template
 - NO FIXED NUMBER OF FEATURES: as many sections as the evidence genuinely supports, stopping once they are adequately covered. Never pad, and never merge two distinct features into one heading.
 - Do not mirror the sources. Chunk titles describe the SOURCE's organisation, not the question's demand: a heading that would make an equally good title for a textbook chapter is the wrong heading. A heading must state the claim you are settling, not name a topic, policy or institution.
 - Do not create a generic "Body" or "Content" heading. Each section develops one distinct argument or dimension, and its heading names that argument rather than restating the question.
-- Each section = ONE clear argument with a bolded keyword opening and 1–2 concrete supporting facts. Structure: Point → Evidence → Tie-back to the verb.
+- Each section = one flowing explanatory paragraph (two only if the point is genuinely substantial): a bold thematic heading, then continuous prose that explains the feature or argument as a knowledgeable person would explain it aloud, with the specifics woven into the sentences that need them rather than listed after a lead-in label.
 - The analysis must follow the question's command verb:
   * Analyze → cause–effect, dimensions, dynamics.
   * Discuss / Comment → balanced treatment of both sides.
   * Critically examine / Examine → evidence for AND against, then a judgment.
   * Elucidate → explain with characteristics and examples.
   * Evaluate → criteria-led verdict (use the social/political/economic/cultural lenses if the question names them).
-- Use exam salting: names, dates, Acts, Commissions, schemes, institutions, case data — the specifics that separate a 10/15-marker from a list.
+- Weave in the specifics — names, dates, Acts, Commissions, schemes, institutions, case data — inside the sentences that actually need them, not as a list appended to a lead-in.
 
 ## **Conclusion** — optional, ONE short paragraph
 - Include only when the verb asks for judgment ("evaluate", "to what extent", "discuss"): a balanced verdict (NOT a summary) + a single forward-looking line, 2–3 sentences max. Otherwise end on the strongest argument instead of a labelled Conclusion.
@@ -743,7 +743,7 @@ The answer MUST NOT follow a fixed Introduction → Body → Conclusion template
 - READ CONTEXT CHUNKS AS PART OF THEIR PASSAGE: a unit labelled \`CONTEXT BEFORE/AFTER chunk N\` is the neighbouring text of chunk N, retrieved because the evidence budget truncated chunk N. It is the missing beginning or end of that argument — read it as continuous prose with chunk N, never as a separate source, and never attribute it to a different chapter, period or author.
 
 == LANGUAGE & PRESENTATION ==
-1. Formal, impersonal, crisp exam English; active sentences.
+1. Bold thematic heading, then flowing explanatory prose - clean, direct, confident English, the register of a subject expert explaining a topic across several sub-topics. No exam scaffolding: no "Point → Evidence → Tie-back", no rubric labels, no verdict boilerplate.
 2. Bold key terms and facts as on-paper underlining would (e.g. **regional planning**, **Planning Commission**).
 3. Minimal bullets — real Mains answers are paragraphs. Bullets only for enumerable items (e.g. the target-area programmes) and then keep each bullet to one line.
 4. Markdown headers \`## **<question-derived heading>**\` for each section you create; \`## **Introduction**\` / \`## **Conclusion**\` only when the verb calls for them. A table is permitted for comparisons. Headings are short and do not count toward the word limit.
