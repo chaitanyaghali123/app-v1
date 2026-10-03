@@ -9,6 +9,12 @@ services:
       dockerfile: Dockerfile
     container_name: semantic-backend
     working_dir: /app
+    # The image ships CMD ["node", "server.js"] and installs with --omit=dev, so
+    # without this the running server never picks up edits made to ./server and
+    # keeps serving the code loaded at start-up. nodemon runs with --legacy-watch
+    # because file-watch events do not propagate through a Windows bind mount on
+    # Docker Desktop, so it polls for changes instead.
+    command: node node_modules/nodemon/bin/nodemon.js --legacy-watch --watch controllers --watch services --watch routes --watch middleware server.js
     volumes:
       - ./server:/app
       - ./server/uploads:/app/uploads

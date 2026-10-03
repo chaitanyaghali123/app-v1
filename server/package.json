@@ -34,12 +34,12 @@
     "ioredis": "^5.10.1",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
+    "nodemon": "^3.0.1",
     "openai": "^6.16.0",
     "pdf-parse": "^1.1.4",
     "pg": "^8.16.3"
   },
   "devDependencies": {
-    "eslint": "^8.56.0",
-    "nodemon": "^3.0.1"
+    "eslint": "^8.56.0"
   }
 }
