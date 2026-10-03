@@ -279,14 +279,14 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
   const notes: string[] = [];
   if (timedOutAnswer) {
     notes.push(
-      "*_This answer was cut short by a generation timeout. What you see is the complete part that finished before the limit — the ending may be incomplete._"
+      "**This answer was cut short by a generation timeout. What you see is the complete part that finished before the limit — the ending may be incomplete.**"
     );
   } else if (truncatedAnswer) {
-    notes.push("*_Answer shortened to fit the response limit._");
+    notes.push("**Answer shortened to fit the response limit.**");
   }
   if (groundingReport && (groundingReport.removed || 0) > 0) {
     notes.push(
-      `*_${groundingReport.removed} unsupported detail${(groundingReport.removed || 0) > 1 ? "s" : ""} removed to keep this answer source-grounded._`
+      `**${groundingReport.removed} unsupported detail${(groundingReport.removed || 0) > 1 ? "s" : ""} removed to keep this answer source-grounded.**`
     );
   }
   const finalAnswer = notes.length
