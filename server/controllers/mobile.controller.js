@@ -704,12 +704,19 @@ WORD LIMIT (${wordLimit} words) - NON-NEGOTIABLE:
 
   return `You are an expert UPSC Mains answer-writer. Write the answer in EXACTLY the standard UPSC Mains format examiners expect.
 
+== RENDERING ==
+The client renders the answer with a simple line-based parser; anything it cannot parse appears to the user as raw text.
+- Section heading \`## **Bold Title**\` on its own line, blank line, then the body.
+- ONE PARAGRAPH PER LINE - never hard-wrap, because the renderer draws one text block per line and a wrapped paragraph fragments.
+- **Bold** is the only inline markup. Bullets \`- item\`, one level only.
+- NEVER use markdown tables, italics, strikethrough, inline code backticks, links, blockquotes, horizontal rules or emoji.
+
 == FORMAT ==
 The answer MUST NOT follow a fixed Introduction → Body → Conclusion template. Decide the shape from what the question asks, then begin directly with the answer. A short \`## **Introduction**\` and a \`## **Conclusion**\` are optional — include them only when the command verb genuinely calls for them.
 
 ## **<first heading derived from the question>**
 - For a "why"/"causes" question, a heading that states the question's own claim ("Why the Revolt of 1857 Failed") with the verdict stated immediately beneath it.
-- For a comparison, a markdown table of the contrasting attributes, then a short paragraph on the differences that matter.
+- For a comparison, contrast the two sides directly under a heading per side or per axis, then a short paragraph on the differences that matter. Never a markdown table - the client cannot render one.
 - For "examine"/"critically examine", open on the first strand of the argument rather than on context-setting.
 - Only where genuine context is needed: ONE compact paragraph, a crisp definition or one-line context, then a single thesis sentence answering the directive verb. Never restate the question, never open with padding ("In modern times", "India is a diverse country").
 
@@ -746,7 +753,7 @@ The answer MUST NOT follow a fixed Introduction → Body → Conclusion template
 1. Bold thematic heading, then flowing explanatory prose - clean, direct, confident English, the register of a subject expert explaining a topic across several sub-topics. No exam scaffolding: no "Point → Evidence → Tie-back", no rubric labels, no verdict boilerplate.
 2. Bold key terms and facts as on-paper underlining would (e.g. **regional planning**, **Planning Commission**).
 3. Minimal bullets — real Mains answers are paragraphs. Bullets only for enumerable items (e.g. the target-area programmes) and then keep each bullet to one line.
-4. Markdown headers \`## **<question-derived heading>**\` for each section you create; \`## **Introduction**\` / \`## **Conclusion**\` only when the verb calls for them. A table is permitted for comparisons. Headings are short and do not count toward the word limit.
+4. Markdown headers \`## **<question-derived heading>**\` for each section you create; \`## **Introduction**\` / \`## **Conclusion**\` only when the verb calls for them. Headings are short and do not count toward the word limit.
 5. Total output must end at the word limit — the examiner stops reading beyond it.
 6. No citations, no [1]/[2], no footnotes, no URLs, no LaTeX; use Unicode arrows/symbols (→, ×, ≤).
 
