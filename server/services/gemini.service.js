@@ -937,7 +937,15 @@ The answer is displayed by a simple line-based renderer. Anything it cannot pars
 - THE CONCLUSION IS NOT OPTIONAL: every answer ends with \`## **Conclusion**\`. An answer that stops on a numbered dimension, however good that dimension is, is unfinished - the examiner reads the conclusion as the claim being settled. Write it last, always, even when the last dimension feels like it has already said everything.
 - NEVER emit a heading with no body: every heading must be immediately followed by at least one full sentence. A leading heading that restates the question as a claim is welcome, but the thesis or verdict goes DIRECTLY under it — a bare title is never acceptable.
 - NEVER write a heading that comments on the state of the evidence ("Absence of Supported Facts", "Insufficient Evidence", "No Reliable Data"). If the retrieved chunks support only part of the question, build the sections that the supported part supports, and state the limitation once as a plain closing sentence. An answer must never narrate its own retrieval.
-- Bold thematic heading, then flowing explanatory prose - clean, direct, confident English of the kind a subject expert writes when asked to explain something across several sub-topics. No exam scaffolding: no "Point -> Evidence -> Tie-back", no rubric labels, no verdict boilerplate, no "This shows that..." restatement after every paragraph. No citations, [EVIDENCE X], or LaTeX - Unicode arrows OK.
+- Bold thematic heading, then its body: prose where an argument unfolds, or bullets where a dimension is a set of parallel items. No rubric labels, no citations, no [EVIDENCE X], no LaTeX - Unicode arrows OK.
+
+== HOW TO ANSWER, IN LAYERS ==
+- WRITE THE ANSWER, DO NOT SUMMARISE THE CHUNKS. You are a strong UPSC Mains writer working from evidence, not a summariser of whatever the retrieval returned. Work in layers: (1) read the question and work out what the EXAMINER is asking - the subject, the directive verb, and the dimensions explicitly or implicitly demanded; (2) choose the structure that makes those dimensions easiest to see, and name each one in a heading; (3) place the retrieved evidence UNDER the dimension it belongs to.
+- READ THE DIRECTIVE VERB - it changes the answer, not just the tone. "Explain" asks for an account and its mechanism. "Discuss" asks for a balanced treatment of the main dimensions. "Examine" or "critically examine" asks you to TEST the statement against the evidence and say which way it holds and where it fails. "Evaluate"/"appraise" asks for a weighed judgment against stated criteria. "Comment" asks for a considered position. "Examine this statement" is not a request to describe the subject; it is a request to say how far the statement holds.
+- MAKE THE MAJOR DIMENSIONS IMMEDIATELY VISIBLE. When a question names two or more things - "both an asset and a source of conflict", "social, economic and political aspects", "its achievements and its failures", "explain X and examine Y" - those ARE the major dimensions. Give each its own heading, in the order the question sets out, and never let one of them collapse into a passing sentence inside another section. A reader who reads ONLY the headings must be able to reconstruct the whole demand of the question; if a dimension the question names is missing from that list, it has not been answered.
+- DEVELOP EACH POINT; NEVER DUMP FACTS AND LEAVE THE EXAMINER TO INFER WHY THEY MATTER. Under a heading, take one point at a time and carry it through: state the claim, explain the reason or mechanism, attach a concrete named example or specific evidence, then say what it signifies. Where a dimension holds several such points, give each its own bullet with a bold lead-in for the point's name, so explanation and example sit under that point instead of being buried in one long paragraph. Choose bullets or paragraphs by whichever communicates that dimension better - prose for an argument that unfolds, bullets for parallel items.
+- Write it as argument, never as a printed template: do not label the steps ("Claim:", "Explanation:", "Significance:") and do not repeat a mechanical scaffold in every section. The flow must be felt in the writing, not announced in headings.
+- HONOUR A NAMED SCOPE. When the question names a region, a period, a community or a specific set of countries, the answer must be about that scope. If the evidence is about a narrower or different scope than the question names, do not silently answer the narrower question - cover what the evidence supports, and state the shortfall once in plain language in the Conclusion.
 
 ${wordLimitInstruction}
 
@@ -1750,10 +1758,10 @@ Set onTopic=true when the excerpts genuinely discuss the question's subject, eve
 
 When unsure, answer onTopic=true. A false refusal denies the user an answer their notes do support, which is the worse error.
 
-Respond with JSON only, no prose, no code fences:
-{"onTopic": true|false, "confidence": 0.0-1.0, "excerptSubject": "what the excerpts are actually about, one short phrase", "reason": "one short sentence"}`;
+ALSO REPORT SCOPE. Independently of onTopic, state whether the excerpts actually cover the scope the question names. A question asking about South Asia needs South Asian material; excerpts headed "Water Resources of India" are on-topic but answer a narrower question, and an answer built on them silently substitutes a different scope. Set questionScope to "none stated" when the question names no region, period, community or country set. Set scopeCovers=false only when the question names such a scope and the excerpts are confined to a clearly narrower or different one. A question naming no scope is always scopeCovers=true.
 
-// Second opinion, asked only when the first call says off-topic.
+Respond with JSON only, no prose, no code fences:
+{"onTopic": true|false, "confidence": 0.0-1.0, "scopeCovers": true|false, "questionScope": "the region, period, community or country set the question asks about, or \\"none stated\\"", "evidenceScope": "the region, period, community or country set the excerpts actually cover", "excerptSubject": "what the excerpts are actually about, one short phrase", "reason": "one short sentence"}`;
 //
 // A single judge call is not trusted with a refusal. Measured: asked whether
 // excerpts could answer "the tragedy of the commons", one call correctly said
@@ -1774,7 +1782,7 @@ Answer onTopic=true if ANY excerpt could support a substantive part of the answe
 Default to onTopic=true.
 
 Respond with JSON only, no prose, no code fences:
-{"onTopic": true|false, "confidence": 0.0-1.0, "excerptSubject": "what the excerpts are actually about, one short phrase", "reason": "one short sentence"}`;
+{"onTopic": true|false, "confidence": 0.0-1.0, "scopeCovers": true|false, "questionScope": "...", "evidenceScope": "...", "excerptSubject": "what the excerpts are actually about, one short phrase", "reason": "one short sentence"}`;
 
 function parseJudgeJson(text) {
   const raw = String(text || "").trim();
@@ -1864,6 +1872,9 @@ export async function judgeEvidenceRelevance({
     return {
       onTopic,
       confidence,
+      scopeCovers: parsed.scopeCovers !== false,
+      questionScope: String(parsed.questionScope || "none stated").slice(0, 120),
+      evidenceScope: String(parsed.evidenceScope || "unstated").slice(0, 120),
       excerptSubject: String(parsed.excerptSubject || "").slice(0, 160),
       reason: String(parsed.reason || "").slice(0, 300),
       judged: true,

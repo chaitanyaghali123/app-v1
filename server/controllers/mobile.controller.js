@@ -369,6 +369,74 @@ function selectBalancedChunks(chunks, question, maxChunks) {
 // "What is the green revolution?" and "What is the importance of the Indian
 // National Congress?" were both rejected in ~300ms, before the judge ever ran. A
 // missing tag is not a missing definition, and the judge reads the actual text.
+// Scope check, done deterministically rather than by the model.
+//
+// The LLM judge was asked whether the evidence covers the scope the question
+// names, and answered "Water resources, management, and disputes in India" with
+// confidence 1.00 for a question about South Asia - then set scopeCovers=true,
+// presumably reasoning that India is part of South Asia. Defensible, useless as
+// a gate. Its verdicts also flip between runs on the same input: "Ideas are
+// timeless and spaceless" was off-topic at 0.90 in one run and on-topic at 0.80
+// in the next.
+//
+// Proper nouns are the one case where string matching is reliable. "South Asia",
+// "Pakistan", "Teesta" have no synonyms, so presence or absence in the evidence
+// is a fact rather than a judgement. This is exactly where the earlier lexical
+// gate failed - abstract terms like "tragedy" and "commons" are synonym-prone,
+// and are left to the model. Regions and countries are not.
+const REGION_MEMBERS = {
+  "south asia": ["india", "pakistan", "bangladesh", "nepal", "bhutan", "sri lanka", "afghanistan", "maldives"],
+  "south-east asia": ["india", "myanmar", "thailand", "vietnam", "indonesia", "malaysia", "philippines", "singapore", "cambodia", "laos"],
+  "southeast asia": ["india", "myanmar", "thailand", "vietnam", "indonesia", "malaysia", "philippines", "singapore", "cambodia", "laos"],
+  "east asia": ["china", "japan", "korea", "mongolia", "taiwan"],
+  "central asia": ["kazakhstan", "uzbekistan", "turkmenistan", "kyrgyzstan", "tajikistan"],
+  "west asia": ["saudi arabia", "iran", "iraq", "israel", "turkey", "uae", "qatar", "oman", "yemen", "syria"],
+  "south america": ["brazil", "argentina", "chile", "peru", "colombia", "venezuela"],
+  "european union": ["france", "germany", "italy", "spain", "netherlands", "belgium", "poland", "sweden"],
+};
+
+const NAMED_COUNTRIES = [
+  "india", "pakistan", "bangladesh", "nepal", "bhutan", "sri lanka", "afghanistan", "maldives",
+  "china", "japan", "myanmar", "thailand", "vietnam", "indonesia", "africa", "brazil", "russia",
+  "france", "germany", "britain", "america", "australia", "canada", "korea", "turkey", "egypt",
+  "nepal", "america", "iran", "iraq", "israel", "greece", "rome", "bharat",
+];
+
+function deterministicScopeCheck(question, chunks) {
+  const haystack = chunks
+    .map((c) => cleanChunkText(c.text || "").toLowerCase())
+    .join("\n");
+  const q = String(question || "").toLowerCase();
+
+  for (const [region, members] of Object.entries(REGION_MEMBERS)) {
+    if (!q.includes(region)) continue;
+    const covered = members.filter((m) => haystack.includes(m));
+    // A multi-country region needs material reaching beyond one constituent,
+    // otherwise the answer silently answers a single country instead.
+    if (covered.length < 2) {
+      return {
+        ok: false,
+        issue: `The question asks about ${region}, but the retrieved notes cover only ${covered[0] || "none of the region"}. An answer built on them would quietly answer about ${covered[0] || "a different area"} instead of ${region}, so none has been written. Add source material covering ${region} and try again.`,
+      };
+    }
+    return { ok: true };
+  }
+
+  for (const country of NAMED_COUNTRIES) {
+    if (!new RegExp(`\\b${country}\\b`).test(q)) continue;
+    if (!new RegExp(`\\b${country}\\b`).test(haystack)) {
+      const label = country === "america" ? "the United States" : country[0].toUpperCase() + country.slice(1);
+      return {
+        ok: false,
+        issue: `The question asks about ${label}, but the retrieved notes do not mention it. An answer would have to be written from material about a different subject, so none has been written. Add source material covering ${label} and try again.`,
+      };
+    }
+    return { ok: true };
+  }
+
+  return { ok: true };
+}
+
 function assessSourceSufficiency(question, chunks) {
   if (!chunks || chunks.length === 0) {
     return {
@@ -776,7 +844,7 @@ The answer uses the standard UPSC Mains frame — \`## **Introduction**\` → nu
 - NO FIXED NUMBER OF FEATURES: as many sections as the evidence genuinely supports, stopping once they are adequately covered. Never pad, and never merge two distinct features into one heading.
 - Do not mirror the sources. Chunk titles describe the SOURCE's organisation, not the question's demand: a heading that would make an equally good title for a textbook chapter is the wrong heading. A heading must state the claim you are settling, not name a topic, policy or institution.
 - Do not create a generic "Body" or "Content" heading. Each section develops one distinct argument or dimension, and its heading names that argument rather than restating the question.
-- Each section = one flowing explanatory paragraph (two only if the point is genuinely substantial): a bold thematic heading, then continuous prose that explains the feature or argument as a knowledgeable person would explain it aloud, with the specifics woven into the sentences that need them rather than listed after a lead-in label.
+- DEVELOP EACH POINT, DON'T DUMP FACTS. Under a heading take one point at a time and carry it through: state the claim, explain the reason or mechanism, attach a concrete named example or specific evidence, then say what it signifies. Where a dimension holds several such points, give each its own bullet with a bold lead-in for the point's name, so its explanation and example sit under that point rather than being buried in one long paragraph. Use prose where an argument unfolds and bullets where the points are parallel. Never present a fact and leave its significance for the examiner to infer - but write the flow as argument, never as a printed "Claim:" / "Explanation:" / "Significance:" template.
 - The analysis must follow the question's command verb:
   * Analyze → cause–effect, dimensions, dynamics.
   * Discuss / Comment → balanced treatment of both sides.
@@ -785,8 +853,14 @@ The answer uses the standard UPSC Mains frame — \`## **Introduction**\` → nu
   * Evaluate → criteria-led verdict (use the social/political/economic/cultural lenses if the question names them).
 - Weave in the specifics — names, dates, Acts, Commissions, schemes, institutions, case data — inside the sentences that actually need them, not as a list appended to a lead-in.
 
-## **Conclusion** — optional, ONE short paragraph
-- Include only when the verb asks for judgment ("evaluate", "to what extent", "discuss"): a balanced verdict (NOT a summary) + a single forward-looking line, 2–3 sentences max. Otherwise end on the strongest argument instead of a labelled Conclusion.
+## **Conclusion** — mandatory, ONE short paragraph
+- Every answer ends with a Conclusion of 2–3 sentences. When the verb asks for judgment ("evaluate", "to what extent", "examine", "discuss") it is a weighed verdict, NOT a summary; otherwise it synthesises the strongest argument. If the retrieved chunks fall short of the scope the question names, say so once here in plain language rather than passing the shortfall off as a full answer.
+
+== WRITE THE ANSWER, DON'T SUMMARISE THE CHUNKS ==
+- Work in layers. (1) Read the question and decide what the EXAMINER is asking: the subject, the directive verb, and the dimensions explicitly or implicitly demanded. (2) Choose the structure that makes those dimensions easiest to see, and name each in a heading. (3) Place the retrieved evidence UNDER the dimension it belongs to. The evidence is the factual boundary, never the answer structure.
+- MAKE THE MAJOR DIMENSIONS IMMEDIATELY VISIBLE. When the question names two or more things — "both an asset and a source of conflict", "social, economic and political aspects", "achievements and failures" — those ARE the major dimensions: give each its own heading, in the order the question sets them out, and never let one collapse into a passing sentence inside another section. A reader who reads ONLY the headings must be able to reconstruct the whole demand of the question.
+- READ THE DIRECTIVE VERB; it changes the answer, not just the tone. "Explain" asks for an account and its mechanism. "Discuss" asks for a balanced treatment of the main dimensions. "Examine" asks you to TEST the statement against the evidence and say which way it holds and where it fails — not merely to describe the subject. "Evaluate" asks for a weighed judgment against stated criteria. "Comment" asks for a considered position.
+- HONOUR A NAMED SCOPE. When the question names a region, period, community or set of countries, answer about that scope. If the evidence covers a narrower scope than the question names, do not silently answer the narrower question.
 
 == EVIDENCE RULES ==
 - The reference chunks are your ONLY source of facts (strict source-lock) — mine every chunk for names, dates, acts, schemes, definitions, examples and use them.
@@ -797,9 +871,9 @@ The answer uses the standard UPSC Mains frame — \`## **Introduction**\` → nu
 - READ CONTEXT CHUNKS AS PART OF THEIR PASSAGE: a unit labelled \`CONTEXT BEFORE/AFTER chunk N\` is the neighbouring text of chunk N, retrieved because the evidence budget truncated chunk N. It is the missing beginning or end of that argument — read it as continuous prose with chunk N, never as a separate source, and never attribute it to a different chapter, period or author.
 
 == LANGUAGE & PRESENTATION ==
-1. Bold thematic heading, then flowing explanatory prose - clean, direct, confident English, the register of a subject expert explaining a topic across several sub-topics. No exam scaffolding: no "Point → Evidence → Tie-back", no rubric labels, no verdict boilerplate.
+1. Bold thematic heading, then its body - clean, direct, confident English, the register of a subject expert explaining a topic across several sub-topics. Prose where an argument unfolds; one bullet per point with a bold lead-in where a dimension is a set of parallel points. No rubric labels, no verdict boilerplate.
 2. Bold key terms and facts as on-paper underlining would (e.g. **regional planning**, **Planning Commission**).
-3. Minimal bullets — real Mains answers are paragraphs. Bullets only for enumerable items (e.g. the target-area programmes) and then keep each bullet to one line.
+3. Bullets carry points, not fragments. Use them where a dimension is a set of parallel points — one bullet per point, bold lead-in for the point's name, explanation and example under it. Use prose where an argument unfolds. A bullet that is a bare noun phrase with no explanation is a bad bullet.
 4. Markdown headers: \`## **Introduction**\`, then \`## **1. <dimension>**\`, \`## **2. <dimension>**\` … for each dimension you derive from the question, then \`## **Conclusion**\`. Headings are short, do not count toward the word limit, and must name their own dimension ("Role of Print and Intelligentsia", "Provincial Administration") rather than restate the question.
 5. Total output must end at the word limit — the examiner stops reading beyond it.
 6. No citations, no [1]/[2], no footnotes, no URLs, no LaTeX; use Unicode arrows/symbols (→, ×, ≤).
@@ -1622,10 +1696,13 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
     budgetedChunks
   );
   const thinAssessment = isThinEvidence(budgetedChunks);
-  let sufficient = sourceAssessment.sufficient && !thinAssessment.thin;
-  let sourceIssue = thinAssessment.thin
-    ? THIN_EVIDENCE_MESSAGE
-    : sourceAssessment.issue;
+  const scopeCheck = deterministicScopeCheck(resolvedQuestion, budgetedChunks);
+  let sufficient = sourceAssessment.sufficient && !thinAssessment.thin && scopeCheck.ok;
+  let sourceIssue = !scopeCheck.ok
+    ? scopeCheck.issue
+    : thinAssessment.thin
+      ? THIN_EVIDENCE_MESSAGE
+      : sourceAssessment.issue;
 
   // Semantic relevance gate.
   //
@@ -1651,10 +1728,10 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
     console.log(
       `[evidence-judge] totalMs=${Date.now() - judgeStartedAt} judged=${evidenceJudge.judged}`
     );
-    if (evidenceJudge.judged && !evidenceJudge.onTopic) {
-      // One confident call is not enough to refuse. Ask again, framed in the
-      // opposite direction, and refuse only if both agree the notes are about a
-      // different subject.
+    if (evidenceJudge.judged && (!evidenceJudge.onTopic || !evidenceJudge.scopeCovers)) {
+      // One call is never enough to refuse, for either an off-topic verdict or a
+      // scope mismatch. Ask again, framed in the opposite direction, and refuse
+      // only if the second call agrees.
       const confirm = await judgeEvidenceRelevance({
         apiKey: userApiKey,
         question: resolvedQuestion,
@@ -1662,16 +1739,30 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
         variant: "confirm",
       });
       console.log(
-        `[evidence-judge] first=off-topic confirm=${confirm.judged ? (confirm.onTopic ? "on-topic" : "off-topic") : "unavailable"}`
+        `[evidence-judge] first=${evidenceJudge.onTopic ? "on-topic" : "off-topic"}/scope=${evidenceJudge.scopeCovers} ` +
+          `confirm=${confirm.judged ? `${confirm.onTopic ? "on-topic" : "off-topic"}/scope=${confirm.scopeCovers}` : "unavailable"}`
       );
       evidenceJudge.confirmation = confirm;
-      if (confirm.judged && !confirm.onTopic) {
-        sufficient = false;
+      const refused = confirm.judged && (!confirm.onTopic || !confirm.scopeCovers);
+      if (refused && !evidenceJudge.onTopic) {
         const actual = evidenceJudge.excerptSubject
           ? `they are about ${evidenceJudge.excerptSubject}`
           : "the material covers a different subject";
         sourceIssue = `The retrieved source notes are not about the subject this question asks about (${actual}). No answer has been written rather than an answer drawn from unrelated material. Add source material on this topic and try again.`;
+      } else if (refused) {
+        // On-topic but wrong scope: a question about South Asia served notes on
+        // India. Answering anyway silently substitutes a narrower question for the
+        // one asked, which is what made an India-centric answer look like a South
+        // Asian one.
+        const asked = evidenceJudge.questionScope && evidenceJudge.questionScope !== "none stated"
+          ? evidenceJudge.questionScope
+          : "the scope this question names";
+        const covered = evidenceJudge.evidenceScope && evidenceJudge.evidenceScope !== "unstated"
+          ? evidenceJudge.evidenceScope
+          : "a narrower scope";
+        sourceIssue = `The retrieved source notes cover ${covered}, but this question asks about ${asked}. An answer built on them would quietly answer a different, narrower question, so none has been written. Add source material covering ${asked} and try again.`;
       }
+      if (refused) sufficient = false;
     }
   }
 
