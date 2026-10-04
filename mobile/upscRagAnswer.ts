@@ -146,8 +146,9 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
   let sentenceScores: { sentence: string; score: number; bestChunkId: string; verdict: string }[] = [];
   let chunkScores: number[] = [];
   let generationReason: string | null = null;
-  let truncatedAnswer = false;
-  let timedOutAnswer = false;
+let truncatedAnswer = false;
+let timedOutAnswer = false;
+let stoppedByFilter = false;
   let groundingReport: { supportAvg?: number; removed?: number; flagged?: number; grounded?: boolean } | null = null;
   let sawToken = false;
 
@@ -187,6 +188,7 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
         generationReason = typeof data.generationReason === "string" ? data.generationReason : null;
         truncatedAnswer = data.truncated === true;
         timedOutAnswer = data.timedOut === true;
+        stoppedByFilter = data.stoppedByFilter === true;
         groundingReport = (data.grounding as { supportAvg?: number; removed?: number; flagged?: number; grounded?: boolean }) || null;
         options.onToken?.(fullAnswer);
         break;
@@ -281,7 +283,9 @@ export async function answerUpscQuestionFromChunks(options: AnswerOptions) {
     notes.push(
       "**This answer was cut short by a generation timeout. What you see is the complete part that finished before the limit — the ending may be incomplete.**"
     );
-  } else if (truncatedAnswer) {
+  } else if (truncatedAnswer && !stoppedByFilter) {
+    // When a content filter ended generation the server already appended a notice
+    // naming the reason, so adding the generic truncation note here would print two.
     notes.push("**Answer shortened to fit the response limit.**");
   }
   if (groundingReport && (groundingReport.removed || 0) > 0) {

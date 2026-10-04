@@ -765,6 +765,16 @@ function clampAnswerToLimit(text, wordLimit) {
   return src.slice(0, boundary >= 0 ? boundary : end).trim();
 }
 
+// Finish reasons that end generation for content reasons rather than a budget or
+// network problem. Generation up to this point is valid and shown to the user.
+const SAFETY_FINISH_REASONS = new Set([
+  "SAFETY",
+  "RECITATION",
+  "BLOCKLIST",
+  "PROHIBITED_CONTENT",
+  "SPII",
+]);
+
 function enforceWordLimit(answer, wordLimit) {
   const text = String(answer || "");
   const wordCount = countWords(text);
@@ -1538,6 +1548,33 @@ export async function proxyGeminiCall(apiKey, options) {
   }
 
   if (finishReason && finishReason !== "STOP") {
+    // SAFETY and RECITATION terminate generation mid-answer. The partial text is
+    // still grounded, still rendered, and still worth showing - discarding it for a
+    // 502 throws away a complete-looking answer the user was already reading.
+    // The notice uses ** markers because the client renderer only parses bold.
+    if (SAFETY_FINISH_REASONS.has(finishReason) && groundedText.length > 0) {
+      const enforcedSafety = enforceWordLimit(groundedText, answerWordLimit);
+      console.warn(
+        `[gemini] answer stopped by ${finishReason} after ${tokenCount} output tokens, returning partial answer`
+      );
+      return {
+        answer: `${enforcedSafety.answer}\n\n**Response stopped early by model ${finishReason.toLowerCase()} filters. What you see is the part generated before they triggered.**`,
+        tokenCount,
+        wordCount: enforcedSafety.wordCount,
+        wordLimit: answerWordLimit || null,
+        wordLimitClamped: enforcedSafety.clamped,
+        truncated: true,
+        stoppedByFilter: true,
+        finishReason,
+        grounding: {
+          supportAvg: grounding.supportAvg,
+          removed: grounding.removed.length,
+          flagged: grounding.flagged.length,
+          relational: grounding.relational.length,
+          grounded: grounding.grounded,
+        },
+      };
+    }
     if (finishReason === "MAX_TOKENS" && groundedText.length > 0) {
       console.warn(`[gemini] answer truncated at MAX_TOKENS (${tokenCount} output tokens), returning partial answer with truncated flag`);
       const enforcedPartial = enforceWordLimit(groundedText, answerWordLimit);
@@ -1669,10 +1706,18 @@ export async function generateAnswer({ apiKey, question, chunks, subjectId, opti
   );
 
   const data = await response.json();
-  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const candidate = data?.candidates?.[0] || {};
+  const parts = candidate?.content?.parts || [];
   const text = parts.map((part) => part?.text || "").join("");
+  const answerWordLimit = detectWordLimit(question, subjectId);
+  const finishReason = candidate?.finishReason;
 
-  if (!text.trim()) {
+  // Distinguish "the filter fired" from "the model produced nothing". A blocked
+  // response carries a finishReason but no text, so it can never be salvaged.
+  const blockedWithNoText =
+    !text.trim() && finishReason && SAFETY_FINISH_REASONS.has(finishReason);
+
+  if (!text.trim() && !blockedWithNoText) {
     throw new GeminiApiError({
       message: "Gemini returned an empty response or was blocked by safety filters.",
       status: 502,
@@ -1683,16 +1728,18 @@ export async function generateAnswer({ apiKey, question, chunks, subjectId, opti
   }
 
   const cleaned = restoreExactDiagrams(cleanModelOutput(text), chunks);
-
-  const answerWordLimit = detectWordLimit(question, subjectId);
   const enforced = enforceWordLimit(cleaned, answerWordLimit);
+  const stoppedByFilter = Boolean(text.trim()) && SAFETY_FINISH_REASONS.has(finishReason);
 
   return {
-    answer: enforced.answer,
+    answer: stoppedByFilter
+      ? `${enforced.answer}\n\n**Response stopped early by model ${String(finishReason).toLowerCase()} filters. What you see is the part generated before they triggered.**`
+      : enforced.answer,
     modelUsed: getGeminiModel(),
     usage: data?.usageMetadata || null,
     wordCount: enforced.wordCount,
     wordLimit: answerWordLimit || null,
     wordLimitClamped: enforced.clamped,
+    ...(stoppedByFilter ? { truncated: true, stoppedByFilter: true, finishReason } : {}),
   };
 }
