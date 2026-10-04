@@ -1730,6 +1730,156 @@ export async function proxyGeminiCall(apiKey, options) {
 
 const RAG_ANSWER_SYSTEM_INSTRUCTION = "You are an expert UPSC Mains answer-writer for UPSC study material. The answer follows the standard UPSC Mains frame - Introduction → numbered dimensions → Conclusion - but everything inside that frame comes from the question, not from a preset. Work out what the question demands first, then derive the dimensions and their number, names, order and nature from it:\n- Features/characteristics demands: organise directly by the features themselves, one concise heading each, covering every dimension the evidence supports and stopping where the evidence stops.\n- Causes/effects demands: organise by cause and effect themes with explicit links.\n- Compare/distinguish: parallel point-by-point contrast under a heading per side or per axis, paired bullets, or a markdown table when several axes line up.\n- Comment/evaluate/critically examine/to what extent: organise around the dimensions the assessment needs, then close with a short verdict in the Conclusion.\n- Write the Introduction as 2-3 sentences of real context that directly addresses the directive verb (never a restatement of the question), number the body sections 1., 2., 3. in the order the question demands, and close with a Conclusion of 2-3 sentences that synthesises or judges rather than summarising. Sections may mix prose, bullets, evidence and examples as the material requires. The frame is fixed; the content of the frame is entirely question-specific.\nEach section develops one distinct argument or dimension in flowing prose - a bold thematic heading followed by continuous explanatory paragraphs that weave the specifics into the sentences that need them. Bold a term only where it carries the point, and never use a Point → Evidence → Tie-back scaffold, rubric labels, or a restatement after every paragraph. Never use a generic \"Body\" or \"Content\" heading, never lift a heading from the source's chapter titles, and never emit a heading with no body under it. Ground every claim in the EVIDENCE chunks, mining ALL chunks. STRICT SOURCE-LOCK: use ONLY the evidence chunks - never add facts, names, dates, numbers, or examples from memory, even if confidently known; if a needed point is not in the chunks, omit it and never fill from prior knowledge. NEVER invent figures, dates, or quotes. For enumerative demands (distinctive features/characteristics/factors), list each feature/factor explicitly with a bolded name and concrete example. Report only certain facts - omit doubtful numbers/years; precision beats breadth. Do not manufacture specificity: attribute only what the evidence establishes; prefer broader, well-supported statements over impressive but weakly supported ones. REQUIRE VERIFIED EXAMPLES: anchor each body point in 1-3 concrete named examples from the evidence; 3-5 supported examples beat 10 uncertain ones; never answer an \"with examples\" question with zero named examples. For amalgamation/synthesis questions, for amalgamation/synthesis questions use natural thematic headings and weave the past-vs-contemporary contrast into each section (no mechanical label pairs); prefer examples of the subject asked about over its predecessors. Grade confidence by source: assert evidence-supported facts confidently; keep beyond-evidence additions subordinate and conservative. Honor the word limit in the question (600 words for Mains, 1300 words for Essay). Rephrase prose in your own words. No citations, no odd generic sub-headings unless the evidence contains the theme, no LaTeX, no verbatim box-diagrams (describe instead).";
 
+// Refuse to answer only when the model is highly confident the evidence cannot
+// answer the question. Anything less - low confidence, unparseable output, an API
+// error, a timeout - resolves to canAnswer:true, because wrongly refusing a
+// question the notes DO answer is the worse failure by far.
+const EVIDENCE_JUDGE_MIN_CONFIDENCE = 0.85;
+const EVIDENCE_JUDGE_CHUNK_CHARS = 1400;
+
+const EVIDENCE_JUDGE_SYSTEM_INSTRUCTION = `You decide whether a set of source excerpts is about the SAME SUBJECT as a question. That is the only thing you decide.
+
+You are NOT judging:
+- completeness or depth. Excerpts that cover only one or two aspects of a question are still on-subject. Most exam questions need far more than the excerpts show. Never refuse for being partial, brief, or excerpted.
+- whether the excerpts use the question's wording. A quotation or an abstract idea is often covered by excerpts sharing almost none of its words. Judge subject matter, not vocabulary.
+- answer quality, length, or exam style.
+
+Set onTopic=false ONLY when the excerpts are about a clearly different subject from the one the question asks about. Examples of onTopic=false: excerpts about art history and painting for a question about education policy or agricultural administration; excerpts about constitutional law for a question about medieval trade routes.
+
+Set onTopic=true when the excerpts genuinely discuss the question's subject, even partially, even if they never use the question's words, and even if the excerpts are cut off mid-sentence.
+
+When unsure, answer onTopic=true. A false refusal denies the user an answer their notes do support, which is the worse error.
+
+Respond with JSON only, no prose, no code fences:
+{"onTopic": true|false, "confidence": 0.0-1.0, "excerptSubject": "what the excerpts are actually about, one short phrase", "reason": "one short sentence"}`;
+
+// Second opinion, asked only when the first call says off-topic.
+//
+// A single judge call is not trusted with a refusal. Measured: asked whether
+// excerpts could answer "the tragedy of the commons", one call correctly said
+// yes, and another confidently said no - describing the same excerpts as
+// "landownership in Mughal India, Indian forestry, conservation and pastoralism",
+// which is precisely the material that question is answered from. The failure is
+// conceptual: a quotation names its topic abstractly and the excerpts name it
+// concretely, so surface subject mismatch looks like a different field.
+//
+// So this variant is framed in the opposite direction and defaults to on-topic.
+// A refusal must survive both.
+const EVIDENCE_JUDGE_CONFIRM_INSTRUCTION = `A previous check judged a set of source excerpts to be about a different subject than the question, and is asking you to re-examine that judgement.
+
+Examine the excerpts again before answering. Quote, maxims and abstract concepts name their subject abstractly ("the tragedy of the commons"), while the excerpts discuss that same subject concretely and technically (landownership, common pasture, forest use, pastoralism, resource depletion). That is a match, not a mismatch.
+
+Answer onTopic=true if ANY excerpt could support a substantive part of the answer, including when it approaches the subject through a specific historical, technical or regional case. Only answer onTopic=false when the excerpts belong to an unmistakably different field and no plausible reading connects them to the question.
+
+Default to onTopic=true.
+
+Respond with JSON only, no prose, no code fences:
+{"onTopic": true|false, "confidence": 0.0-1.0, "excerptSubject": "what the excerpts are actually about, one short phrase", "reason": "one short sentence"}`;
+
+function parseJudgeJson(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+  const unfenced = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+  const start = unfenced.indexOf("{");
+  const end = unfenced.lastIndexOf("}");
+  const candidate = start > -1 && end > start ? unfenced.slice(start, end + 1) : unfenced;
+  try {
+    const parsed = JSON.parse(candidate);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function judgeEvidenceRelevance({
+  apiKey,
+  question,
+  chunks,
+  variant = "primary",
+  timeoutMs = 20000,
+} = {}) {
+  const cleanKey = String(apiKey || "").trim();
+  const list = Array.isArray(chunks) ? chunks.filter((c) => c?.text) : [];
+  if (!cleanKey || list.length === 0 || !question) {
+    return { onTopic: true, confidence: 0, reason: "judge skipped", judged: false };
+  }
+  const isConfirm = variant === "confirm";
+
+  const excerpt = list
+    .slice(0, 6)
+    .map((c, i) => `[${i + 1}] ${String(c.text).slice(0, EVIDENCE_JUDGE_CHUNK_CHARS)}`)
+    .join("\n\n");
+
+  const requestBody = {
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `QUESTION:\n${String(question).slice(0, 600)}\n\nSOURCE EXCERPTS:\n${excerpt}`,
+          },
+        ],
+      },
+    ],
+    systemInstruction: {
+      parts: [
+        {
+          text: isConfirm
+            ? EVIDENCE_JUDGE_CONFIRM_INSTRUCTION
+            : EVIDENCE_JUDGE_SYSTEM_INSTRUCTION,
+        },
+      ],
+    },
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 400,
+      responseMimeType: "application/json",
+    },
+  };
+
+  try {
+    const response = await requestGemini(
+      cleanKey,
+      buildGeminiUrls(":generateContent"),
+      { method: "POST", body: JSON.stringify(requestBody) },
+      { operation: "judge_evidence", timeoutMs, retries: 0 }
+    );
+    const data = await response.json();
+    const candidate = data?.candidates?.[0] || {};
+    const text = (candidate?.content?.parts || []).map((p) => p?.text || "").join("");
+    const parsed = parseJudgeJson(text);
+    if (!parsed || typeof parsed.onTopic !== "boolean") {
+      console.warn(`[evidence-judge] unusable response, treating as on-topic: ${text.slice(0, 160)}`);
+      return { onTopic: true, confidence: 0, reason: "unparseable judge response", judged: false };
+    }
+    const confidence = Number.isFinite(Number(parsed.confidence))
+      ? Math.max(0, Math.min(1, Number(parsed.confidence)))
+      : 0;
+    // Refuse only on a confident off-topic call; anything shakier answers.
+    const onTopic = parsed.onTopic === true || confidence < EVIDENCE_JUDGE_MIN_CONFIDENCE;
+    console.log(
+      `[evidence-judge${isConfirm ? ":confirm" : ""}] onTopic=${onTopic} raw=${parsed.onTopic} conf=${confidence.toFixed(2)} ` +
+        `excerptSubject="${String(parsed.excerptSubject || "").slice(0, 60)}" q="${String(question).slice(0, 60)}"`
+    );
+    return {
+      onTopic,
+      confidence,
+      excerptSubject: String(parsed.excerptSubject || "").slice(0, 160),
+      reason: String(parsed.reason || "").slice(0, 300),
+      judged: true,
+    };
+  } catch (error) {
+    // A judge that cannot run must not become a refusal.
+    console.warn(`[evidence-judge] failed, treating as on-topic: ${error?.message || error}`);
+    return {
+      onTopic: true,
+      confidence: 0,
+      reason: `judge unavailable: ${error?.message || error}`,
+      judged: false,
+    };
+  }
+}
+
 export async function generateAnswer({ apiKey, question, chunks, subjectId, options = {} }) {
   const cleanKey = String(apiKey || "").trim();
   if (!cleanKey) {

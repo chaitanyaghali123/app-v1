@@ -1,7 +1,7 @@
 import { queryVector } from "../services/vector.service.js";
 import { pool } from "../services/db.service.js";
 import { getGeminiKeyRecord, markGeminiKeyFailure, markGeminiKeyValidated } from "../services/db.service.js";
-import { decryptGeminiApiKeyRecord, fingerprintGeminiApiKey, proxyGeminiCall, toPublicGeminiError } from "../services/gemini.service.js";
+import { decryptGeminiApiKeyRecord, fingerprintGeminiApiKey, judgeEvidenceRelevance, proxyGeminiCall, toPublicGeminiError } from "../services/gemini.service.js";
 import { enforceGeminiAbusePolicy, recordGeminiFailureForAbuse } from "../services/gemini-abuse.service.js";
 import { anonymizeIdentifier, logGeminiEvent, recordGeminiMetric } from "../services/gemini-monitoring.service.js";
 import { SUBJECT_FOLDER_MAP, GS_PAPER_FOLDER_MAP } from "./gsMapping.js";
@@ -316,20 +316,20 @@ function selectBalancedChunks(chunks, question, maxChunks) {
   return tagEvidenceFacets(selected, question);
 }
 
+// Cheap structural checks only. Whether the notes are actually about the
+// question's subject is decided semantically by judgeEvidenceRelevance, which
+// runs immediately after this.
+//
+// The definition-facet rule that used to live here was removed: it refused any
+// "what is X?" question whose chunks lacked a definition facet tag, so
+// "What is the green revolution?" and "What is the importance of the Indian
+// National Congress?" were both rejected in ~300ms, before the judge ever ran. A
+// missing tag is not a missing definition, and the judge reads the actual text.
 function assessSourceSufficiency(question, chunks) {
-  const requiresDefinition =
-    /^\s*(?:what\s+(?:is|are)|define|give\s+(?:the\s+)?meaning\s+of)\b/i.test(
-      question
-    );
-  const hasDefinition = chunks.some(
-    (chunk) => chunk.metadata?.rag_facet === "definition"
-  );
-
-  if (requiresDefinition && !hasDefinition) {
+  if (!chunks || chunks.length === 0) {
     return {
       sufficient: false,
-      issue:
-        "The retrieved notes mention this topic but do not contain its definition. Add substantive source material before generating an answer.",
+      issue: THIN_EVIDENCE_MESSAGE,
     };
   }
 
@@ -1578,10 +1578,58 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
     budgetedChunks
   );
   const thinAssessment = isThinEvidence(budgetedChunks);
-  const sufficient = sourceAssessment.sufficient && !thinAssessment.thin;
-  const sourceIssue = thinAssessment.thin
+  let sufficient = sourceAssessment.sufficient && !thinAssessment.thin;
+  let sourceIssue = thinAssessment.thin
     ? THIN_EVIDENCE_MESSAGE
     : sourceAssessment.issue;
+
+  // Semantic relevance gate.
+  //
+  // Neither term coverage nor the reranker can decide this. Measured on real
+  // questions: "the tragedy of the commons" scores -10.68 on the cross-encoder
+  // (the worst of eight questions) yet the notes answer it well, because a bare
+  // quotation shares almost no features with environmental-economics chunks; and
+  // an art textbook literally contains the words "education" and "administration"
+  // while being about art, so term presence proves nothing. Both signals fail in
+  // both directions, so the only defensible test is asking a model.
+  //
+  // It runs only after the cheap checks pass, so no extra call is spent on
+  // questions already decided, and judgeEvidenceRelevance resolves to
+  // canAnswer:true on any error, ambiguity or low confidence.
+  let evidenceJudge = null;
+  if (sufficient && userApiKey && budgetedChunks.length > 0) {
+    const judgeStartedAt = Date.now();
+    evidenceJudge = await judgeEvidenceRelevance({
+      apiKey: userApiKey,
+      question: resolvedQuestion,
+      chunks: budgetedChunks,
+    });
+    console.log(
+      `[evidence-judge] totalMs=${Date.now() - judgeStartedAt} judged=${evidenceJudge.judged}`
+    );
+    if (evidenceJudge.judged && !evidenceJudge.onTopic) {
+      // One confident call is not enough to refuse. Ask again, framed in the
+      // opposite direction, and refuse only if both agree the notes are about a
+      // different subject.
+      const confirm = await judgeEvidenceRelevance({
+        apiKey: userApiKey,
+        question: resolvedQuestion,
+        chunks: budgetedChunks,
+        variant: "confirm",
+      });
+      console.log(
+        `[evidence-judge] first=off-topic confirm=${confirm.judged ? (confirm.onTopic ? "on-topic" : "off-topic") : "unavailable"}`
+      );
+      evidenceJudge.confirmation = confirm;
+      if (confirm.judged && !confirm.onTopic) {
+        sufficient = false;
+        const actual = evidenceJudge.excerptSubject
+          ? `they are about ${evidenceJudge.excerptSubject}`
+          : "the material covers a different subject";
+        sourceIssue = `The retrieved source notes are not about the subject this question asks about (${actual}). No answer has been written rather than an answer drawn from unrelated material. Add source material on this topic and try again.`;
+      }
+    }
+  }
 
   console.log(
     `[rag-prep] total=${Date.now() - prepStartedAt}ms ${Object.entries({
