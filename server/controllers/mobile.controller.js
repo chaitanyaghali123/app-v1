@@ -159,6 +159,21 @@ function chunkQualityPenalty(text) {
   return penalty;
 }
 
+// Words that describe the question rather than its subject. "Discuss the role of
+// administration and education in shaping modern India" is an
+// administration-and-education question; "role" and "shaping" must not count as
+// subject matter a chunk has to match.
+const QUESTION_SCAFFOLDING = new Set([
+  "discuss", "elucidate", "explain", "examine", "analyse", "analyze", "assess",
+  "elaborate", "describe", "outline", "trace", "comment", "evaluate", "bring",
+  "role", "roles", "impact", "impacts", "influence", "significance", "salient",
+  "features", "feature", "aspects", "dimension", "dimensions", "nature",
+  "meaning", "importance", "relevance", "relation", "relationship", "shaping",
+  "shaped", "shape", "modern", "contemporary", "given", "briefly", "detail",
+  "detailed", "manner", "way", "ways", "context", "perspective", "notable",
+  "various", "overall", "systematically", "critically", "suitable", "possible",
+]);
+
 function chunkRelevanceScore(chunk, question) {
   const text = cleanChunkText(chunk.text);
   const lower = text.toLowerCase();
@@ -172,15 +187,44 @@ function chunkRelevanceScore(chunk, question) {
   }
 
   if (phrase && lower.includes(phrase)) score += 24;
+
+  // Term hits, plus coverage of the question's distinctive terms.
+  //
+  // Coverage is the only part of this score that ties a chunk to THIS question
+  // rather than to the corpus, so it is weighted to matter. Without it, a chunk
+  // sharing no subject with the question could still top the list on search
+  // score and rerank alone, which is how a newspaper editorial outranked real
+  // education material.
+  const distinctive = terms.filter((term) => !QUESTION_SCAFFOLDING.has(term));
+  let matchedDistinctive = 0;
   for (const term of terms) {
     const matches = lower.match(new RegExp(`\\b${term}\\w*`, "g"));
-    score += Math.min(matches?.length || 0, 4) * 6;
+    const hits = matches?.length || 0;
+    score += Math.min(hits, 4) * 6;
+    if (hits > 0 && !QUESTION_SCAFFOLDING.has(term)) matchedDistinctive += 1;
+  }
+  const coverage = distinctive.length > 0 ? matchedDistinctive / distinctive.length : 0;
+  score += coverage * 20;
+
+  // A definition bonus only helps if the question asked for a definition; as a
+  // blanket it just rewarded any chunk containing "means".
+  if (
+    /\b(what\s+(is|are)|define|definition|meaning|origin)\b/i.test(question) &&
+    /\b(definition|defined as|means|refers to)\b/i.test(text)
+  ) {
+    score += 12;
   }
 
-  if (/\b(definition|defined as|means|refers to)\b/i.test(text)) score += 12;
-  if (/\b(india|indian|rbi|reserve bank|supreme court|parliament)\b/i.test(text)) {
+  // The India bonus fired on nearly every chunk of an Indian textbook corpus, so
+  // it added noise rather than discrimination. It now applies only when the
+  // question is itself about India.
+  if (
+    /\b(india|indian)\b/i.test(question) &&
+    /\b(india|indian|rbi|reserve bank|supreme court|parliament)\b/i.test(text)
+  ) {
     score += 7;
   }
+
   score -= chunkQualityPenalty(text);
   return score;
 }
