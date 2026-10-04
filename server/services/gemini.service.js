@@ -775,6 +775,76 @@ const SAFETY_FINISH_REASONS = new Set([
   "SPII",
 ]);
 
+// The frame is Introduction -> dimensions -> Conclusion, and the model reaches
+// for a Conclusion most of the time but not reliably: four of five recent runs
+// ended without one, and one left a bare "4." with no body under it. Prompt text
+// alone has not fixed it, so repair the structure before returning.
+//
+// This relabels existing prose and drops empty headings. It never writes a
+// sentence, because inventing a closing synthesis would breach SOURCE-LOCK - the
+// conclusion must be the model's own words, so the best available repair is to
+// promote the paragraph the model already wrote as its closing argument.
+function ensureFrameStructure(text) {
+  const src = String(text || "");
+  if (!src.trim()) return { text: src, repaired: false };
+
+  const lines = src.split("\n");
+  const isHeading = (l) => /^#{1,6}\s+\S/.test(l);
+  const headingIndexes = [];
+  lines.forEach((l, i) => {
+    if (isHeading(l)) headingIndexes.push(i);
+  });
+  if (headingIndexes.length < 2) return { text: src, repaired: false };
+
+  // Drop a heading with nothing under it: any heading whose next non-blank line
+  // is another heading or nothing at all. A trailing bare "4." is the common case.
+  const drop = new Set();
+  headingIndexes.forEach((idx, n) => {
+    const nextHeading = headingIndexes[n + 1];
+    const end = nextHeading != null ? nextHeading : lines.length;
+    let hasBody = false;
+    for (let j = idx + 1; j < end; j++) {
+      const t = lines[j].trim();
+      if (t) { hasBody = true; break; }
+    }
+    if (!hasBody) drop.add(idx);
+  });
+
+  let out = lines.filter((_, i) => !drop.has(i));
+  let repaired = drop.size > 0;
+
+  const headingText = (l) =>
+    l.replace(/^#{1,6}\s+/, "").replace(/\*\*/g, "").trim();
+
+  const hasConclusion = out.some((l) => isHeading(l) && /conclusion/i.test(headingText(l)));
+  const hasIntroduction = out.some((l) => isHeading(l) && /introduction/i.test(headingText(l)));
+  const remaining = out.filter((l) => isHeading(l));
+
+  // Only repair an answer that clearly follows the frame. Anything else - a bare
+  // list, a short factual answer - is left exactly as written.
+  if (!hasConclusion && hasIntroduction && remaining.length >= 2) {
+    const lastHeadingIdx = out.map((l, i) => (isHeading(l) ? i : -1)).filter((i) => i >= 0).pop();
+    let blockStart = -1;
+    for (let j = lastHeadingIdx + 1; j < out.length; j++) {
+      if (out[j].trim()) { blockStart = j; break; }
+    }
+    // Title the closing paragraph ONLY when it actually reads as a conclusion.
+    // Retitling the last dimension's own body would steal that dimension's prose
+    // and leave it orphaned, which is worse than the missing heading. A synthesising
+    // opener is the evidence that the model meant this block as its close.
+    const closingPara = blockStart > -1 ? out[blockStart].trim() : "";
+    const readsAsConclusion = /^(thus|therefore|in conclusion|to conclude|hence|overall|in sum|it follows)\b/i.test(
+      closingPara
+    );
+    if (blockStart > lastHeadingIdx + 1 && readsAsConclusion) {
+      out = [...out.slice(0, blockStart), "## **Conclusion**", "", ...out.slice(blockStart)];
+      repaired = true;
+    }
+  }
+
+  return { text: out.join("\n").replace(/\n{3,}/g, "\n\n").trim(), repaired };
+}
+
 function enforceWordLimit(answer, wordLimit) {
   const text = String(answer || "");
   const wordCount = countWords(text);
@@ -864,6 +934,7 @@ The answer is displayed by a simple line-based renderer. Anything it cannot pars
 
 == FORMAT ==
 - \`## **Introduction**\`, then \`## **1. <dimension>\` … \`## **2. <dimension>\` … for each dimension you derive from the question, then \`## **Conclusion**\`. Headings excluded from word count.
+- THE CONCLUSION IS NOT OPTIONAL: every answer ends with \`## **Conclusion**\`. An answer that stops on a numbered dimension, however good that dimension is, is unfinished - the examiner reads the conclusion as the claim being settled. Write it last, always, even when the last dimension feels like it has already said everything.
 - NEVER emit a heading with no body: every heading must be immediately followed by at least one full sentence. A leading heading that restates the question as a claim is welcome, but the thesis or verdict goes DIRECTLY under it — a bare title is never acceptable.
 - NEVER write a heading that comments on the state of the evidence ("Absence of Supported Facts", "Insufficient Evidence", "No Reliable Data"). If the retrieved chunks support only part of the question, build the sections that the supported part supports, and state the limitation once as a plain closing sentence. An answer must never narrate its own retrieval.
 - Bold thematic heading, then flowing explanatory prose - clean, direct, confident English of the kind a subject expert writes when asked to explain something across several sub-topics. No exam scaffolding: no "Point -> Evidence -> Tie-back", no rubric labels, no verdict boilerplate, no "This shows that..." restatement after every paragraph. No citations, [EVIDENCE X], or LaTeX - Unicode arrows OK.
@@ -1621,7 +1692,11 @@ export async function proxyGeminiCall(apiKey, options) {
     `[gemini] textgen: model=${servedModel}, ttftMs=${firstTokenAt ? firstTokenAt - proxyStartedAt : -1} genMs=${Date.now() - proxyStartedAt} outputTokens=${tokenCount} tokPerSec=${tokenCount > 0 && Date.now() - proxyStartedAt > 0 ? Math.round((tokenCount / Math.max(1, Date.now() - proxyStartedAt)) * 1000) : 0}`
   );
 
-  const enforced = enforceWordLimit(groundedText, answerWordLimit);
+  const framed = ensureFrameStructure(groundedText);
+  if (framed.repaired) {
+    console.warn("[gemini] frame repaired: restored a missing Conclusion or dropped an empty heading");
+  }
+  const enforced = enforceWordLimit(framed.text, answerWordLimit);
   if (enforced.clamped) {
     console.warn(
       `[gemini] word-limit clamp: ${enforced.wordCount} words (limit ${answerWordLimit}) after enforcing`
@@ -1730,7 +1805,8 @@ export async function generateAnswer({ apiKey, question, chunks, subjectId, opti
   }
 
   const cleaned = restoreExactDiagrams(cleanModelOutput(text), chunks);
-  const enforced = enforceWordLimit(cleaned, answerWordLimit);
+  const framed = ensureFrameStructure(cleaned);
+  const enforced = enforceWordLimit(framed.text, answerWordLimit);
   const stoppedByFilter = Boolean(text.trim()) && SAFETY_FINISH_REASONS.has(finishReason);
 
   return {
