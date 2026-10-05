@@ -87,6 +87,55 @@ const SCOPE_CASES = [
     want: false,
   },
   {
+    label: "region + country, region short of members even though country present -> refuse",
+    question: "Compare federalism in South Asia and India.",
+    chunks: chunks("India's federal structure is unitary in practice."),
+    want: false,
+  },
+  {
+    label: "region + country, both independently satisfied -> accept",
+    question: "Compare federalism in South Asia and India.",
+    chunks: chunks("India is nominally federal.", "Pakistan is a federation.", "Bangladesh is unitary."),
+    want: true,
+  },
+  {
+    label: "'Southeast Asia' is not also read as 'East Asia'",
+    question: "Compare industrial policy in Southeast Asia and India.",
+    chunks: chunks("India liberalised in 1991.", "Myanmar opened its economy.", "Thailand industrialised fast."),
+    want: true,
+  },
+  {
+    label: "two scopes, neither covered -> multi-scope message names both",
+    question: "Compare federalism in South Asia and India.",
+    chunks: chunks("France is a unitary state. Germany is federal."),
+    want: false,
+    issue: "Add source material covering south asia and india",
+    showIssue: true,
+  },
+  {
+    label: "region with zero members covered -> no 'none of the region' copy",
+    question: "Compare federalism in South Asia and East Asia.",
+    chunks: chunks("India is nominally federal. Pakistan is a federation."),
+    want: false,
+    issue: "the retrieved notes do not cover it at all",
+    showIssue: true,
+  },
+  {
+    label: "two scopes unmet, one satisfied -> message names both missing and the one held",
+    question: "Compare federalism in South Asia, East Asia and India.",
+    chunks: chunks("India is nominally federal."),
+    want: false,
+    issue: "but the retrieved notes cover only india",
+    showIssue: true,
+  },
+  {
+    label: "single missing region keeps the single-scope wording",
+    question: "Water resources are both an asset and a source of conflict in South Asia. Examine.",
+    chunks: chunks("India's water scarcity is severe."),
+    want: false,
+    issue: "quietly answer about india instead of south asia",
+  },
+  {
     label: "no geographic scope -> accept",
     question: "Discuss the salient features of the Green Revolution.",
     chunks: chunks("High-yielding seeds raised yields."),
@@ -125,8 +174,13 @@ const report = (ok, label) => {
 
 console.log("== deterministicScopeCheck ==");
 for (const c of SCOPE_CASES) {
-  const got = deterministicScopeCheck(c.question, c.chunks).ok;
-  report(got === c.want, `${String(got).padEnd(5)} (want ${c.want})  ${c.label}`);
+  const got = deterministicScopeCheck(c.question, c.chunks);
+  const ok = got.ok === c.want;
+  // An untested message branch is how bad user-facing text ships, so the refusal
+  // copy is asserted wherever a case names what it should say.
+  const copyOk = !c.issue ? true : (got.issue || "").includes(c.issue);
+  report(ok && copyOk, `${String(got.ok).padEnd(5)} (want ${c.want})  ${c.label}${ok && !copyOk ? "  <- message missing: " + c.issue : ""}`);
+  if (!got.ok && c.showIssue) console.log(`        issue: ${got.issue}`);
 }
 
 console.log("\n== shouldEnumeratePoints ==");

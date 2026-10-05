@@ -408,33 +408,90 @@ export function deterministicScopeCheck(question, chunks) {
     .join("\n");
   const q = String(question || "").toLowerCase();
 
-  for (const [region, members] of Object.entries(REGION_MEMBERS)) {
+  const label = (name) => (name === "america" ? "the United States" : name[0].toUpperCase() + name.slice(1));
+
+  // Every scope the question names is a scope the answer has to cover, so collect
+  // all of them and let each one stand on its own. Returning on the first match
+  // meant "India-Pakistan relations" was accepted on India alone, and "South Asia
+  // and East Asia" was accepted on South Asian notes alone - both quietly answer
+  // less than was asked, which is the whole failure this gate exists to prevent.
+  //
+  // A region and a country named together are two scopes, not one: "South Asia
+  // and India" still has to clear South Asia's own two-member rule even though
+  // India alone is present in the notes.
+  const unmet = [];
+  const matchedRegions = [];
+
+  // Longest region first, so "southeast asia" is not additionally read as the
+  // "east asia" that sits inside it - otherwise every Southeast Asia question
+  // would also demand Japanese and Chinese evidence.
+  const regionEntries = Object.entries(REGION_MEMBERS).sort((a, b) => b[0].length - a[0].length);
+
+  for (const [region, members] of regionEntries) {
     if (!q.includes(region)) continue;
+    if (matchedRegions.some((matched) => matched.includes(region))) continue;
+    matchedRegions.push(region);
+
     const covered = members.filter((m) => haystack.includes(m));
     // A multi-country region needs material reaching beyond one constituent,
     // otherwise the answer silently answers a single country instead.
-    if (covered.length < 2) {
-      return {
-        ok: false,
-        issue: `The question asks about ${region}, but the retrieved notes cover only ${covered[0] || "none of the region"}. An answer built on them would quietly answer about ${covered[0] || "a different area"} instead of ${region}, so none has been written. Add source material covering ${region} and try again.`,
-      };
-    }
-    return { ok: true };
+    if (covered.length < 2) unmet.push({ kind: "region", name: region, covered });
   }
 
+  const seenCountries = new Set();
   for (const country of NAMED_COUNTRIES) {
+    if (seenCountries.has(country)) continue;
     if (!new RegExp(`\\b${country}\\b`).test(q)) continue;
-    if (!new RegExp(`\\b${country}\\b`).test(haystack)) {
-      const label = country === "america" ? "the United States" : country[0].toUpperCase() + country.slice(1);
-      return {
-        ok: false,
-        issue: `The question asks about ${label}, but the retrieved notes do not mention it. An answer would have to be written from material about a different subject, so none has been written. Add source material covering ${label} and try again.`,
-      };
-    }
-    return { ok: true };
+    seenCountries.add(country);
+    if (!haystack.includes(country)) unmet.push({ kind: "country", name: country, covered: [] });
   }
 
-  return { ok: true };
+  if (unmet.length === 0) return { ok: true };
+
+  // Preserve the single-scope wording exactly; it is a better explanation than
+  // anything a generic multi-scope message would say about one missing region.
+  if (unmet.length === 1 && unmet[0].kind === "region") {
+    const { name, covered } = unmet[0];
+    // covered[0] || "none of the region" used to render as "cover only none of
+    // the region" whenever the notes mentioned no member at all.
+    if (covered.length === 0) {
+      return {
+        ok: false,
+        issue: `The question asks about ${name}, but the retrieved notes do not cover it at all. An answer would have to be written from material about a different subject, so none has been written. Add source material covering ${name} and try again.`,
+      };
+    }
+    return {
+      ok: false,
+      issue: `The question asks about ${name}, but the retrieved notes cover only ${covered[0]}. An answer built on them would quietly answer about ${covered[0]} instead of ${name}, so none has been written. Add source material covering ${name} and try again.`,
+    };
+  }
+  if (unmet.length === 1 && unmet[0].kind === "country") {
+    return {
+      ok: false,
+      issue: `The question asks about ${label(unmet[0].name)}, but the retrieved notes do not mention it. An answer would have to be written from material about a different subject, so none has been written. Add source material covering ${label(unmet[0].name)} and try again.`,
+    };
+  }
+
+  const missing = unmet.map((u) => u.name).join(" and ");
+  const coveredNames = [
+    ...new Set([
+      ...matchedRegions.filter((r) => !unmet.some((u) => u.name === r)),
+      ...NAMED_COUNTRIES.filter((c) => new RegExp(`\\b${c}\\b`).test(q) && haystack.includes(c)),
+    ]),
+  ];
+
+  if (coveredNames.length === 0) {
+    return {
+      ok: false,
+      issue: `The question asks about ${missing}. The retrieved notes cover none of it, so an answer built on them would quietly answer a different subject altogether. No answer has been written. Add source material covering ${missing} and try again.`,
+    };
+  }
+
+  const held = coveredNames.join(", ");
+  return {
+    ok: false,
+    issue: `The question asks about ${missing}, but the retrieved notes cover only ${held}. An answer built on them would quietly answer about ${held} instead of everything that was asked, so none has been written. Add source material covering ${missing} and try again.`,
+  };
 }
 
 function assessSourceSufficiency(question, chunks) {
