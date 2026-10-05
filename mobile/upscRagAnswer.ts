@@ -239,43 +239,8 @@ let stoppedByFilter = false;
       ? ragContext.chunkScores
       : [];
 
-  if (generationReason === "no_chunks" || chunks.length === 0) {
-    return {
-      answer: "",
-      chunks: [],
-      chunkCount: 0,
-      tokenCount: 0,
-      sentenceScores: [],
-      chunkScores: [],
-      generatedByLlm: false,
-      generationReason: "no_chunks",
-      runtime: "gemini-3.5-flash-strict-rag",
-    };
-  }
-
-  if (generationReason === "strict_rag_insufficient") {
-    const answer =
-      fullAnswer ||
-      ragContext?.sourceIssue ||
-      "The retrieved source chunks do not contain enough information to answer this question.";
-    options.onToken?.(answer);
-    return {
-      answer,
-      chunks,
-      chunkCount: ragContext?.chunkCount ?? chunks.length,
-      tokenCount: 0,
-      sentenceScores: [],
-      chunkScores: normalizeChunkScores(chunks, effectiveScores),
-      generatedByLlm: false,
-      generationReason: "strict_rag_insufficient",
-      runtime: "gemini-3.5-flash-strict-rag",
-    };
-  }
-
   if (!fullAnswer.trim()) {
-    throw new Error(
-      "Gemini did not return a supported answer from the retrieved chunks."
-    );
+    throw new Error("Gemini did not return an answer for this question.");
   }
 
   const notes: string[] = [];
@@ -287,11 +252,6 @@ let stoppedByFilter = false;
     // When a content filter ended generation the server already appended a notice
     // naming the reason, so adding the generic truncation note here would print two.
     notes.push("**Answer shortened to fit the response limit.**");
-  }
-  if (groundingReport && (groundingReport.removed || 0) > 0) {
-    notes.push(
-      `**${groundingReport.removed} unsupported detail${(groundingReport.removed || 0) > 1 ? "s" : ""} removed to keep this answer source-grounded.**`
-    );
   }
   const finalAnswer = notes.length
     ? `${fullAnswer.trimEnd()}\n\n${notes.join("\n\n")}`
@@ -305,7 +265,7 @@ let stoppedByFilter = false;
     sentenceScores: sentenceScores ?? [],
     chunkScores: normalizeChunkScores(chunks, effectiveScores),
     generatedByLlm: sawToken || tokenCount > 0,
-    generationReason: generationReason ?? "gemini_proxy_strict_rag",
-    runtime: "gemini-3.5-flash-strict-rag",
+    generationReason: generationReason ?? "direct",
+    runtime: "gemini-3.5-flash-direct",
   };
 }

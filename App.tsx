@@ -762,16 +762,6 @@ export default function App() {
             <Text style={styles.statusText}>{status}</Text>
           </View>
 
-          {hasAsked && !generating && !status && chunkCount === 0 && answer.length === 0 && activeSubject && (
-            <View style={styles.suggestionCard}>
-              <View style={styles.suggestionBody}>
-                <Text style={styles.suggestionText}>
-                  This question seems to be unrelated. No content found in {activeSubject.name}. Switch other subject.
-                </Text>
-              </View>
-            </View>
-          )}
-
           {answer.length > 0 && (
             <View style={styles.answerCard}>
               <MarkdownAnswer text={formatAnswer(answer)} />
@@ -1096,26 +1086,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 24,
     marginBottom: 8,
-  },
-  suggestionCard: {
-    backgroundColor: "#fffbeb",
-    borderColor: "#fde68a",
-    borderRadius: 14,
-    borderWidth: 1,
-    marginTop: 14,
-    padding: 16,
-    flexDirection: "row",
-    gap: 10,
-    alignItems: "flex-start",
-  },
-  suggestionBody: {
-    flex: 1,
-    gap: 8,
-  },
-  suggestionText: {
-    color: "#92400e",
-    fontSize: 13,
-    lineHeight: 18,
   },
   diagramSection: {
     backgroundColor: "#fff",
