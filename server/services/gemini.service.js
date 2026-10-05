@@ -738,31 +738,55 @@ function countWords(text) {
   return t ? t.split(" ").filter(Boolean).length : 0;
 }
 
+// Clamp to the word limit WITHOUT amputating the frame.
+//
+// This used to slice the answer at the last sentence boundary at or before the
+// limit. Because the Conclusion is the LAST thing in a mains answer, any answer
+// that overran its budget lost its Conclusion entirely - which then made every
+// prompt-level attempt to force a Conclusion look like model instability, when it
+// was our own truncation. The Conclusion and everything after it are now preserved
+// unconditionally, and the budget is taken out of the body instead.
 function clampAnswerToLimit(text, wordLimit) {
   const src = String(text || "");
   const limit = Number(wordLimit);
   if (!src.trim() || !Number.isFinite(limit) || limit <= 0) return src.trim();
 
-  // Walk the original string instead of a whitespace-split copy. "\s" matches
-  // newlines, so splitting on it and rejoining with " " returned the entire answer
-  // as a single line with every "## Heading" flattened into the prose around it.
-  // That only surfaced on the runs where the answer exceeded the word limit, which
-  // is why it looked intermittent. Slicing the source preserves headings, paragraph
-  // breaks and blank lines.
-  let end = 0;
-  let boundary = -1;
-  let words = 0;
-  let i = 0;
-  while (words < limit) {
-    while (i < src.length && /\s/.test(src[i])) i++;
-    if (i >= src.length) break;
-    const start = i;
-    while (i < src.length && !/\s/.test(src[i])) i++;
-    words++;
-    end = i;
-    if (/[.!?]["')\]*]{0,2}$/.test(src.slice(start, i))) boundary = i;
-  }
-  return src.slice(0, boundary >= 0 ? boundary : end).trim();
+  const cutAtWord = (input, maxWords) => {
+    if (!Number.isFinite(maxWords) || maxWords <= 0) return "";
+    let end = 0;
+    let boundary = -1;
+    let words = 0;
+    let i = 0;
+    while (words < maxWords) {
+      while (i < input.length && /\s/.test(input[i])) i++;
+      if (i >= input.length) break;
+      const start = i;
+      while (i < input.length && !/\s/.test(input[i])) i++;
+      words++;
+      end = i;
+      if (/[.!?]["')\]*]{0,2}$/.test(input.slice(start, i))) boundary = i;
+    }
+    return input.slice(0, boundary >= 0 ? boundary : end).trim();
+  };
+
+  // Split before the Conclusion heading, and keep the tail whole.
+  const lines = src.split("\n");
+  const conclusionIdx = lines.findIndex(
+    (l) => /^#{1,6}\s+\S/.test(l) && /conclusion/i.test(l.replace(/^#{1,6}\s+/, "").replace(/\*\*/g, ""))
+  );
+
+  if (conclusionIdx === -1) return cutAtWord(src, limit);
+
+  const head = lines.slice(0, conclusionIdx).join("\n");
+  const tail = lines.slice(conclusionIdx).join("\n").trim();
+  const tailWords = countWords(tail);
+  if (tailWords >= limit) return tail; // pathological: keep the frame, drop the body
+
+  // The Conclusion is worth more than the last dimension's tail, so the body
+  // absorbs the whole overrun.
+  const headBudget = limit - tailWords;
+  const clampedHead = cutAtWord(head, headBudget);
+  return `${clampedHead}\n\n${tail}`.trim();
 }
 
 // Finish reasons that end generation for content reasons rather than a budget or
@@ -852,10 +876,16 @@ function enforceWordLimit(answer, wordLimit) {
     return { answer: text, wordCount, clamped: false };
   }
   const clamped = clampAnswerToLimit(text, wordLimit);
+  if (clamped !== text.trim()) {
+    console.log(
+      `[word-limit] clamped ${countWords(text)} -> ${countWords(clamped)} against limit ${wordLimit}` +
+        `${/\bconclusion\b/i.test(text) ? " (conclusion preserved)" : " (NO conclusion in source)"}`
+    );
+  }
   return { answer: clamped, wordCount: countWords(clamped), clamped: true };
 }
 
-function buildRagPrompt({ question, chunks, subjectId }) {
+function buildRagPrompt({ question, chunks, subjectId, outline, plan, proseOnly }) {
   if (!chunks || chunks.length === 0) {
     throw new Error("No evidence chunks provided to buildRagPrompt");
   }
@@ -872,6 +902,73 @@ function buildRagPrompt({ question, chunks, subjectId }) {
     "Standard UPSC Mains shape: ## **Introduction**, then the question-specific dimensions, then ## **Conclusion**. The Introduction is 2-3 sentences of genuine context and a direct answer to the directive verb; the Conclusion is 2-3 sentences of synthesis or verdict, never a summary of what was just said. Number the body sections 1., 2., 3. in the order the question demands. The number, name, order and nature of those dimensions come from the question - there is no fixed list and no fixed count. A question with five strands may yield five sections, a narrow factual question two. What is fixed is the frame; what the model chooses is everything inside it. Total must still reach the word range.";
   const essayStructure =
     "Introduction = 100–120 words, then the question-derived body sections = ~1080 words, then Conclusion = 90–100 words, using 8–9 body paragraphs. The frame stays; the body sections come from the question.";
+  // When a plan exists, the structure is handed over as literal text. This is the
+  // whole point of the two-pass design: reproducing a supplied list is reliable in a
+  // way that composing a structure while also composing prose was not.
+  const outlineCount = Array.isArray(outline) ? outline.length : 0;
+  const plannedCount = outlineCount;
+  const outlineBlock = outlineCount
+    ? `
+== THE DIMENSIONS ARE ALREADY DECIDED - REPRODUCE THEM, DO NOT REDESIGN THEM ==
+These dimensions were derived from this question and checked against the evidence. Use each one as a heading of your answer, in this order, exactly as written:
+
+${outline.map((h, i) => `${i + 1}. ${h}`).join("\n")}
+${plannedCount + 1}. Conclusion
+
+- Emit one \`## **N. <dimension>**\` heading for each numbered line above, in the listed order, using that line's own wording and its number. The last line is the Conclusion: it is a real heading with 2-3 sentences of synthesis or verdict under it, never omitted and never left empty.
+- Do not add a dimension, rename one, merge two, reorder them, or drop one.
+- NEVER replace these headings with a flat bullet list. Bullets go INSIDE a dimension, underneath its heading.
+- Put the Introduction before them.
+- These headings divide a ${wordLimit || 600}-word answer, so ${plannedCount === 2 ? "with only two dimensions each one must be long enough that the whole answer still reaches the word floor" : "give every dimension its full share of the budget"}. A short plan is never a reason to write a short answer.
+`
+    : "";
+
+  const proseOnlyBlock = proseOnly
+    ? `
+== WRITE IN PROSE FOR THIS ANSWER ==
+Do NOT use bullet points anywhere in this answer. Under each heading, write flowing connected paragraphs. The headings above are what carry the structure, so the text beneath them must not be broken into a list.
+`
+    : "";
+
+  // The user's requested shape, with the points already decided. Pass 2 no longer
+  // has to work out what the points of a dimension are while it is also writing
+  // 600 words of prose, which is where it kept dropping one level or the other.
+  const totalPoints = (plan || []).reduce((n, d) => n + (d.points?.length || 0), 0);
+  // Body budget after Introduction and Conclusion, spread over the points.
+  const perPointWords = Math.max(
+    30,
+    Math.round(((wordLimit || 600) * 0.7) / Math.max(1, totalPoints) / 5) * 5
+  );
+  const planBlock = Array.isArray(plan) && plan.length
+    ? `
+== FOR EVERY MAJOR DIMENSION, FOLLOW THESE FIVE STEPS IN THIS ORDER ==
+1. STATE THE DIMENSION as its heading.
+2. LIST THE KEY POINTS as bullets, immediately, before any explanation.
+3. EXPLAIN EACH POINT using the evidence.
+4. GIVE A CONCRETE NAMED EXAMPLE for each point.
+5. LINK BACK TO THE QUESTION before moving to the next dimension.
+
+The dimensions and their points are already decided below. Reproduce them exactly:
+
+${plan
+  .map(
+    (d, i) => `## **${i + 1}. ${d.dimension}**
+<one short identifier sentence in the question's own words saying what this dimension consists of, ending in a colon>
+${d.points
+      .map((p) => `- **${p}** - <explanation with specific evidence and a named example>`)
+      .join("\n")}`
+  )
+  .join("\n\n")}
+
+- Each dimension runs in this order: heading, then ONE short identifier sentence in the question's own words that says what the dimension consists of and ends in a colon, then the bullets. Never go straight from the heading to the bullets with no identifier sentence.
+- Each point above MUST appear as its own bullet with that exact bold lead-in, in that order. Do not merge two points, drop one, or invent another.
+- Write the explanation after each lead-in; never leave a bullet as a bare label.
+- Never open a dimension with a paragraph. The bullets come first; the explanation sits inside each bullet.
+- EACH BULGET CARRIES THE WEIGHT, NOT THE LABEL. Write ${perPointWords} words of explanation inside each bullet - the mechanism, the specific evidence, and the named example. A bullet of 12 words drops the answer under the word floor.
+- These dimensions divide a ${wordLimit || 600}-word answer, so every point still needs real evidence, not a restatement of its own label.
+`
+    : "";
+
   const wordLimitInstruction = wordLimit
     ? `
 LENGTH TARGET — ${wordLimit === 1300 ? "1170–1300" : "500–700"} words (headings excluded). This is a RANGE with a hard floor and a hard ceiling, not a soft suggestion: an answer under 500 words is too short to score, and one over 700 has stopped answering the question. Aim near the middle (~600 words).
@@ -905,7 +1002,7 @@ LENGTH TARGET — ${wordLimit === 1300 ? "1170–1300" : "500–700"} words (hea
 - USE THE STANDARD FRAME, QUESTION-SPECIFIC INSIDE IT. The frame is Introduction → numbered dimensions → Conclusion, and that frame is welcome - it is the UPSC Mains format. What must NOT be fixed is the content of the frame. Never a generic "Body", "Content" or "Main Points" heading, and never a placeholder Introduction that only restates the question.
 - THE DIMENSIONS COME FROM THE QUESTION, NOT FROM A LIST. FIRST read the question and work out what it demands — the cause-and-effect chain, the axes of comparison, the scope it names, the dimensions or groups it asks you to identify, the judgment it wants. THEN build the body from that demand and the retrieved evidence. The number, the names, the order and the nature of the sections all change with the question. "The French Revolution has enduring relevance to the contemporary world. Explain." becomes four dimensions - Shift from Absolute Monarchy to Constitutional Governance, Universalization of Rights and Global Anti-Colonial Impact, Institutionalization of Free Press and Public Sphere, Foundations of Global Gender Equality and Political Mobilization. "Discuss the salient features of Harappan architecture." becomes Planned Urban Layout, Advanced Drainage Systems, Domestic Architecture, Public and Monumental Architecture. "Phule's writings and efforts of social reforms touched issues of almost all subaltern classes." becomes Shudras and Atishudras: Challenge to Caste Hierarchy, Peasants and Rural Exploitation, Women and Gender-Based Oppression, Education and Social Emancipation, Wider Anti-Caste Mobilization. Three different questions, three different structures.
 - NUMBER THE BODY SECTIONS 1., 2., 3. in the order the question demands, so the examiner can see the dimensions at a glance. Each heading names its own dimension and is short enough to read at a glance.
-- TWO FORMS ARE AVAILABLE, both acceptable. (a) A bold heading per dimension with prose beneath it, e.g. \`## **1. Planned Towns with Grid-Pattern Streets**\` followed by a paragraph. (b) When a demand is naturally a roster of places, groups, regions or causes, use ONE aspect heading followed by a numbered list whose items are a bolded name plus two or three nested bullets of specifics, e.g. \`### Geographical distribution of offshore oil reserves\` then \`1. **Persian Gulf and Middle East**\` with bullets naming the countries and the geology. Form (b) is right for "distribution across regions" and "which groups" demands; form (a) is right for arguments, themes and assessments. Do not mix both forms within one answer.
+- TWO FORMS ARE AVAILABLE, both acceptable. (a) A bold heading per dimension, \`## **1. <dimension>**\`. Beneath that heading either flowing prose, or - for a question that explicitly names two or more dimensions in its own words - the MANDATORY point-list form: a short framing clause, then one bullet per point starting with a bolded lead-in naming it, then the explanation and evidence for each point. Every dimension keeps its own heading in both cases. (b) When a demand is naturally a roster of places, groups, regions or causes, use ONE aspect heading followed by a numbered list whose items are a bolded name plus two or three nested bullets of specifics, e.g. \`### Geographical distribution of offshore oil reserves\` then \`1. **Persian Gulf and Middle East**\` with bullets naming the countries and the geology. Form (b) is right for "distribution across regions" and "which groups" demands. Do not mix both forms within one answer.
 - Sections may contain prose paragraphs, bullets, evidence and examples as the content requires - use whatever form fits the material, the way a strong ChatGPT answer would.
 - For a comparison, contrast the two sides directly: a heading per side or per axis, paired bullets, or - when several axes line up - a markdown table (see RENDERING).
 - Weave the specifics into the prose: names, dates, Acts, schemes, institutions and case data belong inside the sentences that need them, not appended to a lead-in as a list.
@@ -927,7 +1024,7 @@ The answer is displayed by a simple line-based renderer. Anything it cannot pars
 - ONE PARAGRAPH PER LINE. Never hard-wrap a paragraph across several lines: the renderer draws one text block per line, so a wrapped paragraph breaks into ragged fragments. Write each paragraph as one unbroken line.
 - Blank line between a heading and its paragraph, and between paragraphs.
 - **Bold** for the term that carries a point, mid-sentence: **Planning Commission**, **grid pattern**. No other inline styling exists.
-- \`- item\` bullets for genuinely enumerable content. Indent a sub-item by two spaces to nest it one level under its parent - two levels is the maximum, deeper indentation renders flat.
+- \`- item\` bullets, and they are REQUIRED under any dimension that names points: for enumerable content, and for the mandatory point-list form above. A bullet must carry a point, not a fragment - never leave one as a bare noun phrase with no explanation attached to it. Indent a sub-item by two spaces to nest it one level under its parent - two levels is the maximum, deeper indentation renders flat.
 - A markdown table IS supported and is the right form for a side-by-side contrast across several axes (offshore vs onshore, merits vs demerits, similarity vs difference): header row, at most 4 columns and 6-9 rows, one axis per row, each cell a short phrase, with a blank line before and after it.
 - NEVER use: italics (\`*x*\` or \`_x_\`), strikethrough, inline code backticks, links or URLs, blockquotes, horizontal rules, or emoji. Bold is the only inline markup available, and there is no image support - never write \`![alt](url)\`.
 - Do not announce the structure ("The following sections...", "Let us now look at..."). Go straight into the content.
@@ -937,17 +1034,27 @@ The answer is displayed by a simple line-based renderer. Anything it cannot pars
 - THE CONCLUSION IS NOT OPTIONAL: every answer ends with \`## **Conclusion**\`. An answer that stops on a numbered dimension, however good that dimension is, is unfinished - the examiner reads the conclusion as the claim being settled. Write it last, always, even when the last dimension feels like it has already said everything.
 - NEVER emit a heading with no body: every heading must be immediately followed by at least one full sentence. A leading heading that restates the question as a claim is welcome, but the thesis or verdict goes DIRECTLY under it — a bare title is never acceptable.
 - NEVER write a heading that comments on the state of the evidence ("Absence of Supported Facts", "Insufficient Evidence", "No Reliable Data"). If the retrieved chunks support only part of the question, build the sections that the supported part supports, and state the limitation once as a plain closing sentence. An answer must never narrate its own retrieval.
-- Bold thematic heading, then its body: prose where an argument unfolds, or bullets where a dimension is a set of parallel items. No rubric labels, no citations, no [EVIDENCE X], no LaTeX - Unicode arrows OK.
+- Bold thematic heading, then its body: the mandatory point-list form (framing clause, then bullets naming the points, then their explanations) where the question names dimensions or asks what the features, factors, causes or reasons are; flowing prose only for an argument that genuinely unfolds. No rubric labels, no citations, no [EVIDENCE X], no LaTeX - Unicode arrows OK.
 
 == HOW TO ANSWER, IN LAYERS ==
 - WRITE THE ANSWER, DO NOT SUMMARISE THE CHUNKS. You are a strong UPSC Mains writer working from evidence, not a summariser of whatever the retrieval returned. Work in layers: (1) read the question and work out what the EXAMINER is asking - the subject, the directive verb, and the dimensions explicitly or implicitly demanded; (2) choose the structure that makes those dimensions easiest to see, and name each one in a heading; (3) place the retrieved evidence UNDER the dimension it belongs to.
 - READ THE DIRECTIVE VERB - it changes the answer, not just the tone. "Explain" asks for an account and its mechanism. "Discuss" asks for a balanced treatment of the main dimensions. "Examine" or "critically examine" asks you to TEST the statement against the evidence and say which way it holds and where it fails. "Evaluate"/"appraise" asks for a weighed judgment against stated criteria. "Comment" asks for a considered position. "Examine this statement" is not a request to describe the subject; it is a request to say how far the statement holds.
 - MAKE THE MAJOR DIMENSIONS IMMEDIATELY VISIBLE. When a question names two or more things - "both an asset and a source of conflict", "social, economic and political aspects", "its achievements and its failures", "explain X and examine Y" - those ARE the major dimensions. Give each its own heading, in the order the question sets out, and never let one of them collapse into a passing sentence inside another section. A reader who reads ONLY the headings must be able to reconstruct the whole demand of the question; if a dimension the question names is missing from that list, it has not been answered.
-- DEVELOP EACH POINT; NEVER DUMP FACTS AND LEAVE THE EXAMINER TO INFER WHY THEY MATTER. Under a heading, take one point at a time and carry it through: state the claim, explain the reason or mechanism, attach a concrete named example or specific evidence, then say what it signifies. Where a dimension holds several such points, give each its own bullet with a bold lead-in for the point's name, so explanation and example sit under that point instead of being buried in one long paragraph. Choose bullets or paragraphs by whichever communicates that dimension better - prose for an argument that unfolds, bullets for parallel items.
+- UNDER EACH DIMENSION, NAME THE POINTS BEFORE EXPLAINING THEM - MANDATORY WHEN THE QUESTION NAMES ITS DIMENSIONS. When the question explicitly sets out two or more dimensions in its own words ("both an asset and a source of conflict", "merits and demerits", "causes and consequences", "social, economic and political impact", "achievements and failures", "the causes and the effects"), then under EACH dimension: FIRST the heading \`## **N. <dimension>**\` where <dimension> is the question's own word for it ("Causes of the Revolt", "Water Resources as an Asset"), and only AFTER that heading a short framing clause in the question's words ("Water resources act as an asset through:"); THEN IMMEDIATELY that dimension's points as bullets, one bullet per point, each starting with a bolded lead-in naming the point ("**Support for agriculture and food security**", "**Interstate river disputes**"); then develop them after the list, with the explanation, the specific evidence and a concrete named example for each, closing by tying the dimension back to the question. The framing clause never replaces the heading - a clause is prose, and prose is not a heading.
+- THIS RULE GOES UNDER A HEADING; IT NEVER REMOVES ONE. Every dimension still gets its own \`## **N. <dimension>**\` heading and the bullets sit beneath it. An answer that lists points without dimension headings above them is wrong however good the points are - the headings are how an examiner finds the structure.
+- DO NOT APPLY THE POINT-LIST FORM TO A "WHAT ARE THE FEATURES OF X" DEMAND. When the question asks what the features, characteristics or elements of a single subject are, each feature IS its own heading (see THE HEADINGS ARE THE FEATURES) - do not collapse them into a bullet list under one generic heading. Reserve the point-list form for questions that name two or more dimensions, or ask for causes, reasons, factors or reasons why.
+- DEVELOP EACH POINT; NEVER DUMP FACTS AND LEAVE THE EXAMINER TO INFER WHY THEY MATTER. Under a heading, take one point at a time and carry it through: state the claim, explain the reason or mechanism, attach a concrete named example or specific evidence, then say what it signifies. Never present a fact and leave its significance for the examiner to infer - but write the flow as argument, never as a printed template, and do not repeat a "This shows that..." restatement after every paragraph.
 - Write it as argument, never as a printed template: do not label the steps ("Claim:", "Explanation:", "Significance:") and do not repeat a mechanical scaffold in every section. The flow must be felt in the writing, not announced in headings.
 - HONOUR A NAMED SCOPE. When the question names a region, a period, a community or a specific set of countries, the answer must be about that scope. If the evidence is about a narrower or different scope than the question names, do not silently answer the narrower question - cover what the evidence supports, and state the shortfall once in plain language in the Conclusion.
 
 ${wordLimitInstruction}
+
+${planBlock}${outlineBlock}${proseOnlyBlock}
+== FRAME CONTRACT - NOT NEGOTIABLE, CHECK BEFORE YOU FINISH ==
+1. Every dimension gets its own \`## **N. <dimension>**\` heading. Bullets go UNDER a heading. A list of bullets is never a substitute for the headings above it.
+2. If the question names two or more dimensions, one heading per dimension, in the question's order.
+3. End with \`## **Conclusion**\`. Always. Never end on a dimension or on a bullet.
+4. Before finishing, confirm: do the headings alone reconstruct the question's full demand? Is each heading followed by real content? Does the last heading read Conclusion? Fix any that fail.
 
 QUESTION:
 ${question}
@@ -955,6 +1062,439 @@ ${question}
 EVIDENCE CHUNKS:
 ${chunkText}
 `;
+}
+
+// --- Two-pass answer structure -------------------------------------------------
+// The headings were being lost whenever the model produced a long bullet list: it
+// would flatten the whole answer into points and drop the dimension headings. No
+// amount of prompt wording fixed that, so the structure is now decided in a cheap
+// first pass and handed to the writing pass as literal text to reproduce. Copying
+// a supplied list is a far easier instruction than composing a structure while
+// also composing prose.
+
+const OUTLINE_MAX_HEADINGS = 5;
+const OUTLINE_MIN_HEADINGS = 2;
+const OUTLINE_MIN_POINTS = 3;
+const OUTLINE_TIMEOUT_MS = 20000;
+
+// The user asked for the "point -> explanation" form specifically on questions
+// that work through dimensions: "What are the...", Discuss, Examine, Assess.
+// Argument questions (elucidate, explain, comment, to what extent) are excluded on
+// purpose - forcing bullets onto "The tragedy of the commons" would produce a
+// worse answer, not a better one. A pure "features of one subject" demand is also
+// excluded, because there each feature is already its own heading.
+function shouldEnumeratePoints(question) {
+  const q = String(question || "").toLowerCase();
+  const directive = /\b(examine|assess|analyse|analyze|discuss|what are|what is the significance|evaluate)\b/.test(q);
+  const multiDimension =
+    /\b(both|and)\b[^.?!]{0,60}\b(asset|assets|merit|merits|demerit|demerits|cause|causes|consequence|consequences|effect|effects|impact|strength|weakness|advantage|advantages|significance|implication|implications|challenge|challenges)\b/.test(q);
+  const pureFeatures = /\b(features?|characteristics?|attributes?|elements?)\b/.test(q) && !multiDimension;
+  if (pureFeatures) return false;
+  return directive || multiDimension;
+}
+
+function normalizeHeadingKey(value) {
+  return String(value || "")
+    .replace(/^#{1,6}\s*/, "")
+    .replace(/\*\*/g, "")
+    .replace(/^\s*\d+\s*[.)]\s*/, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function parseOutlineHeadings(text) {
+  const rawLines = String(text || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .filter((l) => !/^```/.test(l));
+
+  // A planner that returns the whole plan on one line still gave us usable
+  // structure, so split on separators rather than discarding it.
+  let candidates = rawLines;
+  if (candidates.length === 1) {
+    const parts = candidates[0].split(/\s*[;]\s*|\s*,\s*|\s+\/\s+|\s+•\s*/).map((s) => s.trim()).filter(Boolean);
+    if (parts.length >= OUTLINE_MIN_HEADINGS) candidates = parts;
+  }
+
+  const out = [];
+  for (const raw of candidates) {
+    let line = raw.trim();
+    if (!line) continue;
+    line = line.replace(/^(?:[-*+]|\d+\s*[.)])\s*/, "").replace(/\*\*/g, "").trim();
+    if (!line) continue;
+    if (/^(here|dimensions?|outline|structure|the dimensions)\b\s*:?$/i.test(line)) continue;
+    if (line.length < 3 || line.length > 120) continue;
+    const key = normalizeHeadingKey(line);
+    if (!key || key.length < 3) continue;
+    if (out.some((h) => h.key === key)) continue;
+    out.push({ heading: line.replace(/[.:;,\s]+$/, ""), key });
+    if (out.length >= OUTLINE_MAX_HEADINGS) break;
+  }
+  if (out.length < OUTLINE_MIN_HEADINGS) return [];
+  return out.map((h) => h.heading);
+}
+
+// How many of the planned dimensions actually appear as headings in the answer.
+// Guards against the flat-bullet failure mode, where the content is present but
+// the structure that was supposed to organise it is not.
+function outlineCoverage(text, headings) {
+  const total = Array.isArray(headings) ? headings.length : 0;
+  if (!total) return { matched: 0, total: 0, ok: true, missing: [] };
+  const answerHeads = String(text || "")
+    .split("\n")
+    .filter((l) => /^#{1,6}\s+\S/.test(l))
+    .map(normalizeHeadingKey)
+    .filter(Boolean);
+  if (!answerHeads.length) return { matched: 0, total, ok: false, missing: headings.slice() };
+  const missing = [];
+  let matched = 0;
+  for (const heading of headings) {
+    const key = normalizeHeadingKey(heading);
+    if (!key) continue;
+    const best = answerHeads.reduce((acc, a) => Math.max(acc, diceCoefficient(key, a)), 0);
+    if (best >= 0.6) matched += 1;
+    else missing.push(heading);
+  }
+  return { matched, total, missing, ok: matched >= Math.ceil(total * 0.6) };
+}
+
+function hasBulletLines(text) {
+  return String(text || "")
+    .split("\n")
+    .some((l) => /^\s*[-*]\s+\S/.test(l));
+}
+
+function buildOutlinePrompt({ question, chunks, subjectId, wordLimit }) {
+  const digest = (chunks || [])
+    .slice(0, 6)
+    .map((c, i) => `[${i + 1}] ${String(c?.text || c?.content || "").replace(/\s+/g, " ").slice(0, 600)}`)
+    .join("\n\n");
+  const subjectLine = subjectId ? `\nSUBJECT: ${subjectId}` : "";
+  const wordLimitHint = wordLimit || 600;
+  return `You are planning the structure of a UPSC Mains answer. Do NOT write the answer - output only the list of dimensions.${subjectLine}
+
+QUESTION:
+${question}
+
+EVIDENCE (abridged - use it to check that each dimension is supportable):
+${digest}
+
+TASK
+List the dimensions this answer must have, in the order the question demands them.
+
+- Derive the dimensions from the QUESTION, not from the evidence. The evidence below only tells you whether a dimension is supportable; it must never introduce a dimension, and never supply the wording of one.
+- Between ${OUTLINE_MIN_HEADINGS} and ${OUTLINE_MAX_HEADINGS} dimensions. These headings divide a ${wordLimitHint}-word answer, so too few of them starves the sections.
+- Each one a short noun phrase of 3 to 8 words, in the question's own wording.
+- A dimension heading NAMES the dimension. It must not restate the question or the directive verb, and must not begin with the words "Role of", "Importance of", "Impact of", "The role", "The question of", "The meaning of" or "Definition of". A "Definition of X" section is never a dimension of an answer.
+- Do NOT use a gerund or a bare descriptive phrase as a heading: "Town planning and grid system", "Carefully planned drainage system" and "Working of democracy" are all rejected. Name the thing itself - "Planned Towns and Grid-Pattern Streets", "Drainage and Sanitation", "Federalism and the Division of Powers".
+- Cover the question's FULL demand. If it names two things ("an asset and a source of conflict", "merits and demerits", "causes and consequences"), both are dimensions.
+- If it asks for the features, characteristics or elements of one subject, each feature the evidence supports is its own dimension, and you must include every one of them.
+- Drop any dimension the evidence cannot support.
+- Never invent a dimension the question does not ask for, and never return a generic "Body", "Other factors" or "Conclusion".
+
+Output ONLY one dimension per line, as plain text, with no numbering, no markdown and no commentary.`;
+}
+
+// Plan WITH points: dimensions and, under each, the points to enumerate. Deciding
+// the points here is the whole trick - pass 2 then only has to write prose under a
+// structure it is handed, instead of inventing and holding one while writing 600
+// words.
+function parseEnumeratedOutline(text) {
+  const dims = [];
+  let cur = null;
+  for (const raw of String(text || "").split("\n")) {
+    const line = raw.trim();
+    if (!line || /^```/.test(line)) continue;
+    const asDim = line.replace(/^#{1,6}\s*/, "").replace(/^\d+\s*[.)]\s*/, "").replace(/\*\*/g, "").trim();
+    if (/^#{1,6}\s+\S/.test(line) || /^\d+\s*[.)]\s+\S/.test(line)) {
+      if (!asDim || asDim.length < 3 || asDim.length > 120) continue;
+      cur = { dimension: asDim.replace(/[.:;,\s]+$/, ""), points: [] };
+      dims.push(cur);
+      if (dims.length >= OUTLINE_MAX_HEADINGS) break;
+      continue;
+    }
+    const asPoint = line.replace(/^(?:[-*+]|\d+\s*[.)])\s*/, "").replace(/\*\*/g, "").trim();
+    if (!cur || !asPoint || asPoint.length < 3 || asPoint.length > 120) continue;
+    if (/^(here|points?|dimensions?|the points)\b\s*:?$/i.test(asPoint)) continue;
+    if (/[.?!]$/.test(asPoint)) continue; // a sentence is prose, not a point name
+    if (cur.points.some((p) => normalizeHeadingKey(p) === normalizeHeadingKey(asPoint))) continue;
+    cur.points.push(asPoint.replace(/[.:;,\s]+$/, ""));
+    if (cur.points.length >= 3) cur = { ...cur, points: cur.points.slice(0, 3) };
+  }
+  const usable = dims.filter((d) => d.points.length >= 2);
+  if (usable.length < OUTLINE_MIN_HEADINGS) return [];
+  return usable.map((d) => ({ dimension: d.dimension, points: d.points }));
+}
+
+function buildEnumeratedOutlinePrompt({ question, chunks, subjectId, wordLimit }) {
+  const digest = (chunks || [])
+    .slice(0, 6)
+    .map((c, i) => `[${i + 1}] ${String(c?.text || c?.content || "").replace(/\s+/g, " ").slice(0, 600)}`)
+    .join("\n\n");
+  return `You are planning a UPSC Mains answer that argues THROUGH its dimensions. Do NOT write the answer. Output only the plan.
+
+QUESTION:
+${question}
+
+EVIDENCE (abridged - use it to check each dimension and point is supportable):
+${digest}
+
+TASK
+Give each dimension of the question, and under it the points that dimension consists of.
+
+- ${OUTLINE_MIN_HEADINGS} to ${OUTLINE_MAX_HEADINGS} dimensions, in the order the question demands them. Together they divide a ${wordLimit || 600}-word answer.
+- Derive dimensions from the QUESTION. The evidence only confirms supportability; it never introduces a dimension or a point.
+- If the question names two things ("an asset and a source of conflict", "merits and demerits", "causes and consequences", "social and economic impact"), BOTH are dimensions and the named wording decides them.
+- EXACTLY 3 points per dimension. Do not write a fourth. Points must be short noun phrases of 2 to 6 words, naming a specific thing - not sentences, not adjectives.
+- Every point must be supportable by the evidence above.
+- A dimension heading NAMES the dimension. Never start one with "Role of", "Importance of", "Impact of", "Definition of", "The role of" or "The question of". Never use a gerund phrase like "Working of X" or "Carefully planned Y" - name the thing itself.
+- No dimension may be a bare list, and never output "Body", "Other factors" or "Conclusion".
+
+OUTPUT FORMAT - reproduce this shape exactly, nothing else:
+## 1. <dimension>
+- <point>
+- <point>
+- <point>
+
+## 2. <dimension>
+- <point>
+- <point>`;
+}
+
+// Returns the planned headings, or null to mean "no usable plan - write it in one
+// pass as before". This call is fail-open by design: an outline failure must never
+// cost the user their answer.
+export async function planAnswerOutline({ apiKey, question, chunks, subjectId, timeoutMs, wordLimit } = {}) {
+  const cleanKey = String(apiKey || "").trim();
+  if (!cleanKey || !chunks?.length || !String(question || "").trim()) return null;
+
+  const startedAt = Date.now();
+  const enumerate = shouldEnumeratePoints(question);
+  try {
+    const requestBody = {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: enumerate
+                ? buildEnumeratedOutlinePrompt({ question, chunks, subjectId, wordLimit })
+                : buildOutlinePrompt({ question, chunks, subjectId, wordLimit }),
+            },
+          ],
+        },
+      ],
+      systemInstruction: {
+        parts: [
+          {
+            text: "You plan UPSC Mains answer structures. You output only a plain list of dimensions, one per line, and never write answer prose.",
+          },
+        ],
+      },
+      safetySettings: [
+        { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+      ],
+      generationConfig: buildGeminiGenerationConfig({
+        maxOutputTokens: enumerate ? 700 : 400,
+        temperature: 0.0,
+        topP: 1,
+      }),
+    };
+
+    const response = await requestGemini(
+      cleanKey,
+      buildGeminiUrls(":generateContent"),
+      { method: "POST", body: JSON.stringify(requestBody) },
+      { operation: "plan_outline", timeoutMs: timeoutMs || OUTLINE_TIMEOUT_MS, retries: 0 }
+    );
+    const data = await response.json();
+    const candidate = data?.candidates?.[0] || {};
+    const text = (candidate?.content?.parts || []).map((p) => p?.text || "").join("");
+
+    if (enumerate) {
+      const plan = parseEnumeratedOutline(text);
+      if (plan.length) {
+        console.log(
+          `[outline] planned ${plan.length} dimensions with points in ${Date.now() - startedAt}ms: ` +
+            plan.map((d) => `${d.dimension}[${d.points.length}]`).join(" | ")
+        );
+        return { plan, headings: plan.map((d) => d.dimension), elapsedMs: Date.now() - startedAt };
+      }
+      console.warn(`[outline] enumerated plan unusable, falling back: ${text.slice(0, 200)}`);
+    }
+
+    const headings = parseOutlineHeadings(text);
+    if (!headings.length) {
+      console.warn(`[outline] unusable plan, falling back to single pass: ${text.slice(0, 160)}`);
+      return null;
+    }
+    console.log(
+      `[outline] planned ${headings.length} dimensions in ${Date.now() - startedAt}ms: ${headings.join(" | ")}`
+    );
+    return { headings, elapsedMs: Date.now() - startedAt };
+  } catch (error) {
+    console.warn(`[outline] failed, falling back to single pass: ${error?.message || error}`);
+    return null;
+  }
+}
+
+// The model reliably writes a bullet's point name followed by a colon and the
+// explanation - "Agricultural support: because HYV seeds..." - but has never once
+// bolded the lead-in across every run, despite the prompt asking for it. That is
+// presentational only: no wording changes, just emphasis on the phrase already
+// there. A short lead-in ending at the first colon is unambiguous, so wrap it.
+// Restore dimension headings that the model dropped.
+//
+// When a plan with points exists, the bullets reliably come back - in order, each
+// carrying its planned point name as the lead-in - but the `## N. <dimension>`
+// headings above them are frequently missing, leaving a flat list that no examiner
+// can navigate. The plan already holds every dimension name, so put them back.
+//
+// Nothing is invented: the only text added is a heading pass 1 authored, inserted
+// at the boundary where the bullets belonging to that dimension begin. Only runs
+// when ALL dimension headings are missing, so it can never duplicate one.
+function restorePlanHeadings(text, plan) {
+  if (!Array.isArray(plan) || !plan.length) return { text, repaired: false };
+
+  const isHeading = (l) => /^#{1,6}\s+\S/.test(l);
+  const isBullet = (l) => /^\s*-\s+\S/.test(l);
+  const headingText = (l) => l.replace(/^#{1,6}\s+/, "").replace(/\*\*/g, "").trim();
+  const isDimHeading = (l) => isHeading(l) && !/introduction|conclusion/i.test(headingText(l));
+  const norm = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const lines = String(text || "").split("\n");
+  const existingDims = lines.filter(isDimHeading).length;
+  if (existingDims > 0) return { text, repaired: false };
+
+  const firstBullet = lines.findIndex(isBullet);
+  if (firstBullet === -1) return { text, repaired: false };
+
+  let endIdx = lines.length;
+  for (let i = firstBullet; i < lines.length; i++) {
+    if (isHeading(lines[i]) && /conclusion/i.test(headingText(lines[i]))) { endIdx = i; break; }
+  }
+
+  // Map each planned point to the dimension that owns it.
+  const owner = new Map();
+  plan.forEach((d, di) => (d.points || []).forEach((p) => owner.set(norm(p), di)));
+
+  const dimOfBullet = (line) => {
+    const body = norm(line.replace(/^\s*-\s+/, "").replace(/\*\*/g, ""));
+    if (!body) return -1;
+    for (const [point, di] of owner) {
+      if (body === point) return di;
+      if (body.startsWith(`${point} `) || body.startsWith(`${point} -`)) return di;
+    }
+    return -1;
+  };
+
+  const region = lines.slice(firstBullet, endIdx);
+  const rebuilt = [];
+  let currentDim = -1;
+  let matched = 0;
+  for (const line of region) {
+    if (isBullet(line)) {
+      const di = dimOfBullet(line);
+      if (di >= 0) {
+        matched += 1;
+        if (di !== currentDim) {
+          currentDim = di;
+          rebuilt.push("", `## **${di + 1}. ${plan[di].dimension}**`, "");
+        }
+        rebuilt.push(line);
+        continue;
+      }
+      rebuilt.push(line);
+      continue;
+    }
+    if (isDimHeading(line)) continue; // stray dimension heading inside the region
+    rebuilt.push(line);
+  }
+
+  // If we could not attribute most bullets, the grouping is guesswork - keep the
+  // original rather than risk attaching points to the wrong dimension.
+  const totalBullets = region.filter(isBullet).length;
+  if (!totalBullets || matched < totalBullets * 0.6) {
+    return { text, repaired: false };
+  }
+
+  const out = [...lines.slice(0, firstBullet), ...rebuilt, ...lines.slice(endIdx)]
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const restored = out.split("\n").filter(isDimHeading).length;
+  if (restored <= existingDims) return { text, repaired: false };
+  console.log(`[plan-headings] restored ${restored} dimension headings from the plan`);
+  return { text: out, repaired: true };
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Bold a bullet's lead-in. When the plan is available the lead-in is matched
+// against the planned point name, which is exact - no guessing, so a sentence that
+// merely contains a dash is never mangled. The colon form is the fallback for
+// answers generated without a plan.
+function boldenBulletLeadIns(text, plan) {
+  // Defensive: an earlier version of the writing prompt showed the model a
+  // skeleton containing "<explanation with specific evidence>", and the model
+  // copied that placeholder straight into an answer. Any bracketed instruction
+  // text that survives generation is our own scaffolding, never content.
+  const stripped = String(text || "").replace(
+    /<\/?(?:explanation|dimension|point|evidence|named example|short noun phrase|one short sentence|identifier sentence)[^>\n]*>/gi,
+    ""
+  );
+
+  const pointPatterns = [];
+  if (Array.isArray(plan)) {
+    for (const d of plan) {
+      for (const p of d?.points || []) {
+        if (typeof p === "string" && p.trim().length >= 3) {
+          pointPatterns.push(
+            new RegExp(`^(\\s*-\\s+)(${escapeRegExp(p.trim())})(\\s*(?:-|:|\\s))`, "i")
+          );
+        }
+      }
+    }
+  }
+
+  return stripped
+    .split("\n")
+    .map((line) => {
+      if (!/^\s*-\s+\S/.test(line)) return line;
+      if (line.includes("**")) return line;
+
+      for (const re of pointPatterns) {
+        const m = line.match(re);
+        if (!m) continue;
+        // The skeleton was written "- **Point** - explanation", so once the lead-in
+        // is bolded and colon-terminated the old " - " separator is redundant.
+        const rest = line.slice(m[0].length).replace(/^\s*-\s*/, "");
+        return `${m[1]}**${m[2]}:** ${rest}`;
+      }
+
+      const m = line.match(/^(\s*-\s+)([^:*]{3,70}?):(\s+)(.*)$/);
+      if (!m) return line;
+      const leadIn = m[2].trim();
+      const rest = m[4];
+      const words = leadIn.split(/\s+/).filter(Boolean).length;
+      if (words > 9 || words < 1) return line;
+      if (!rest || !/[a-z]/.test(rest)) return line;
+      return `${m[1]}**${leadIn}**:${m[3]}${rest}`;
+    })
+    .join("\n");
 }
 
 function normalizeFenceBlocks(text) {
@@ -1210,10 +1750,18 @@ export async function proxyGeminiCall(apiKey, options) {
   // was retained, so the caller can label the answer as incomplete.
   let timeoutPartial = false;
 
-  onStatus?.("writing mains answer");
   const rawSubjectId = options.subjectId || (chunks?.[0]?.subject_id) || null;
   const subjectId = Array.isArray(rawSubjectId) ? rawSubjectId.find((s) => typeof s === "string") || null : rawSubjectId;
-  const userPrompt = buildRagPrompt({ question, chunks, subjectId });
+
+  onStatus?.("planning answer structure");
+  // Pass 1: decide the dimensions before any prose exists. Fail-open - a null plan
+  // means the writing pass runs exactly as it did before.
+  const outlinePlan = await planAnswerOutline({ apiKey, question, chunks, subjectId, wordLimit: detectWordLimit(question, subjectId) });
+  const plannedHeadings = outlinePlan?.headings || null;
+  const pointPlan = outlinePlan?.plan || null;
+
+  onStatus?.("writing mains answer");
+  const userPrompt = buildRagPrompt({ question, chunks, subjectId, outline: plannedHeadings, plan: pointPlan });
   const urls = buildGeminiUrls(":streamGenerateContent?alt=sse");
   const maxOutputTokens = targetTokens > 0 ? Math.min(targetTokens, 65536) : 8192;
   const answerWordLimit = detectWordLimit(question, subjectId);
@@ -1569,7 +2117,7 @@ export async function proxyGeminiCall(apiKey, options) {
     onToken(restoreExactDiagrams(cleanModelOutput(fullText), chunks));
   }
 
-  const cleaned = restoreExactDiagrams(cleanModelOutput(fullText), chunks);
+  const cleaned = restoreExactDiagrams(boldenBulletLeadIns(cleanModelOutput(fullText), pointPlan), chunks);
 
   // Programmatic source-lock check against the exact chunks we sent.
   const grounding = verifyGrounding(cleaned, chunks, {
@@ -1700,7 +2248,10 @@ export async function proxyGeminiCall(apiKey, options) {
     `[gemini] textgen: model=${servedModel}, ttftMs=${firstTokenAt ? firstTokenAt - proxyStartedAt : -1} genMs=${Date.now() - proxyStartedAt} outputTokens=${tokenCount} tokPerSec=${tokenCount > 0 && Date.now() - proxyStartedAt > 0 ? Math.round((tokenCount / Math.max(1, Date.now() - proxyStartedAt)) * 1000) : 0}`
   );
 
-  const framed = ensureFrameStructure(groundedText);
+  // Put back any dimension headings the model dropped, before the frame repair
+  // runs - the repair can only work on structure that is actually present.
+  const reheaded = restorePlanHeadings(groundedText, pointPlan);
+  const framed = ensureFrameStructure(reheaded.text);
   if (framed.repaired) {
     console.warn("[gemini] frame repaired: restored a missing Conclusion or dropped an empty heading");
   }
@@ -1907,46 +2458,72 @@ export async function generateAnswer({ apiKey, question, chunks, subjectId, opti
     throw new Error("No evidence chunks provided to generateAnswer");
   }
 
-  const userPrompt = buildRagPrompt({ question, chunks, subjectId });
+  // Pass 1: decide the dimensions before any prose exists. Fail-open.
+  const outlinePlan = await planAnswerOutline({ apiKey, question, chunks, subjectId, wordLimit: detectWordLimit(question, subjectId) });
+  const plannedHeadings = outlinePlan?.headings || null;
+  const pointPlan = outlinePlan?.plan || null;
 
-  const requestBody = {
-    contents: [
-      { role: "user", parts: [{ text: userPrompt }] },
-    ],
-    systemInstruction: {
-      parts: [{ text: RAG_ANSWER_SYSTEM_INSTRUCTION }],
-    },
-    safetySettings: [
-      { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-      { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-      { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-    ],
-    generationConfig: buildGeminiGenerationConfig({
-      maxOutputTokens: options.maxOutputTokens || 8192,
-      temperature: options.temperature ?? 0.0,
-      topP: options.topP ?? 1,
-    }),
+  const buildRequestBody = (opts = {}) =>
+    ({
+      contents: [
+        { role: "user", parts: [{ text: buildRagPrompt({ question, chunks, subjectId, outline: plannedHeadings, plan: pointPlan, proseOnly: opts.proseOnly }) }] },
+      ],
+      systemInstruction: {
+        parts: [{ text: RAG_ANSWER_SYSTEM_INSTRUCTION }],
+      },
+      safetySettings: [
+        { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+      ],
+      generationConfig: buildGeminiGenerationConfig({
+        maxOutputTokens: options.maxOutputTokens || 8192,
+        temperature: options.temperature ?? 0.0,
+        topP: options.topP ?? 1,
+      }),
+    });
+
+  const callGemini = async (opts = {}) => {
+    const response = await requestGemini(
+      cleanKey,
+      buildGeminiUrls(":generateContent"),
+      { method: "POST", body: JSON.stringify(buildRequestBody(opts)) },
+      {
+        operation: "generate_answer",
+        timeoutMs: options.timeoutMs || GEMINI_REQUEST_TIMEOUT_MS,
+        retries: options.retries ?? GEMINI_MAX_RETRIES,
+      }
+    );
+    const data = await response.json();
+    const candidate = data?.candidates?.[0] || {};
+    return { data, text: (candidate?.content?.parts || []).map((part) => part?.text || "").join("") };
   };
 
-  const response = await requestGemini(
-    cleanKey,
-    buildGeminiUrls(":generateContent"),
-    {
-      method: "POST",
-      body: JSON.stringify(requestBody),
-    },
-    {
-      operation: "generate_answer",
-      timeoutMs: options.timeoutMs || GEMINI_REQUEST_TIMEOUT_MS,
-      retries: options.retries ?? GEMINI_MAX_RETRIES,
-    }
-  );
+  let { data, text } = await callGemini();
 
-  const data = await response.json();
-  const candidate = data?.candidates?.[0] || {};
-  const parts = candidate?.content?.parts || [];
-  const text = parts.map((part) => part?.text || "").join("");
+  // Guard: if the plan was followed with bullets but the headings are missing, the
+  // answer is a flat list - structurally broken however good the content is. Rewriting
+  // the same plan in prose is the reliable fallback, since it is the form that
+  // historically preserved headings. Only possible here, on the non-streaming path:
+  // a streamed answer has already been delivered to the client.
+  let guardUsed = false;
+  if (plannedHeadings && !pointPlan) {
+    const probe = restoreExactDiagrams(cleanModelOutput(text), chunks);
+    const coverage = outlineCoverage(probe, plannedHeadings);
+    if (!coverage.ok && hasBulletLines(probe)) {
+      console.warn(
+        `[outline] guard: ${coverage.matched}/${coverage.total} planned dimensions present with bullets ` +
+          `(${coverage.missing.join(" | ")}) - rewriting in prose`
+      );
+      try {
+        ({ data, text } = await callGemini({ proseOnly: true }));
+        guardUsed = true;
+      } catch (error) {
+        console.warn(`[outline] guard rewrite failed, keeping the first answer: ${error?.message || error}`);
+      }
+    }
+  }
   const answerWordLimit = detectWordLimit(question, subjectId);
   const finishReason = candidate?.finishReason;
 
@@ -1965,8 +2542,9 @@ export async function generateAnswer({ apiKey, question, chunks, subjectId, opti
     });
   }
 
-  const cleaned = restoreExactDiagrams(cleanModelOutput(text), chunks);
-  const framed = ensureFrameStructure(cleaned);
+  const cleaned = restoreExactDiagrams(boldenBulletLeadIns(cleanModelOutput(text), pointPlan), chunks);
+  const reheaded = restorePlanHeadings(cleaned, pointPlan);
+  const framed = ensureFrameStructure(reheaded.text);
   const enforced = enforceWordLimit(framed.text, answerWordLimit);
   const stoppedByFilter = Boolean(text.trim()) && SAFETY_FINISH_REASONS.has(finishReason);
 
@@ -1979,6 +2557,8 @@ export async function generateAnswer({ apiKey, question, chunks, subjectId, opti
     wordCount: enforced.wordCount,
     wordLimit: answerWordLimit || null,
     wordLimitClamped: enforced.clamped,
+    ...(plannedHeadings ? { plannedOutline: plannedHeadings } : {}),
+    ...(guardUsed ? { outlineGuardUsed: true } : {}),
     ...(stoppedByFilter ? { truncated: true, stoppedByFilter: true, finishReason } : {}),
   };
 }
