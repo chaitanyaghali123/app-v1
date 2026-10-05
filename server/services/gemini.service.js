@@ -1083,13 +1083,50 @@ const OUTLINE_TIMEOUT_MS = 20000;
 // purpose - forcing bullets onto "The tragedy of the commons" would produce a
 // worse answer, not a better one. A pure "features of one subject" demand is also
 // excluded, because there each feature is already its own heading.
+// A UPSC question names the dimensions it wants in wildly different grammatical
+// shapes. These three real forms all ask for the same two-dimension structure:
+//
+//   "Discuss the causes and consequences of X"        one sentence, joined by "and"
+//   "What were the events that led to X? Point out its results."
+//                                                      two sentences, no conjunction
+//   "Enumerate the merits and demerits of X"          explicit enumeration
+//
+// A single conjunction-anchored test only ever recognised the first shape, so the
+// other two silently produced no plan, and with no plan there were no dimension
+// headings to restore - the question got a flat bullet dump under a bare
+// Introduction. Two dimensions named anywhere in the question is the actual
+// signal, so count distinct dimension nouns instead of looking for "and".
+const DIMENSION_NOUN =
+  /\b(cause|causes|reason|reasons|factor|factors|consequence|consequences|result|results|effect|effects|impact|impacts|outcome|outcomes|merit|merits|demerit|demerits|advantage|advantages|disadvantage|disadvantages|asset|assets|strength|strengths|weakness|weaknesses|challenge|challenges|obstacle|obstacles|barrier|barriers|implication|implications|significance|role|roles|aspect|aspects|dimension|dimensions|feature|features|characteristic|characteristics|attribute|attributes|element|elements|issue|issues|problem|problems|measure|measures|initiative|initiatives|step|steps|phase|phases|stage|stages|event|events)\b/g;
+
+// Argumentative asks want prose even when the topic contains dimension nouns.
+// These verbs are unambiguous, so they override the verb and noun tests below.
+// "Critically examine" and plain "examine" are deliberately treated differently:
+// the first asks for an argument, the second for a treatment.
+const PROSE_DIRECTIVE =
+  /\b(elucidate|critically|to what extent)\b/;
+
+// "Discuss the salient features of X" wants prose, but "Enumerate the features
+// of X" and "List the features of X" are the examiner literally commanding a
+// list. pureFeatures must not override an explicit instruction to enumerate,
+// or the question gets the one shape it explicitly asked not to have.
+const ENUMERATION_COMMAND = /\b(enumerate|list|outline|bring out|point out)\b/;
+
 function shouldEnumeratePoints(question) {
   const q = String(question || "").toLowerCase();
-  const directive = /\b(examine|assess|analyse|analyze|discuss|what are|what is the significance|evaluate)\b/.test(q);
-  const multiDimension =
-    /\b(both|and)\b[^.?!]{0,60}\b(asset|assets|merit|merits|demerit|demerits|cause|causes|consequence|consequences|effect|effects|impact|strength|weakness|advantage|advantages|significance|implication|implications|challenge|challenges)\b/.test(q);
+  if (PROSE_DIRECTIVE.test(q)) return false;
+
+  const directive =
+    /\b(examine|assess|analyse|analyze|discuss|evaluate|enumerate|outline|trace|bring out|point out|list|explain|illustrate|what are|what were|what was)\b/.test(q) ||
+    /\bwhat is the significance\b/.test(q);
+
+  // Distinct, not total: "the causes and consequences of the causes of
+  // malnutrition" is still one dimension asked about twice.
+  const nouns = new Set((q.match(DIMENSION_NOUN) || []).map((w) => w.replace(/e?s$/, "")));
+  const multiDimension = nouns.size >= 2;
+
   const pureFeatures = /\b(features?|characteristics?|attributes?|elements?)\b/.test(q) && !multiDimension;
-  if (pureFeatures) return false;
+  if (pureFeatures && !ENUMERATION_COMMAND.test(q)) return false;
   return directive || multiDimension;
 }
 
