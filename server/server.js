@@ -22,8 +22,6 @@ if (!fs.existsSync(diagramAssetsDir)) {
 }
 
 // Routes
-import chunkRoutes from "./routes/chunk.route.js";
-import ingestRoutes from "./routes/ingest.route.js";
 // import llmRoutes from "./routes/llm.route.js"; // disabled: phone does on-device LLM generation
 
 import revisionRoutes from "./routes/revision.route.js";
@@ -31,10 +29,8 @@ import authRoutes from "./routes/auth.route.js";
 import mobileRoutes from "./routes/mobile.route.js";
 import geminiRoutes from "./routes/gemini.route.js";
 import subjectRoutes from "./routes/subject.route.js";
-import ragRoutes from "./routes/rag.route.js";
 import adminRoutes from "./routes/admin.route.js";
 import pyqRoutes from "./routes/pyq.routes.js";
-import sourceRoutes from "./routes/source.routes.js";
 import currentAffairsRoutes from "./routes/currentAffairs.routes.js";
 
 // DB
@@ -45,7 +41,6 @@ import {
   ensureAuthCodesTable,
   ensureApiLogsTable,
   ensureGeminiKeysTable,
-  ensureUpscChunkMediaColumns,
   ensurePyqsTable,
   ensureCurrentAffairsTable,
 } from "./services/db.service.js";
@@ -61,9 +56,6 @@ if (trustProxy !== "false") {
 
 // Security headers (replaces helmet)
 app.use((_req, res, next) => {
-  if (_req.path.startsWith("/api/sources/") && _req.path.includes("/file/")) {
-    return next();
-  }
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("X-XSS-Protection", "0");
@@ -110,16 +102,12 @@ app.get("/health", (_req, res) => {
 
 // Routes
 app.use("/api/auth", authRoutes);
-app.use("/api/chunk", chunkRoutes);
-app.use("/api/ingest", ingestRoutes);
 app.use("/api/revisions", revisionRoutes);
 app.use("/api/mobile", mobileRoutes);
 app.use("/api", geminiRoutes);
 app.use("/api", subjectRoutes);
-app.use("/api/rag", ragRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/pyqs", pyqRoutes);
-app.use("/api", sourceRoutes);
 app.use("/api/current-affairs", currentAffairsRoutes);
 
 // Global error handler (Multer errors, validation errors, etc.)
@@ -147,7 +135,6 @@ async function initialize() {
       ensureAuthCodesTable(),
       ensureApiLogsTable(),
       ensureGeminiKeysTable(),
-      ensureUpscChunkMediaColumns(),
       ensurePyqsTable(),
       ensureCurrentAffairsTable(),
     ]);

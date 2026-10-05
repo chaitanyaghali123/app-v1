@@ -1,6 +1,5 @@
 import express from "express";
 import {
-  getMobileRagContext,
   getMobileAnswer,
 } from "../controllers/mobile.controller.js";
 import { authenticate } from "../middleware/auth.js";
@@ -28,7 +27,6 @@ const answerConcurrencyLimiter = createConcurrencyLimiter(
   { keyPrefix: "gemini:answer:concurrency", keyGenerator: deviceKey }
 );
 
-router.post("/rag-context", authenticate, getMobileRagContext);
 router.post(
   "/answer",
   answerIpLimiter,

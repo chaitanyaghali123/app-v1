@@ -1,6 +1,4 @@
 import crypto from "crypto";
-import { verifyGrounding } from "./grounding.service.js";
-import { orderChunksBySourceProximity, formatEvidenceChunks } from "./evidence-hierarchy.service.js";
 
 const ENCRYPTION_ALGORITHM = "aes-256-gcm";
 const KEY_LENGTH = 32;
@@ -732,7 +730,7 @@ function countWords(text) {
   const t = String(text || "")
     .replace(/^#{1,6}\s+/gm, "")
     .replace(/[*_`]/g, "")
-    .replace(/^\s*(?:[-•*]|\d+\.)\s+/gm, "")
+    .replace(/^\s*(?:[-Ã¢â‚¬Â¢*]|\d+\.)\s+/gm, "")
     .replace(/\s+/g, " ")
     .trim();
   return t ? t.split(" ").filter(Boolean).length : 0;
@@ -959,9 +957,9 @@ ${d.points
 
   const wordLimitInstruction = wordLimit
     ? `
-LENGTH TARGET — ${wordLimit === 1300 ? "1170–1300" : "500–700"} words (headings excluded). This is a RANGE with a hard floor and a hard ceiling. Aim near the middle (~600 words).
-- GIVE EACH DIMENSION A WORD FLOOR, then count as you go. Divide the budget across your dimensions, subtract the Introduction and Conclusion, and give every remaining dimension an equal share — roughly ${wordLimit === 1300 ? "150" : "95"}–${wordLimit === 1300 ? "200" : "130"} words each. A dimension is not finished when you have stated it: it is finished when you have explained WHY it matters, given the concrete detail for it, and drawn out its significance to the question. Two thin sentences under a heading is the single most common way to fall short of the floor.
-- Structure: Introduction → numbered dimensions → Conclusion. The Introduction is 2-3 sentences of genuine context and a direct answer to the directive verb; the Conclusion is 2-3 sentences of synthesis or verdict, never a summary of what was just said.
+LENGTH TARGET Ã¢â‚¬â€ ${wordLimit === 1300 ? "1170Ã¢â‚¬â€œ1300" : "500Ã¢â‚¬â€œ700"} words (headings excluded). This is a RANGE with a hard floor and a hard ceiling. Aim near the middle (~600 words).
+- GIVE EACH DIMENSION A WORD FLOOR, then count as you go. Divide the budget across your dimensions, subtract the Introduction and Conclusion, and give every remaining dimension an equal share Ã¢â‚¬â€ roughly ${wordLimit === 1300 ? "150" : "95"}Ã¢â‚¬â€œ${wordLimit === 1300 ? "200" : "130"} words each. A dimension is not finished when you have stated it: it is finished when you have explained WHY it matters, given the concrete detail for it, and drawn out its significance to the question. Two thin sentences under a heading is the single most common way to fall short of the floor.
+- Structure: Introduction Ã¢â€ â€™ numbered dimensions Ã¢â€ â€™ Conclusion. The Introduction is 2-3 sentences of genuine context and a direct answer to the directive verb; the Conclusion is 2-3 sentences of synthesis or verdict, never a summary of what was just said.
 - COMPLETE THE ENTIRE ANSWER: finish every section, and any verdict the verb calls for, before stopping. Never truncate and never end mid-sentence. If the budget tightens, compress wording rather than cutting a section.
 - EACH SECTION MUST BE DISTINCT: every section carries a separate argument directly relevant to the question. Do not repeat an earlier argument in different words.
 - NO REPETITION: state each provision, example, statistic and argument exactly once. Do not lean repeatedly on the same framing terms - vary the vocabulary and let each term carry a distinct idea.
@@ -972,7 +970,7 @@ LENGTH TARGET — ${wordLimit === 1300 ? "1170–1300" : "500–700"} words (hea
   return `You are an expert UPSC Civil Services Mains answer-writer for ${(subjectId || "general studies").toUpperCase()} (${wordLimit ? `${wordLimit} words` : "concise"}). You answer from your own knowledge of the subject.
 
 == HOW TO ANSWER ==
-- Match structure to the command verb: enumerations become bolded point lists; "compare/distinguish" becomes point-by-point contrast under a heading per side or axis; "examine/critically examine" argues FOR then AGAINST with a final judgment; "to what extent" states a determined extent; "evaluate" weighs criteria and closes with a verdict; "comment" names the core issue of the proposition, then what was actually done and why, then the broader objectives, then the tension or limitation, then delivers the comment itself; "causes→effects" sequences with explicit causal links; multiple directives are all answered in proportion.
+- Match structure to the command verb: enumerations become bolded point lists; "compare/distinguish" becomes point-by-point contrast under a heading per side or axis; "examine/critically examine" argues FOR then AGAINST with a final judgment; "to what extent" states a determined extent; "evaluate" weighs criteria and closes with a verdict; "comment" names the core issue of the proposition, then what was actually done and why, then the broader objectives, then the tension or limitation, then delivers the comment itself; "causesÃ¢â€ â€™effects" sequences with explicit causal links; multiple directives are all answered in proportion.
 - IDENTIFY OBJECT, VERB AND SCOPE BEFORE WRITING: parse the question into its object, its command verb, and its SCOPE - any qualifier that bounds or extends the subject ("almost all subaltern classes", "all aspects", "social, economic and political aspects", "various factors", "the causes and effects"). The object and verb tell you what to say; the scope tells you what the headings must be.
 - MAKE THE SCOPE VISIBLE IN THE HEADINGS: when the question names a scope, the headings are the distinct parts of that scope, one heading per part. "Phule's writings touched issues of almost all subaltern classes. Discuss." is not answered by a heading on Phule's anti-caste contribution in general; it is answered by headings that are the classes inside that scope - Peasants and Agricultural Labourers, Lower-Caste Communities and Shudras-Atishudras, Women and Gender Inequality, and so on.
 - A SCOPE COLLAPSED INTO ONE THEME HAS NOT BEEN ANSWERED: if every heading could be summarised under a single broad label ("his challenge to caste"), the answer has described the subject instead of the question. If two headings answer the same part, merge them and split a part that has none.
@@ -994,15 +992,15 @@ You have no source material here. Everything factual comes from your own knowled
 - Prefer well-established, textbook-level facts that you are sure of over impressive specifics you are unsure of.
 - Do not attribute a view, a finding or a quote to a named scholar, committee or report unless you are certain of it.
 - Constitutional and legal references must be accurate. If unsure whether something is Article 39A or 39B, describe the provision rather than citing the number.
-- PRESERVE SCOPE AND DIRECTION of whatever you do state: keep a claim's stated time period and population, and never reverse a stated cause→effect relationship.
+- PRESERVE SCOPE AND DIRECTION of whatever you do state: keep a claim's stated time period and population, and never reverse a stated causeÃ¢â€ â€™effect relationship.
 - ATTRIBUTION: figures and studies illustrate or corroborate, they never "prove" causation. Avoid absolutes unless you are certain.
 - EXAMPLES: for "with examples", lead with 3-5 specific, named, concrete examples. Draw on the actual subject of the question, not its background.
 ${outlineBlock}${planBlock}${proseOnlyBlock}
 == RENDERING ==
-- \`## **Introduction**\`, then \`## **1. <dimension>**\` … then \`## **Conclusion**\`.
+- \`## **Introduction**\`, then \`## **1. <dimension>**\` Ã¢â‚¬Â¦ then \`## **Conclusion**\`.
 - Bold key terms and facts as on-paper underlining would (e.g. **regional planning**, **Planning Commission**).
 - For a comparison with several aligned axes, a markdown table is acceptable.
-- No citations, no [1]/[2], no footnotes, no URLs, no LaTeX; use Unicode arrows/symbols (→, ×, ≤).
+- No citations, no [1]/[2], no footnotes, no URLs, no LaTeX; use Unicode arrows/symbols (Ã¢â€ â€™, Ãƒâ€”, Ã¢â€°Â¤).
 - Paragraphs and bullets must each be a single physical line. Never wrap or hard-wrap a line mid-sentence.
 - Do not use LaTeX, code fences, or horizontal rules.
 ${wordLimitInstruction}`;
@@ -1013,18 +1011,17 @@ function buildRagPrompt({ question, chunks, subjectId, outline, plan, proseOnly 
     throw new Error("No evidence chunks provided to buildRagPrompt");
   }
 
-  // Preserve the source's own structure: keep contiguous same-source chunks
-  // together in document order and label each chunk with its origin, so the model
-  // can attribute a statement and see the direction of a stated relationship.
-  const { chunks: orderedChunks, layout } = orderChunksBySourceProximity(chunks);
-  const chunkText = formatEvidenceChunks(orderedChunks, layout, { label: (i) => `EVIDENCE ${i + 1}` });
+  // There is no corpus any more, so the evidence prompt is dead code. It is kept
+  // only so the two-line diff below stays reviewable; buildDirectPrompt is what
+  // proxyGeminiCall actually calls.
+  const chunkText = "";
 
   const wordLimit = detectWordLimit(question, subjectId);
 
   const mainsStructure =
     "Standard UPSC Mains shape: ## **Introduction**, then the question-specific dimensions, then ## **Conclusion**. The Introduction is 2-3 sentences of genuine context and a direct answer to the directive verb; the Conclusion is 2-3 sentences of synthesis or verdict, never a summary of what was just said. Number the body sections 1., 2., 3. in the order the question demands. The number, name, order and nature of those dimensions come from the question - there is no fixed list and no fixed count. A question with five strands may yield five sections, a narrow factual question two. What is fixed is the frame; what the model chooses is everything inside it. Total must still reach the word range.";
   const essayStructure =
-    "Introduction = 100–120 words, then the question-derived body sections = ~1080 words, then Conclusion = 90–100 words, using 8–9 body paragraphs. The frame stays; the body sections come from the question.";
+    "Introduction = 100Ã¢â‚¬â€œ120 words, then the question-derived body sections = ~1080 words, then Conclusion = 90Ã¢â‚¬â€œ100 words, using 8Ã¢â‚¬â€œ9 body paragraphs. The frame stays; the body sections come from the question.";
   // When a plan exists, the structure is handed over as literal text. This is the
   // whole point of the two-pass design: reproducing a supplied list is reliable in a
   // way that composing a structure while also composing prose was not.
@@ -1094,36 +1091,36 @@ ${d.points
 
   const wordLimitInstruction = wordLimit
     ? `
-LENGTH TARGET — ${wordLimit === 1300 ? "1170–1300" : "500–700"} words (headings excluded). This is a RANGE with a hard floor and a hard ceiling, not a soft suggestion: an answer under 500 words is too short to score, and one over 700 has stopped answering the question. Aim near the middle (~600 words).
-- GIVE EACH DIMENSION A WORD FLOOR, then count as you go. Divide the budget across the dimensions you have chosen, subtract the Introduction and Conclusion, and give every remaining dimension an equal share — roughly ${wordLimit === 1300 ? "150" : "95"}–${wordLimit === 1300 ? "200" : "130"} words each. With 4 dimensions that is about 110 words per section; with 5, about 95. A dimension is not finished when you have stated it: it is finished when you have explained WHY it matters, given the concrete evidence for it, and drawn out its significance to the question. Two thin sentences under a heading is the single most common way to fall short of the floor.
+LENGTH TARGET Ã¢â‚¬â€ ${wordLimit === 1300 ? "1170Ã¢â‚¬â€œ1300" : "500Ã¢â‚¬â€œ700"} words (headings excluded). This is a RANGE with a hard floor and a hard ceiling, not a soft suggestion: an answer under 500 words is too short to score, and one over 700 has stopped answering the question. Aim near the middle (~600 words).
+- GIVE EACH DIMENSION A WORD FLOOR, then count as you go. Divide the budget across the dimensions you have chosen, subtract the Introduction and Conclusion, and give every remaining dimension an equal share Ã¢â‚¬â€ roughly ${wordLimit === 1300 ? "150" : "95"}Ã¢â‚¬â€œ${wordLimit === 1300 ? "200" : "130"} words each. With 4 dimensions that is about 110 words per section; with 5, about 95. A dimension is not finished when you have stated it: it is finished when you have explained WHY it matters, given the concrete evidence for it, and drawn out its significance to the question. Two thin sentences under a heading is the single most common way to fall short of the floor.
 - COUNT AS YOU GO: before you finish, check the running total. Under 500 words? Expand the thinnest sections with additional evidence from the chunks. Over 700 words? Cut the weakest material, and never the verdict the verb asks for.
 - Structure: ${wordLimit === 1300 ? essayStructure : mainsStructure}
 - COMPLETE THE ENTIRE ANSWER: finish every section, and any verdict the verb calls for, before stopping. Never truncate and never end mid-sentence. If the budget tightens, compress wording (shorter clauses, fewer adjectives) rather than cutting a section.
 - EACH SECTION MUST BE DISTINCT: every section carries a separate argument directly relevant to the question, supported by its own evidence from the chunks. Do not repeat an earlier argument in different words.
-- DEPTH OVER BREADTH: reach the word range by developing each argument further — more concrete detail drawn from the chunks (names, dates, institutions, figures, worked examples), more analysis of why each fact matters, more precisely what the evidence does and does not establish. Never add sections that restate the opening, and never pad with generalities about Indian society. If the evidence is thin on one section, say less there and say more on the sections the evidence actually supports.
-- If the evidence does not support a section you were planning, do NOT invent information to fill it — substitute a different argument the evidence does support.
-- NO REPETITION: state each provision, example, statistic, and argument exactly once. Do not lean repeatedly on the same framing terms (e.g. "development", "equity", "vulnerability", "inclusive growth", "social progress") — vary the vocabulary and let each term carry a distinct idea.
+- DEPTH OVER BREADTH: reach the word range by developing each argument further Ã¢â‚¬â€ more concrete detail drawn from the chunks (names, dates, institutions, figures, worked examples), more analysis of why each fact matters, more precisely what the evidence does and does not establish. Never add sections that restate the opening, and never pad with generalities about Indian society. If the evidence is thin on one section, say less there and say more on the sections the evidence actually supports.
+- If the evidence does not support a section you were planning, do NOT invent information to fill it Ã¢â‚¬â€ substitute a different argument the evidence does support.
+- NO REPETITION: state each provision, example, statistic, and argument exactly once. Do not lean repeatedly on the same framing terms (e.g. "development", "equity", "vulnerability", "inclusive growth", "social progress") Ã¢â‚¬â€ vary the vocabulary and let each term carry a distinct idea.
 - NO FILLER: no generic praise, no moral framing, no "it is important to note" throat-clearing, and no textbook-definition openers unless the question explicitly asks for a definition. Every sentence must advance a distinct argument or supply its evidence.`
     : "";
 
   return `You are an expert UPSC Mains answer-writer for ${(subjectId || "general studies").toUpperCase()} (${wordLimit ? `${wordLimit} words` : "concise"}).
 
 == HOW TO ANSWER ==
-- Match structure to the command verb: enumerations become bolded point lists; "compare/distinguish" becomes point-by-point contrast under a heading per side or axis; "examine/critically examine" argues FOR then AGAINST with a final judgment; "to what extent" states a determined extent; "evaluate" weighs criteria and closes with a verdict; "comment" names the core issue of the proposition, then lays out what was actually done and why, then any broader objectives, then the tension or limitation, and delivers the comment itself in a closing section headed after the verb ("Comment"); "causes→effects" sequences with explicit causal links; multiple directives are all answered in proportion.
-- IDENTIFY OBJECT, VERB AND SCOPE BEFORE WRITING: parse the question into its object (who or what is being asked about), its command verb, and its SCOPE — any qualifier that bounds or extends the subject, such as "almost all subaltern classes", "all aspects", "social, economic and political aspects", "various factors", "multiple dimensions", "the causes and effects". The object and the verb tell you what to say; the scope tells you what the headings must be.
-- MAKE THE SCOPE VISIBLE IN THE HEADINGS: when the question names a scope, the headings are the distinct parts of that scope, one heading per part, and each section says what the subject did about that part. "Phule's writings and efforts of social reforms touched issues of almost all subaltern classes. Discuss." is not answered by headings about Phule's anti-caste contribution in general; it is answered by headings that are the classes and issues inside that scope — Peasants and Agricultural Labourers (his critique of exploitation and rural economic structure), Lower-Caste Communities and Shudras-Atishudras (caste hierarchy, purity-pollution rules, Brahmanical domination), Women and Gender Inequality (women's education, widowhood, child marriage), any further group the evidence supports, and a closing section on the broader programme of social justice that cuts across them.
+- Match structure to the command verb: enumerations become bolded point lists; "compare/distinguish" becomes point-by-point contrast under a heading per side or axis; "examine/critically examine" argues FOR then AGAINST with a final judgment; "to what extent" states a determined extent; "evaluate" weighs criteria and closes with a verdict; "comment" names the core issue of the proposition, then lays out what was actually done and why, then any broader objectives, then the tension or limitation, and delivers the comment itself in a closing section headed after the verb ("Comment"); "causesÃ¢â€ â€™effects" sequences with explicit causal links; multiple directives are all answered in proportion.
+- IDENTIFY OBJECT, VERB AND SCOPE BEFORE WRITING: parse the question into its object (who or what is being asked about), its command verb, and its SCOPE Ã¢â‚¬â€ any qualifier that bounds or extends the subject, such as "almost all subaltern classes", "all aspects", "social, economic and political aspects", "various factors", "multiple dimensions", "the causes and effects". The object and the verb tell you what to say; the scope tells you what the headings must be.
+- MAKE THE SCOPE VISIBLE IN THE HEADINGS: when the question names a scope, the headings are the distinct parts of that scope, one heading per part, and each section says what the subject did about that part. "Phule's writings and efforts of social reforms touched issues of almost all subaltern classes. Discuss." is not answered by headings about Phule's anti-caste contribution in general; it is answered by headings that are the classes and issues inside that scope Ã¢â‚¬â€ Peasants and Agricultural Labourers (his critique of exploitation and rural economic structure), Lower-Caste Communities and Shudras-Atishudras (caste hierarchy, purity-pollution rules, Brahmanical domination), Women and Gender Inequality (women's education, widowhood, child marriage), any further group the evidence supports, and a closing section on the broader programme of social justice that cuts across them.
 - A SCOPE COLLAPSED INTO ONE THEME HAS NOT BEEN ANSWERED: if every heading could be summarised under a single broad label ("his challenge to caste", "his educational legacy"), the answer has described the subject instead of the question. Ask of each heading: which distinct part of the named scope is this? If two headings answer the same part, merge them and split a part that has none. Include a part as a section only where the evidence supports it, and where the evidence does not support one, do not invent it and do not announce its absence.
-- IDENTIFY THE CENTRAL PROPOSITION FIRST: a "comment", "critically examine" or "to what extent" question puts one specific claim on trial (for example "planned economy was adopted to address regional imbalances"). Restate that claim in your own words, then work out what would have to be established in order to settle it — why it was felt necessary, the mechanism actually used, objectives pursued beyond it, whether it worked, where it fell short. Those become your sections, ordered as that argument requires. The sections are derived from the proposition; never from a list supplied in advance.
+- IDENTIFY THE CENTRAL PROPOSITION FIRST: a "comment", "critically examine" or "to what extent" question puts one specific claim on trial (for example "planned economy was adopted to address regional imbalances"). Restate that claim in your own words, then work out what would have to be established in order to settle it Ã¢â‚¬â€ why it was felt necessary, the mechanism actually used, objectives pursued beyond it, whether it worked, where it fell short. Those become your sections, ordered as that argument requires. The sections are derived from the proposition; never from a list supplied in advance.
 - A QUOTE OR MAXIM IS A LIST OF TERMS: when the question puts a quotation, slogan or maxim on trial ("Ideas are timeless and spaceless", "the tragedy of the commons", "swaraj is not merely political freedom"), the concepts the statement ASSERTS are your headings. Read the claim apart first: what distinct things is it claiming? Each one becomes its own heading, unpacked from the evidence. Then close by addressing how the terms hold together - the relationship between them is what the directive asks you to elucidate, and leaving it out answers only half the question. The terms come from the quotation itself, never from a fixed scheme: a maxim making three claims yields three sections, one making two yields two, and a single-claim proposition yields one section developed properly rather than three padded ones.
 - THE QUESTION DICTATES THE SCOPE, NEVER THE CONTEXT: the same rule governs any question that names its own terms - a pair or list of variables ("administration and education", "social, economic and political aspects"), a quotation, a named scope. Break the question into those terms and give each its own heading. The sections come strictly from the words of the question, and NEVER from a topic that happens to sit in the retrieved chunks. If the question asks about administration and education, do not write a section on visual arts because visual arts fill three of the four chunks; that is the source's subject, not the question's. The evidence supplies the FACTS under a heading - it never supplies the heading itself.
-- FOR "WHAT ARE THE..." DEMANDS: when a question asks for the features, characteristics, attributes, elements, causes, significance, effects, or challenges of a subject, first work out what that subject actually comprises — the aspects a specialist would list — then give each aspect its own concise heading. "Discuss the salient features of Harappan architecture" must DISCOVER planned towns and grid-pattern streets, drainage and sanitation, domestic architecture, monumental and public architecture, fortifications, water-management structures; it must not decide in advance that it needs six sections, and it must not stop after the first three that come to mind. The sections come from the subject's own dimensions, and the evidence decides which of those dimensions can actually be written.
-- THE HEADINGS ARE THE FEATURES: on an enumerative demand the main headings must themselves BE the features being asked for, so the skeleton of the answer visibly answers "what are the salient features?". Write each as a short feature noun phrase naming the feature and its most telling quality — "Planned Towns with Grid-Pattern Streets", "Sophisticated Drainage and Sanitation System", "Courtyard-Based Houses with Emphasis on Privacy", "Monumental and Public Architecture", "Advanced Water-Management Structures" — and let the paragraph beneath it explain the feature from the retrieved evidence. Do NOT use a descriptive or argumentative heading here: "Unique Town Planning and Grid-Pattern Layout" or "Carefully Planned Drainage Systems" read as commentary about a feature rather than the feature itself, while the frame's own "Introduction" and "Conclusion" remain fine around them.
+- FOR "WHAT ARE THE..." DEMANDS: when a question asks for the features, characteristics, attributes, elements, causes, significance, effects, or challenges of a subject, first work out what that subject actually comprises Ã¢â‚¬â€ the aspects a specialist would list Ã¢â‚¬â€ then give each aspect its own concise heading. "Discuss the salient features of Harappan architecture" must DISCOVER planned towns and grid-pattern streets, drainage and sanitation, domestic architecture, monumental and public architecture, fortifications, water-management structures; it must not decide in advance that it needs six sections, and it must not stop after the first three that come to mind. The sections come from the subject's own dimensions, and the evidence decides which of those dimensions can actually be written.
+- THE HEADINGS ARE THE FEATURES: on an enumerative demand the main headings must themselves BE the features being asked for, so the skeleton of the answer visibly answers "what are the salient features?". Write each as a short feature noun phrase naming the feature and its most telling quality Ã¢â‚¬â€ "Planned Towns with Grid-Pattern Streets", "Sophisticated Drainage and Sanitation System", "Courtyard-Based Houses with Emphasis on Privacy", "Monumental and Public Architecture", "Advanced Water-Management Structures" Ã¢â‚¬â€ and let the paragraph beneath it explain the feature from the retrieved evidence. Do NOT use a descriptive or argumentative heading here: "Unique Town Planning and Grid-Pattern Layout" or "Carefully Planned Drainage Systems" read as commentary about a feature rather than the feature itself, while the frame's own "Introduction" and "Conclusion" remain fine around them.
 - NO FIXED NUMBER OF FEATURES: give as many feature sections as the evidence genuinely supports, and stop once they are adequately covered. Three well-evidenced features is a complete answer, five is a better one, six invented to fill a quota is a failed answer. Never pad the list, and never merge two distinct features into one heading to save space.
 - COVER EVERY DIMENSION THE EVIDENCE SUPPORTS: before writing, enumerate the dimensions internally and check the finished answer against that list. A features/characteristics/causes question whose evidence supports five dimensions is UNDER-WRITTEN at three sections. If a dimension the evidence clearly covers has no section, add it; if a dimension is absent from the evidence, leave it out silently and do not invent it.
 - FEATURES ARE PARALLEL, NOT NESTED: if the evidence mentions a dimension only as a subordinate clause, an aside or an example inside another section, but the question asks for features, that dimension gets its OWN heading - it is a feature in its own right. Do not bury fortifications inside the town-planning section ("at Dholavira and Lothal the entire settlement was fortified"), do not fold wells or water management into domestic architecture, and do not compress public or monumental buildings into a closing sentence. A reader who sees only the headings must be able to list the salient features; if a salient feature is missing from that list, it has not been answered.
-- DO NOT MIRROR THE SOURCES: the chunks are arranged by their book's chapters, and their titles describe the SOURCE's organisation, not the question's demand. Never lift a heading from the evidence — "Genesis of Planned Economy", "Structural Transformation", "Commanding Heights of the Economy" are chapter labels, and reusing them reproduces the textbook instead of answering the question. Apply this test to every candidate heading: if it would make an equally good title for a chapter of a textbook, it is the wrong heading. A heading must state the claim you are settling ("Planning Had Objectives Beyond Regional Balance"), not name a topic, policy or institution ("Industrial Policy Resolution of 1956"). Each section must be something the question makes you establish, not something the source happens to contain. This applies to argumentative demands (why, causes, examine, evaluate, comment); on an enumerative demand the heading is instead the feature itself, as described above — but it is still never a chapter title lifted from the source.
-- USE THE STANDARD FRAME, QUESTION-SPECIFIC INSIDE IT. The frame is Introduction → numbered dimensions → Conclusion, and that frame is welcome - it is the UPSC Mains format. What must NOT be fixed is the content of the frame. Never a generic "Body", "Content" or "Main Points" heading, and never a placeholder Introduction that only restates the question.
-- THE DIMENSIONS COME FROM THE QUESTION, NOT FROM A LIST. FIRST read the question and work out what it demands — the cause-and-effect chain, the axes of comparison, the scope it names, the dimensions or groups it asks you to identify, the judgment it wants. THEN build the body from that demand and the retrieved evidence. The number, the names, the order and the nature of the sections all change with the question. "The French Revolution has enduring relevance to the contemporary world. Explain." becomes four dimensions - Shift from Absolute Monarchy to Constitutional Governance, Universalization of Rights and Global Anti-Colonial Impact, Institutionalization of Free Press and Public Sphere, Foundations of Global Gender Equality and Political Mobilization. "Discuss the salient features of Harappan architecture." becomes Planned Urban Layout, Advanced Drainage Systems, Domestic Architecture, Public and Monumental Architecture. "Phule's writings and efforts of social reforms touched issues of almost all subaltern classes." becomes Shudras and Atishudras: Challenge to Caste Hierarchy, Peasants and Rural Exploitation, Women and Gender-Based Oppression, Education and Social Emancipation, Wider Anti-Caste Mobilization. Three different questions, three different structures.
+- DO NOT MIRROR THE SOURCES: the chunks are arranged by their book's chapters, and their titles describe the SOURCE's organisation, not the question's demand. Never lift a heading from the evidence Ã¢â‚¬â€ "Genesis of Planned Economy", "Structural Transformation", "Commanding Heights of the Economy" are chapter labels, and reusing them reproduces the textbook instead of answering the question. Apply this test to every candidate heading: if it would make an equally good title for a chapter of a textbook, it is the wrong heading. A heading must state the claim you are settling ("Planning Had Objectives Beyond Regional Balance"), not name a topic, policy or institution ("Industrial Policy Resolution of 1956"). Each section must be something the question makes you establish, not something the source happens to contain. This applies to argumentative demands (why, causes, examine, evaluate, comment); on an enumerative demand the heading is instead the feature itself, as described above Ã¢â‚¬â€ but it is still never a chapter title lifted from the source.
+- USE THE STANDARD FRAME, QUESTION-SPECIFIC INSIDE IT. The frame is Introduction Ã¢â€ â€™ numbered dimensions Ã¢â€ â€™ Conclusion, and that frame is welcome - it is the UPSC Mains format. What must NOT be fixed is the content of the frame. Never a generic "Body", "Content" or "Main Points" heading, and never a placeholder Introduction that only restates the question.
+- THE DIMENSIONS COME FROM THE QUESTION, NOT FROM A LIST. FIRST read the question and work out what it demands Ã¢â‚¬â€ the cause-and-effect chain, the axes of comparison, the scope it names, the dimensions or groups it asks you to identify, the judgment it wants. THEN build the body from that demand and the retrieved evidence. The number, the names, the order and the nature of the sections all change with the question. "The French Revolution has enduring relevance to the contemporary world. Explain." becomes four dimensions - Shift from Absolute Monarchy to Constitutional Governance, Universalization of Rights and Global Anti-Colonial Impact, Institutionalization of Free Press and Public Sphere, Foundations of Global Gender Equality and Political Mobilization. "Discuss the salient features of Harappan architecture." becomes Planned Urban Layout, Advanced Drainage Systems, Domestic Architecture, Public and Monumental Architecture. "Phule's writings and efforts of social reforms touched issues of almost all subaltern classes." becomes Shudras and Atishudras: Challenge to Caste Hierarchy, Peasants and Rural Exploitation, Women and Gender-Based Oppression, Education and Social Emancipation, Wider Anti-Caste Mobilization. Three different questions, three different structures.
 - NUMBER THE BODY SECTIONS 1., 2., 3. in the order the question demands, so the examiner can see the dimensions at a glance. Each heading names its own dimension and is short enough to read at a glance.
 - TWO FORMS ARE AVAILABLE, both acceptable. (a) A bold heading per dimension, \`## **1. <dimension>**\`. Beneath that heading either flowing prose, or - for a question that explicitly names two or more dimensions in its own words - the MANDATORY point-list form: a short framing clause, then one bullet per point starting with a bolded lead-in naming it, then the explanation and evidence for each point. Every dimension keeps its own heading in both cases. (b) When a demand is naturally a roster of places, groups, regions or causes, use ONE aspect heading followed by a numbered list whose items are a bolded name plus two or three nested bullets of specifics, e.g. \`### Geographical distribution of offshore oil reserves\` then \`1. **Persian Gulf and Middle East**\` with bullets naming the countries and the geology. Form (b) is right for "distribution across regions" and "which groups" demands. Do not mix both forms within one answer.
 - Sections may contain prose paragraphs, bullets, evidence and examples as the content requires - use whatever form fits the material, the way a strong ChatGPT answer would.
@@ -1131,14 +1128,14 @@ LENGTH TARGET — ${wordLimit === 1300 ? "1170–1300" : "500–700"} words (hea
 - Weave the specifics into the prose: names, dates, Acts, schemes, institutions and case data belong inside the sentences that need them, not appended to a lead-in as a list.
 
 == EVIDENCE RULES ==
-- SOURCE-LOCK (MANDATORY): the chunks below are the factual boundary. Every fact, statistic, date, name, study, example or causal claim MUST come from them. Never infer, generalize, convert historical evidence to present-day, splice fragments into composite facts, or add pretrained "known facts" — even confident ones. If a detail is uncertain, OMIT it. Never fabricate sources.
-- PRESERVE SCOPE: keep each chunk's time period and population ("NSSO 55th Round (1999–2000) indicated…", "urban SCs in that survey", not "all SCs today").
-- PRESERVE DIRECTION: keep every stated relationship pointing the way the evidence states it — cause→effect, parent→child, superior→subordinate, earlier→later. Never reverse a relationship, and never assert a relationship the evidence does not state. Joining two supported facts with an unsupported link ("A enabled B", "A proves B") is a source-lock violation even when both facts are quoted correctly.
+- SOURCE-LOCK (MANDATORY): the chunks below are the factual boundary. Every fact, statistic, date, name, study, example or causal claim MUST come from them. Never infer, generalize, convert historical evidence to present-day, splice fragments into composite facts, or add pretrained "known facts" Ã¢â‚¬â€ even confident ones. If a detail is uncertain, OMIT it. Never fabricate sources.
+- PRESERVE SCOPE: keep each chunk's time period and population ("NSSO 55th Round (1999Ã¢â‚¬â€œ2000) indicatedÃ¢â‚¬Â¦", "urban SCs in that survey", not "all SCs today").
+- PRESERVE DIRECTION: keep every stated relationship pointing the way the evidence states it Ã¢â‚¬â€ causeÃ¢â€ â€™effect, parentÃ¢â€ â€™child, superiorÃ¢â€ â€™subordinate, earlierÃ¢â€ â€™later. Never reverse a relationship, and never assert a relationship the evidence does not state. Joining two supported facts with an unsupported link ("A enabled B", "A proves B") is a source-lock violation even when both facts are quoted correctly.
 - READ CONTIGUOUS CHUNKS AS ONE PASSAGE: each chunk is labelled with its source and position. Chunks marked as continuing the passage above belong to the same section and must be read as continuous text, not as unrelated evidence.
-- READ CONTEXT CHUNKS AS PART OF THEIR PASSAGE: a unit labelled \`CONTEXT BEFORE/AFTER chunk N\` is the neighbouring text of chunk N, retrieved because the evidence budget truncated chunk N. It is the missing beginning or end of that argument — read it as continuous prose with chunk N, never as a separate source, and never attribute it to a different chapter, period or author.
-- ATTRIBUTION: figures/studies illustrate or corroborate — never "prove" causation; avoid absolutes unless the source confirms them.
-- UNSUPPORTED POINTS: express cautiously as an explicit analytical inference, or omit — do not manufacture evidence.
-- EXAMPLES: for "with examples", lead the body with named evidence-based examples (3–5 solid beats 10 vague); majority from the asked subject, not its background.
+- READ CONTEXT CHUNKS AS PART OF THEIR PASSAGE: a unit labelled \`CONTEXT BEFORE/AFTER chunk N\` is the neighbouring text of chunk N, retrieved because the evidence budget truncated chunk N. It is the missing beginning or end of that argument Ã¢â‚¬â€ read it as continuous prose with chunk N, never as a separate source, and never attribute it to a different chapter, period or author.
+- ATTRIBUTION: figures/studies illustrate or corroborate Ã¢â‚¬â€ never "prove" causation; avoid absolutes unless the source confirms them.
+- UNSUPPORTED POINTS: express cautiously as an explicit analytical inference, or omit Ã¢â‚¬â€ do not manufacture evidence.
+- EXAMPLES: for "with examples", lead the body with named evidence-based examples (3Ã¢â‚¬â€œ5 solid beats 10 vague); majority from the asked subject, not its background.
 - ORIGINALITY: rephrase all prose in your own words; keep dates, names, figures exactly as stated; never copy chunk sentences.
 
 == RENDERING ==
@@ -1153,9 +1150,9 @@ The answer is displayed by a simple line-based renderer. Anything it cannot pars
 - Do not announce the structure ("The following sections...", "Let us now look at..."). Go straight into the content.
 
 == FORMAT ==
-- \`## **Introduction**\`, then \`## **1. <dimension>\` … \`## **2. <dimension>\` … for each dimension you derive from the question, then \`## **Conclusion**\`. Headings excluded from word count.
+- \`## **Introduction**\`, then \`## **1. <dimension>\` Ã¢â‚¬Â¦ \`## **2. <dimension>\` Ã¢â‚¬Â¦ for each dimension you derive from the question, then \`## **Conclusion**\`. Headings excluded from word count.
 - THE CONCLUSION IS NOT OPTIONAL: every answer ends with \`## **Conclusion**\`. An answer that stops on a numbered dimension, however good that dimension is, is unfinished - the examiner reads the conclusion as the claim being settled. Write it last, always, even when the last dimension feels like it has already said everything.
-- NEVER emit a heading with no body: every heading must be immediately followed by at least one full sentence. A leading heading that restates the question as a claim is welcome, but the thesis or verdict goes DIRECTLY under it — a bare title is never acceptable.
+- NEVER emit a heading with no body: every heading must be immediately followed by at least one full sentence. A leading heading that restates the question as a claim is welcome, but the thesis or verdict goes DIRECTLY under it Ã¢â‚¬â€ a bare title is never acceptable.
 - NEVER write a heading that comments on the state of the evidence ("Absence of Supported Facts", "Insufficient Evidence", "No Reliable Data"). If the retrieved chunks support only part of the question, build the sections that the supported part supports, and state the limitation once as a plain closing sentence. An answer must never narrate its own retrieval.
 - Bold thematic heading, then its body: the mandatory point-list form (framing clause, then bullets naming the points, then their explanations) where the question names dimensions or asks what the features, factors, causes or reasons are; flowing prose only for an argument that genuinely unfolds. No rubric labels, no citations, no [EVIDENCE X], no LaTeX - Unicode arrows OK.
 
@@ -1275,7 +1272,7 @@ function parseOutlineHeadings(text) {
   // structure, so split on separators rather than discarding it.
   let candidates = rawLines;
   if (candidates.length === 1) {
-    const parts = candidates[0].split(/\s*[;]\s*|\s*,\s*|\s+\/\s+|\s+•\s*/).map((s) => s.trim()).filter(Boolean);
+    const parts = candidates[0].split(/\s*[;]\s*|\s*,\s*|\s+\/\s+|\s+Ã¢â‚¬Â¢\s*/).map((s) => s.trim()).filter(Boolean);
     if (parts.length >= OUTLINE_MIN_HEADINGS) candidates = parts;
   }
 
@@ -1729,10 +1726,10 @@ function fenceDiagrams(text) {
       i++;
       continue;
     }
-    if (!inFence && ln.includes("┌")) {
+    if (!inFence && ln.includes("Ã¢â€Å’")) {
       let end = i;
       for (let j = i; j < lines.length; j++) {
-        if (lines[j].includes("└") || lines[j].includes("┘")) end = j;
+        if (lines[j].includes("Ã¢â€â€") || lines[j].includes("Ã¢â€Ëœ")) end = j;
       }
       out.push("```text", ...lines.slice(i, end + 1), "```", "");
       i = end + 1;
@@ -1778,10 +1775,10 @@ function collapseOutsideDiagrams(seg) {
   const lines = seg.split("\n");
   const isRegion = new Array(lines.length).fill(false);
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes("┌")) {
+    if (lines[i].includes("Ã¢â€Å’")) {
       let end = i;
       for (let j = i; j < lines.length; j++) {
-        if (lines[j].includes("└") || lines[j].includes("┘")) end = j;
+        if (lines[j].includes("Ã¢â€â€") || lines[j].includes("Ã¢â€Ëœ")) end = j;
       }
       for (let k = i; k <= end; k++) isRegion[k] = true;
       i = end;
@@ -1799,10 +1796,10 @@ function alignDiagramIndentation(text) {
   const flush = () => {
     if (block.length === 0) return;
     for (let i = 0; i < block.length; i++) {
-      if (block[i].trimStart().startsWith("┌")) {
+      if (block[i].trimStart().startsWith("Ã¢â€Å’")) {
         const indents = [];
         for (let j = i + 1; j < block.length; j++) {
-          const m = block[j].match(/^\s*[│└┘┐┌┬▼▲]/);
+          const m = block[j].match(/^\s*[Ã¢â€â€šÃ¢â€â€Ã¢â€ËœÃ¢â€ÂÃ¢â€Å’Ã¢â€Â¬Ã¢â€“Â¼Ã¢â€“Â²]/);
           if (m) indents.push(block[j].match(/^\s*/)[0].length);
         }
         if (indents.length > 0) {
@@ -1923,7 +1920,7 @@ function restoreExactDiagrams(answer, chunks) {
 }
 
 export async function proxyGeminiCall(apiKey, options) {
-  const { question, chunks = [], targetTokens, mode, onToken, onStatus, direct = false } = options;
+  const { question, chunks = [], targetTokens, mode, onToken, onStatus } = options;
   const proxyStartedAt = Date.now();
   let firstTokenAt = 0;
   // --- stream timing instrumentation (diagnostic only; no behavior change) ---
@@ -1944,14 +1941,12 @@ export async function proxyGeminiCall(apiKey, options) {
   onStatus?.("planning answer structure");
   // Pass 1: decide the dimensions before any prose exists. Fail-open - a null plan
   // means the writing pass runs exactly as it did before.
-  const outlinePlan = await planAnswerOutline({ apiKey, question, chunks, subjectId, wordLimit: detectWordLimit(question, subjectId), direct });
+  const outlinePlan = await planAnswerOutline({ apiKey, question, chunks, subjectId, wordLimit: detectWordLimit(question, subjectId), direct: true });
   const plannedHeadings = outlinePlan?.headings || null;
   const pointPlan = outlinePlan?.plan || null;
 
   onStatus?.("writing mains answer");
-  const userPrompt = direct
-    ? buildDirectPrompt({ question, subjectId, outline: plannedHeadings, plan: pointPlan })
-    : buildRagPrompt({ question, chunks, subjectId, outline: plannedHeadings, plan: pointPlan });
+  const userPrompt = buildDirectPrompt({ question, subjectId, outline: plannedHeadings, plan: pointPlan });
   const urls = buildGeminiUrls(":streamGenerateContent?alt=sse");
   const maxOutputTokens = targetTokens > 0 ? Math.min(targetTokens, 65536) : 8192;
   const answerWordLimit = detectWordLimit(question, subjectId);
@@ -1967,9 +1962,7 @@ export async function proxyGeminiCall(apiKey, options) {
 
   const requestBody = JSON.stringify({
     systemInstruction: {
-      parts: [{ text: direct
-        ? "You are an expert UPSC Mains answer-writer. Obey the instructions in the user message exactly: the question-derived answer structure, the no-fabrication accuracy rules, and the word budget. You are given no source material and must answer from your own knowledge, so never invent a statistic, a date, an Article or Schedule number, a committee, a scheme, or a quotation — omit any specific you are not certain of. Use the standard UPSC frame - Introduction → numbered question-specific dimensions → Conclusion - and choose every dimension from the question itself: features/characteristics demands are organised by the features themselves, causes/effects by cause and effect themes, comparisons as parallel points with one heading per side or axis, comment/evaluate/examine/to-what-extent by the dimensions the assessment needs. The number, names, order and nature of those dimensions change with every question; there is no preset list and no fixed count, and never a generic \"Body\" or \"Content\" heading."
-        : "You are an expert UPSC Mains answer-writer. Obey the instructions in the user message exactly: the question-derived answer structure, the SOURCE-LOCK evidence rules, and the word budget. Use the standard UPSC frame - Introduction → numbered question-specific dimensions → Conclusion - but choose every dimension from the question itself: features/characteristics demands are organised by the features themselves, causes/effects by cause and effect themes, comparisons as parallel points with one heading per side or axis, comment/evaluate/examine/to-what-extent by the dimensions the assessment needs. The number, names, order and nature of those dimensions change with every question; there is no preset list and no fixed count, and never a generic \"Body\" or \"Content\" heading. The retrieved chunks are the factual boundary: organize, synthesize, and write in your own words only — never add facts absent from the chunks." }],
+      parts: [{ text: DIRECT_ANSWER_SYSTEM_INSTRUCTION }],
     },
     safetySettings: [
       { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
@@ -2317,51 +2310,20 @@ export async function proxyGeminiCall(apiKey, options) {
   // Running the verifier with an empty corpus would score every sentence as
   // unsupported and strip the whole answer, so it is skipped outright and the
   // no-fabrication prompt rules are the only accuracy discipline in force.
-  const grounding = direct
-    ? {
-        // Shaped like a real verifier result so every downstream consumer (the
-        // logging block, the grounding summary, and `grounding.answer`, which
-        // becomes the final text) keeps working unchanged. "skipped" records why
-        // there is nothing here, since zero findings in direct mode means the
-        // check never ran, not that the answer passed it.
-        answer: cleaned,
-        removed: [],
-        flagged: [],
-        relational: [],
-        total: 0,
-        supportAvg: null,
-        grounded: false,
-        skipped: "direct_mode",
-      }
-    : verifyGrounding(cleaned, chunks, {
-    enforceLowSupport: process.env.GEMINI_GROUNDING_ENFORCE_LOW_SUPPORT === "true",
-    // Strict source-lock tiers for Layer 2. Default off: this layer's measured
-    // precision is ~50%, so enforcing it unconditionally would delete legitimate
-    // UPSC analysis. "hard" = unconditional evidential claims only;
-    // "all" = also spliced soft-marker claims.
-    enforceRelational: ["hard", "all"].includes(
-      (process.env.GEMINI_GROUNDING_ENFORCE_RELATIONAL || "").toLowerCase()
-    )
-      ? process.env.GEMINI_GROUNDING_ENFORCE_RELATIONAL.toLowerCase()
-      : false,
-  });
-  if (grounding.removed.length || grounding.flagged.length || grounding.relational.length) {
-    console.warn(
-      `[gemini] grounding: support=${grounding.supportAvg} removed=${grounding.removed.length} flagged=${grounding.flagged.length} relational=${grounding.relational.length} sentences=${grounding.total}`
-    );
-    for (const r of grounding.removed) {
-      console.warn(`[gemini] grounding removed (${r.reason}): "${r.text}"`);
-    }
-    for (const f of grounding.flagged) {
-      console.warn(`[gemini] grounding flagged [${f.support}]: "${f.text}"`);
-    }
-    for (const rel of grounding.relational) {
-      console.warn(
-        `[gemini] grounding relational [severity=${rel.severity} marker=${rel.marker} strength=${rel.strength} spliced=${rel.spliced} support=${rel.support}]: "${rel.text}"`
-      );
-    }
-  }
-  const groundedText = grounding.answer;
+  const grounding = {
+    // Shaped like the old verifier result so every downstream consumer keeps
+    // working unchanged. "skipped" records why there is nothing here: zero
+    // findings means the check never ran, not that the answer passed it.
+    answer: cleaned,
+    removed: [],
+    flagged: [],
+    relational: [],
+    total: 0,
+    supportAvg: null,
+    grounded: false,
+    skipped: "no_corpus",
+  };
+  const groundedText = cleaned;
 
   // Every model in the chain timed out; we are returning a retained partial.
   // Grounding still runs over it so the safeguard applies to partial answers too.
@@ -2454,7 +2416,7 @@ export async function proxyGeminiCall(apiKey, options) {
     `[gemini] usage: prompt=${promptTokenCount || "unknown"}, output=${tokenCount || "unknown"}, thoughts=${thoughtTokenCount || 0}, total=${totalTokenCount || "unknown"}, maxOutputTokens=${maxOutputTokensCapped}`
   );
   console.log(
-    `[gemini] proxy — ${cleaned.length} chars, ${tokenCount} tokens`
+    `[gemini] proxy Ã¢â‚¬â€ ${cleaned.length} chars, ${tokenCount} tokens`
   );
 
   console.log(
@@ -2500,7 +2462,7 @@ export async function proxyGeminiCall(apiKey, options) {
   };
 }
 
-const RAG_ANSWER_SYSTEM_INSTRUCTION = "You are an expert UPSC Mains answer-writer for UPSC study material. The answer follows the standard UPSC Mains frame - Introduction → numbered dimensions → Conclusion - but everything inside that frame comes from the question, not from a preset. Work out what the question demands first, then derive the dimensions and their number, names, order and nature from it:\n- Features/characteristics demands: organise directly by the features themselves, one concise heading each, covering every dimension the evidence supports and stopping where the evidence stops.\n- Causes/effects demands: organise by cause and effect themes with explicit links.\n- Compare/distinguish: parallel point-by-point contrast under a heading per side or per axis, paired bullets, or a markdown table when several axes line up.\n- Comment/evaluate/critically examine/to what extent: organise around the dimensions the assessment needs, then close with a short verdict in the Conclusion.\n- Write the Introduction as 2-3 sentences of real context that directly addresses the directive verb (never a restatement of the question), number the body sections 1., 2., 3. in the order the question demands, and close with a Conclusion of 2-3 sentences that synthesises or judges rather than summarising. Sections may mix prose, bullets, evidence and examples as the material requires. The frame is fixed; the content of the frame is entirely question-specific.\nEach section develops one distinct argument or dimension in flowing prose - a bold thematic heading followed by continuous explanatory paragraphs that weave the specifics into the sentences that need them. Bold a term only where it carries the point, and never use a Point → Evidence → Tie-back scaffold, rubric labels, or a restatement after every paragraph. Never use a generic \"Body\" or \"Content\" heading, never lift a heading from the source's chapter titles, and never emit a heading with no body under it. Ground every claim in the EVIDENCE chunks, mining ALL chunks. STRICT SOURCE-LOCK: use ONLY the evidence chunks - never add facts, names, dates, numbers, or examples from memory, even if confidently known; if a needed point is not in the chunks, omit it and never fill from prior knowledge. NEVER invent figures, dates, or quotes. For enumerative demands (distinctive features/characteristics/factors), list each feature/factor explicitly with a bolded name and concrete example. Report only certain facts - omit doubtful numbers/years; precision beats breadth. Do not manufacture specificity: attribute only what the evidence establishes; prefer broader, well-supported statements over impressive but weakly supported ones. REQUIRE VERIFIED EXAMPLES: anchor each body point in 1-3 concrete named examples from the evidence; 3-5 supported examples beat 10 uncertain ones; never answer an \"with examples\" question with zero named examples. For amalgamation/synthesis questions, for amalgamation/synthesis questions use natural thematic headings and weave the past-vs-contemporary contrast into each section (no mechanical label pairs); prefer examples of the subject asked about over its predecessors. Grade confidence by source: assert evidence-supported facts confidently; keep beyond-evidence additions subordinate and conservative. Honor the word limit in the question (600 words for Mains, 1300 words for Essay). Rephrase prose in your own words. No citations, no odd generic sub-headings unless the evidence contains the theme, no LaTeX, no verbatim box-diagrams (describe instead).";
+const DIRECT_ANSWER_SYSTEM_INSTRUCTION = "You are an expert UPSC Mains answer-writer for UPSC study material. The answer follows the standard UPSC Mains frame - Introduction Ã¢â€ â€™ numbered dimensions Ã¢â€ â€™ Conclusion - but everything inside that frame comes from the question, not from a preset. Work out what the question demands first, then derive the dimensions and their number, names, order and nature from it:\n- Features/characteristics demands: organise directly by the features themselves, one concise heading each, covering every dimension the evidence supports and stopping where the evidence stops.\n- Causes/effects demands: organise by cause and effect themes with explicit links.\n- Compare/distinguish: parallel point-by-point contrast under a heading per side or per axis, paired bullets, or a markdown table when several axes line up.\n- Comment/evaluate/critically examine/to what extent: organise around the dimensions the assessment needs, then close with a short verdict in the Conclusion.\n- Write the Introduction as 2-3 sentences of real context that directly addresses the directive verb (never a restatement of the question), number the body sections 1., 2., 3. in the order the question demands, and close with a Conclusion of 2-3 sentences that synthesises or judges rather than summarising. Sections may mix prose, bullets, evidence and examples as the material requires. The frame is fixed; the content of the frame is entirely question-specific.\nEach section develops one distinct argument or dimension in flowing prose - a bold thematic heading followed by continuous explanatory paragraphs that weave the specifics into the sentences that need them. Bold a term only where it carries the point, and never use a Point Ã¢â€ â€™ Evidence Ã¢â€ â€™ Tie-back scaffold, rubric labels, or a restatement after every paragraph. Never use a generic \"Body\" or \"Content\" heading, never lift a heading from the source's chapter titles, and never emit a heading with no body under it. Ground every claim in the EVIDENCE chunks, mining ALL chunks. STRICT SOURCE-LOCK: use ONLY the evidence chunks - never add facts, names, dates, numbers, or examples from memory, even if confidently known; if a needed point is not in the chunks, omit it and never fill from prior knowledge. NEVER invent figures, dates, or quotes. For enumerative demands (distinctive features/characteristics/factors), list each feature/factor explicitly with a bolded name and concrete example. Report only certain facts - omit doubtful numbers/years; precision beats breadth. Do not manufacture specificity: attribute only what the evidence establishes; prefer broader, well-supported statements over impressive but weakly supported ones. REQUIRE VERIFIED EXAMPLES: anchor each body point in 1-3 concrete named examples from the evidence; 3-5 supported examples beat 10 uncertain ones; never answer an \"with examples\" question with zero named examples. For amalgamation/synthesis questions, for amalgamation/synthesis questions use natural thematic headings and weave the past-vs-contemporary contrast into each section (no mechanical label pairs); prefer examples of the subject asked about over its predecessors. Grade confidence by source: assert evidence-supported facts confidently; keep beyond-evidence additions subordinate and conservative. Honor the word limit in the question (600 words for Mains, 1300 words for Essay). Rephrase prose in your own words. No citations, no odd generic sub-headings unless the evidence contains the theme, no LaTeX, no verbatim box-diagrams (describe instead).";
 
 // Refuse to answer only when the model is highly confident the evidence cannot
 // answer the question. Anything less - low confidence, unparseable output, an API
@@ -2672,17 +2634,17 @@ export async function generateAnswer({ apiKey, question, chunks, subjectId, opti
   }
 
   // Pass 1: decide the dimensions before any prose exists. Fail-open.
-  const outlinePlan = await planAnswerOutline({ apiKey, question, chunks, subjectId, wordLimit: detectWordLimit(question, subjectId) });
+  const outlinePlan = await planAnswerOutline({ apiKey, question, chunks, subjectId, wordLimit: detectWordLimit(question, subjectId), direct: true });
   const plannedHeadings = outlinePlan?.headings || null;
   const pointPlan = outlinePlan?.plan || null;
 
   const buildRequestBody = (opts = {}) =>
     ({
       contents: [
-        { role: "user", parts: [{ text: buildRagPrompt({ question, chunks, subjectId, outline: plannedHeadings, plan: pointPlan, proseOnly: opts.proseOnly }) }] },
+        { role: "user", parts: [{ text: buildDirectPrompt({ question, subjectId, outline: plannedHeadings, plan: pointPlan, proseOnly: opts.proseOnly }) }] },
       ],
       systemInstruction: {
-        parts: [{ text: RAG_ANSWER_SYSTEM_INSTRUCTION }],
+        parts: [{ text: DIRECT_ANSWER_SYSTEM_INSTRUCTION }],
       },
       safetySettings: [
         { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
