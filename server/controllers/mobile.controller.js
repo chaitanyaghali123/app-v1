@@ -402,7 +402,7 @@ const NAMED_COUNTRIES = [
   "nepal", "america", "iran", "iraq", "israel", "greece", "rome", "bharat",
 ];
 
-function deterministicScopeCheck(question, chunks) {
+export function deterministicScopeCheck(question, chunks) {
   const haystack = chunks
     .map((c) => cleanChunkText(c.text || "").toLowerCase())
     .join("\n");

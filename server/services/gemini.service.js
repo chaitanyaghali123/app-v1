@@ -1112,7 +1112,7 @@ const PROSE_DIRECTIVE =
 // or the question gets the one shape it explicitly asked not to have.
 const ENUMERATION_COMMAND = /\b(enumerate|list|outline|bring out|point out)\b/;
 
-function shouldEnumeratePoints(question) {
+export function shouldEnumeratePoints(question) {
   const q = String(question || "").toLowerCase();
   if (PROSE_DIRECTIVE.test(q)) return false;
 
