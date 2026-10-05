@@ -885,6 +885,129 @@ function enforceWordLimit(answer, wordLimit) {
   return { answer: clamped, wordCount: countWords(clamped), clamped: true };
 }
 
+// Direct mode: no corpus, no retrieval. The model answers from its own
+// knowledge, so this prompt keeps the whole structural contract (frame,
+// question-derived dimensions, identifier sentence, bold lead-ins, five-step
+// dimension, conclusion, word limit) and replaces only the evidence rules.
+//
+// Accuracy is the trade this mode makes. With a corpus, grounding.service.js
+// could verify claims and the controller could refuse a scope mismatch. Nothing
+// does that here, so the prompt carries the discipline instead: name only what
+// is well established, omit what is uncertain, and never manufacture a figure,
+// an article number, a committee or a date.
+function buildDirectPrompt({ question, subjectId, outline, plan, proseOnly }) {
+  const wordLimit = detectWordLimit(question, subjectId);
+  const outlineCount = Array.isArray(outline) ? outline.length : 0;
+
+  const outlineBlock = outlineCount
+    ? `
+== THE DIMENSIONS ARE ALREADY DECIDED - REPRODUCE THEM, DO NOT REDESIGN THEM ==
+Use each one as a heading of your answer, in this order, exactly as written:
+
+${outline.map((h, i) => `${i + 1}. ${h}`).join("\n")}
+${outlineCount + 1}. Conclusion
+
+- Emit one \`## **N. <dimension>**\` heading for each numbered line above, in the listed order, using that line's own wording and its number. The last line is the Conclusion: a real heading with 2-3 sentences of synthesis or verdict under it, never omitted and never left empty.
+- Do not add a dimension, rename one, merge two, reorder them, or drop one.
+- NEVER replace these headings with a flat bullet list. Bullets go INSIDE a dimension, underneath its heading.
+- Put the Introduction before them.
+- These headings divide a ${wordLimit || 600}-word answer, so ${outlineCount === 2 ? "with only two dimensions each one must be long enough that the whole answer still reaches the word floor" : "give every dimension its full share of the budget"}. A short plan is never a reason to write a short answer.
+`
+    : "";
+
+  const proseOnlyBlock = proseOnly
+    ? `
+== WRITE IN PROSE FOR THIS ANSWER ==
+Do NOT use bullet points anywhere in this answer. Under each heading, write flowing connected paragraphs.
+`
+    : "";
+
+  const totalPoints = (plan || []).reduce((n, d) => n + (d.points?.length || 0), 0);
+  const perPointWords = Math.max(
+    30,
+    Math.round(((wordLimit || 600) * 0.7) / Math.max(1, totalPoints) / 5) * 5
+  );
+
+  const planBlock = Array.isArray(plan) && plan.length
+    ? `
+== FOR EVERY MAJOR DIMENSION, FOLLOW THESE FIVE STEPS IN THIS ORDER ==
+1. STATE THE DIMENSION as its heading.
+2. LIST THE KEY POINTS as bullets, immediately, before any explanation.
+3. EXPLAIN EACH POINT.
+4. GIVE A CONCRETE NAMED EXAMPLE for each point.
+5. LINK BACK TO THE QUESTION before moving to the next dimension.
+
+The dimensions and their points are already decided below. Reproduce them exactly:
+
+${plan
+  .map(
+    (d, i) => `## **${i + 1}. ${d.dimension}**
+<one short identifier sentence in the question's own words saying what this dimension consists of, ending in a colon>
+${d.points
+      .map((p) => `- **${p}** - <explanation with specific detail and a named example>`)
+      .join("\n")}`
+  )
+  .join("\n\n")}
+
+- Each dimension runs in this order: heading, then ONE short identifier sentence in the question's own words that says what the dimension consists of and ends in a colon, then the bullets. Never go straight from the heading to the bullets with no identifier sentence.
+- Each point above MUST appear as its own bullet with that exact bold lead-in, in that order. Do not merge two points, drop one, or invent another.
+- Write the explanation after each lead-in; never leave a bullet as a bare label.
+- Never open a dimension with a paragraph. The bullets come first; the explanation sits inside each bullet.
+- EACH BULLET CARRIES THE WEIGHT, NOT THE LABEL. Write ${perPointWords} words of explanation inside each bullet - the mechanism, the specific detail, and the named example. A bullet of 12 words drops the answer under the word floor.
+`
+    : "";
+
+  const wordLimitInstruction = wordLimit
+    ? `
+LENGTH TARGET — ${wordLimit === 1300 ? "1170–1300" : "500–700"} words (headings excluded). This is a RANGE with a hard floor and a hard ceiling. Aim near the middle (~600 words).
+- GIVE EACH DIMENSION A WORD FLOOR, then count as you go. Divide the budget across your dimensions, subtract the Introduction and Conclusion, and give every remaining dimension an equal share — roughly ${wordLimit === 1300 ? "150" : "95"}–${wordLimit === 1300 ? "200" : "130"} words each. A dimension is not finished when you have stated it: it is finished when you have explained WHY it matters, given the concrete detail for it, and drawn out its significance to the question. Two thin sentences under a heading is the single most common way to fall short of the floor.
+- Structure: Introduction → numbered dimensions → Conclusion. The Introduction is 2-3 sentences of genuine context and a direct answer to the directive verb; the Conclusion is 2-3 sentences of synthesis or verdict, never a summary of what was just said.
+- COMPLETE THE ENTIRE ANSWER: finish every section, and any verdict the verb calls for, before stopping. Never truncate and never end mid-sentence. If the budget tightens, compress wording rather than cutting a section.
+- EACH SECTION MUST BE DISTINCT: every section carries a separate argument directly relevant to the question. Do not repeat an earlier argument in different words.
+- NO REPETITION: state each provision, example, statistic and argument exactly once. Do not lean repeatedly on the same framing terms - vary the vocabulary and let each term carry a distinct idea.
+- NO FILLER: no generic praise, no moral framing, no "it is important to note" throat-clearing, and no textbook-definition openers unless the question explicitly asks for a definition.
+`
+    : "";
+
+  return `You are an expert UPSC Civil Services Mains answer-writer for ${(subjectId || "general studies").toUpperCase()} (${wordLimit ? `${wordLimit} words` : "concise"}). You answer from your own knowledge of the subject.
+
+== HOW TO ANSWER ==
+- Match structure to the command verb: enumerations become bolded point lists; "compare/distinguish" becomes point-by-point contrast under a heading per side or axis; "examine/critically examine" argues FOR then AGAINST with a final judgment; "to what extent" states a determined extent; "evaluate" weighs criteria and closes with a verdict; "comment" names the core issue of the proposition, then what was actually done and why, then the broader objectives, then the tension or limitation, then delivers the comment itself; "causes→effects" sequences with explicit causal links; multiple directives are all answered in proportion.
+- IDENTIFY OBJECT, VERB AND SCOPE BEFORE WRITING: parse the question into its object, its command verb, and its SCOPE - any qualifier that bounds or extends the subject ("almost all subaltern classes", "all aspects", "social, economic and political aspects", "various factors", "the causes and effects"). The object and verb tell you what to say; the scope tells you what the headings must be.
+- MAKE THE SCOPE VISIBLE IN THE HEADINGS: when the question names a scope, the headings are the distinct parts of that scope, one heading per part. "Phule's writings touched issues of almost all subaltern classes. Discuss." is not answered by a heading on Phule's anti-caste contribution in general; it is answered by headings that are the classes inside that scope - Peasants and Agricultural Labourers, Lower-Caste Communities and Shudras-Atishudras, Women and Gender Inequality, and so on.
+- A SCOPE COLLAPSED INTO ONE THEME HAS NOT BEEN ANSWERED: if every heading could be summarised under a single broad label ("his challenge to caste"), the answer has described the subject instead of the question. If two headings answer the same part, merge them and split a part that has none.
+- IDENTIFY THE CENTRAL PROPOSITION FIRST: a "comment", "critically examine" or "to what extent" question puts one specific claim on trial. Restate that claim in your own words, then work out what would have to be established to settle it - why it was felt necessary, the mechanism actually used, objectives pursued beyond it, whether it worked, where it fell short. Those become your sections.
+- A QUOTE OR MAXIM IS A LIST OF TERMS: when the question puts a quotation, slogan or maxim on trial ("Ideas are timeless and spaceless", "the tragedy of the commons", "swaraj is not merely political freedom"), the concepts the statement ASSERTS are your headings. Read the claim apart first: what distinct things is it claiming? Each becomes its own heading. Then close by addressing how the terms hold together.
+- THE QUESTION DICTATES THE SCOPE: break the question into its own terms and give each its own heading. The sections come strictly from the words of the question.
+- FOR "WHAT ARE THE..." DEMANDS: work out what the subject actually comprises - the aspects a specialist would list - then give each aspect its own concise heading. "Discuss the salient features of Harappan architecture" must DISCOVER planned towns and grid-pattern streets, drainage and sanitation, domestic architecture, monumental and public architecture, fortifications, water-management structures; it must not decide in advance that it needs six sections.
+- THE HEADINGS ARE THE FEATURES: on an enumerative demand the main headings must themselves BE the features being asked for, as short feature noun phrases - "Planned Towns with Grid-Pattern Streets", "Sophisticated Drainage and Sanitation System", "Monumental and Public Architecture".
+- NO FIXED NUMBER OF FEATURES: give as many feature sections as the subject genuinely has. Three well-evidenced features is a complete answer, six invented to fill a quota is a failed answer. Never pad, and never merge two distinct features to save space.
+- FEATURES ARE PARALLEL, NOT NESTED: if a feature appears only as a subordinate clause or an example inside another section, it gets its OWN heading.
+- NUMBER THE BODY SECTIONS 1., 2., 3. in the order the question demands, so the examiner can see the dimensions at a glance.
+- Under a dimension, either write flowing prose, or - where the dimension is a set of parallel points - a short framing clause, then one bullet per point starting with a bolded lead-in naming it, then the explanation for each point. Every dimension keeps its own heading either way.
+- Weave the specifics into the prose: names, dates, Acts, schemes, institutions and case data belong inside the sentences that need them.
+
+== ACCURACY RULES - MANDATORY, NO CORPUS IS SUPPLIED ==
+You have no source material here. Everything factual comes from your own knowledge, so you are responsible for it.
+- NEVER FABRICATE. Do not invent a statistic, a percentage, a year, a budget figure, a survey name, an Article or Schedule number, a committee, a commission, a scheme, a case, or a quotation. A confident wrong citation is far worse than an omitted one, because an examiner checks them.
+- If you are not confident of a specific number, name, or date, OMIT it and argue the point qualitatively instead. A correct argument with no figure beats a wrong figure.
+- Prefer well-established, textbook-level facts that you are sure of over impressive specifics you are unsure of.
+- Do not attribute a view, a finding or a quote to a named scholar, committee or report unless you are certain of it.
+- Constitutional and legal references must be accurate. If unsure whether something is Article 39A or 39B, describe the provision rather than citing the number.
+- PRESERVE SCOPE AND DIRECTION of whatever you do state: keep a claim's stated time period and population, and never reverse a stated cause→effect relationship.
+- ATTRIBUTION: figures and studies illustrate or corroborate, they never "prove" causation. Avoid absolutes unless you are certain.
+- EXAMPLES: for "with examples", lead with 3-5 specific, named, concrete examples. Draw on the actual subject of the question, not its background.
+${outlineBlock}${planBlock}${proseOnlyBlock}
+== RENDERING ==
+- \`## **Introduction**\`, then \`## **1. <dimension>**\` … then \`## **Conclusion**\`.
+- Bold key terms and facts as on-paper underlining would (e.g. **regional planning**, **Planning Commission**).
+- For a comparison with several aligned axes, a markdown table is acceptable.
+- No citations, no [1]/[2], no footnotes, no URLs, no LaTeX; use Unicode arrows/symbols (→, ×, ≤).
+- Paragraphs and bullets must each be a single physical line. Never wrap or hard-wrap a line mid-sentence.
+- Do not use LaTeX, code fences, or horizontal rules.
+${wordLimitInstruction}`;
+}
+
 function buildRagPrompt({ question, chunks, subjectId, outline, plan, proseOnly }) {
   if (!chunks || chunks.length === 0) {
     throw new Error("No evidence chunks provided to buildRagPrompt");
@@ -1204,32 +1327,47 @@ function hasBulletLines(text) {
     .some((l) => /^\s*[-*]\s+\S/.test(l));
 }
 
-function buildOutlinePrompt({ question, chunks, subjectId, wordLimit }) {
+function buildOutlinePrompt({ question, chunks, subjectId, wordLimit, direct }) {
   const digest = (chunks || [])
     .slice(0, 6)
     .map((c, i) => `[${i + 1}] ${String(c?.text || c?.content || "").replace(/\s+/g, " ").slice(0, 600)}`)
     .join("\n\n");
   const subjectLine = subjectId ? `\nSUBJECT: ${subjectId}` : "";
   const wordLimitHint = wordLimit || 600;
+  // Direct mode has no corpus to check supportability against, so the evidence
+  // block and every "drop what the evidence cannot support" instruction are
+  // replaced rather than left dangling around an empty digest.
+  const evidenceBlock = direct
+    ? ""
+    : `
+EVIDENCE (abridged - use it to check that each dimension is supportable):
+${digest}
+`;
+  const deriveRule = direct
+    ? "- Derive the dimensions from the QUESTION and from what a UPSC specialist would know to be the real dimensions of the subject. There is no source material to copy, and none to mirror."
+    : "- Derive the dimensions from the QUESTION, not from the evidence. The evidence below only tells you whether a dimension is supportable; it must never introduce a dimension, and never supply the wording of one.";
+  const dropRule = direct
+    ? "- Keep every dimension the question genuinely demands, even where you know the detail less well."
+    : "- Drop any dimension the evidence cannot support.";
+  const featuresRule = direct
+    ? "- If it asks for the features, characteristics or elements of one subject, each feature the subject genuinely comprises is its own dimension, and you must include every one of them."
+    : "- If it asks for the features, characteristics or elements of one subject, each feature the evidence supports is its own dimension, and you must include every one of them.";
   return `You are planning the structure of a UPSC Mains answer. Do NOT write the answer - output only the list of dimensions.${subjectLine}
 
 QUESTION:
 ${question}
-
-EVIDENCE (abridged - use it to check that each dimension is supportable):
-${digest}
-
+${evidenceBlock}
 TASK
 List the dimensions this answer must have, in the order the question demands them.
 
-- Derive the dimensions from the QUESTION, not from the evidence. The evidence below only tells you whether a dimension is supportable; it must never introduce a dimension, and never supply the wording of one.
+${deriveRule}
 - Between ${OUTLINE_MIN_HEADINGS} and ${OUTLINE_MAX_HEADINGS} dimensions. These headings divide a ${wordLimitHint}-word answer, so too few of them starves the sections.
 - Each one a short noun phrase of 3 to 8 words, in the question's own wording.
 - A dimension heading NAMES the dimension. It must not restate the question or the directive verb, and must not begin with the words "Role of", "Importance of", "Impact of", "The role", "The question of", "The meaning of" or "Definition of". A "Definition of X" section is never a dimension of an answer.
 - Do NOT use a gerund or a bare descriptive phrase as a heading: "Town planning and grid system", "Carefully planned drainage system" and "Working of democracy" are all rejected. Name the thing itself - "Planned Towns and Grid-Pattern Streets", "Drainage and Sanitation", "Federalism and the Division of Powers".
 - Cover the question's FULL demand. If it names two things ("an asset and a source of conflict", "merits and demerits", "causes and consequences"), both are dimensions.
-- If it asks for the features, characteristics or elements of one subject, each feature the evidence supports is its own dimension, and you must include every one of them.
-- Drop any dimension the evidence cannot support.
+${featuresRule}
+${dropRule}
 - Never invent a dimension the question does not ask for, and never return a generic "Body", "Other factors" or "Conclusion".
 
 Output ONLY one dimension per line, as plain text, with no numbering, no markdown and no commentary.`;
@@ -1266,27 +1404,36 @@ function parseEnumeratedOutline(text) {
   return usable.map((d) => ({ dimension: d.dimension, points: d.points }));
 }
 
-function buildEnumeratedOutlinePrompt({ question, chunks, subjectId, wordLimit }) {
+function buildEnumeratedOutlinePrompt({ question, chunks, subjectId, wordLimit, direct }) {
   const digest = (chunks || [])
     .slice(0, 6)
     .map((c, i) => `[${i + 1}] ${String(c?.text || c?.content || "").replace(/\s+/g, " ").slice(0, 600)}`)
     .join("\n\n");
+  const evidenceBlock = direct
+    ? ""
+    : `
+EVIDENCE (abridged - use it to check each dimension and point is supportable):
+${digest}
+`;
+  const deriveRule = direct
+    ? "- Derive dimensions and points from the QUESTION and from established knowledge of the subject. There is no source material to copy, and none to mirror."
+    : "- Derive dimensions from the QUESTION. The evidence only confirms supportability; it never introduces a dimension or a point.";
+  const supportRule = direct
+    ? "- Each point must be a real, established element of that dimension - something a UPSC specialist would recognise, not a filler item."
+    : "- Every point must be supportable by the evidence above.";
   return `You are planning a UPSC Mains answer that argues THROUGH its dimensions. Do NOT write the answer. Output only the plan.
 
 QUESTION:
 ${question}
-
-EVIDENCE (abridged - use it to check each dimension and point is supportable):
-${digest}
-
+${evidenceBlock}
 TASK
 Give each dimension of the question, and under it the points that dimension consists of.
 
 - ${OUTLINE_MIN_HEADINGS} to ${OUTLINE_MAX_HEADINGS} dimensions, in the order the question demands them. Together they divide a ${wordLimit || 600}-word answer.
-- Derive dimensions from the QUESTION. The evidence only confirms supportability; it never introduces a dimension or a point.
+${deriveRule}
 - If the question names two things ("an asset and a source of conflict", "merits and demerits", "causes and consequences", "social and economic impact"), BOTH are dimensions and the named wording decides them.
 - EXACTLY 3 points per dimension. Do not write a fourth. Points must be short noun phrases of 2 to 6 words, naming a specific thing - not sentences, not adjectives.
-- Every point must be supportable by the evidence above.
+${supportRule}
 - A dimension heading NAMES the dimension. Never start one with "Role of", "Importance of", "Impact of", "Definition of", "The role of" or "The question of". Never use a gerund phrase like "Working of X" or "Carefully planned Y" - name the thing itself.
 - No dimension may be a bare list, and never output "Body", "Other factors" or "Conclusion".
 
@@ -1304,9 +1451,13 @@ OUTPUT FORMAT - reproduce this shape exactly, nothing else:
 // Returns the planned headings, or null to mean "no usable plan - write it in one
 // pass as before". This call is fail-open by design: an outline failure must never
 // cost the user their answer.
-export async function planAnswerOutline({ apiKey, question, chunks, subjectId, timeoutMs, wordLimit } = {}) {
+export async function planAnswerOutline({ apiKey, question, chunks, subjectId, timeoutMs, wordLimit, direct } = {}) {
   const cleanKey = String(apiKey || "").trim();
-  if (!cleanKey || !chunks?.length || !String(question || "").trim()) return null;
+  // Direct mode plans from the question alone, so an empty corpus is expected
+  // rather than a reason to skip planning. Skipping it here would silently hand
+  // the model back the single-pass structure collapse this exists to prevent.
+  if (!cleanKey || !String(question || "").trim()) return null;
+  if (!direct && !chunks?.length) return null;
 
   const startedAt = Date.now();
   const enumerate = shouldEnumeratePoints(question);
@@ -1318,8 +1469,8 @@ export async function planAnswerOutline({ apiKey, question, chunks, subjectId, t
           parts: [
             {
               text: enumerate
-                ? buildEnumeratedOutlinePrompt({ question, chunks, subjectId, wordLimit })
-                : buildOutlinePrompt({ question, chunks, subjectId, wordLimit }),
+                ? buildEnumeratedOutlinePrompt({ question, chunks, subjectId, wordLimit, direct })
+                : buildOutlinePrompt({ question, chunks, subjectId, wordLimit, direct }),
             },
           ],
         },
@@ -1772,7 +1923,7 @@ function restoreExactDiagrams(answer, chunks) {
 }
 
 export async function proxyGeminiCall(apiKey, options) {
-  const { question, chunks, targetTokens, mode, onToken, onStatus } = options;
+  const { question, chunks = [], targetTokens, mode, onToken, onStatus, direct = false } = options;
   const proxyStartedAt = Date.now();
   let firstTokenAt = 0;
   // --- stream timing instrumentation (diagnostic only; no behavior change) ---
@@ -1793,12 +1944,14 @@ export async function proxyGeminiCall(apiKey, options) {
   onStatus?.("planning answer structure");
   // Pass 1: decide the dimensions before any prose exists. Fail-open - a null plan
   // means the writing pass runs exactly as it did before.
-  const outlinePlan = await planAnswerOutline({ apiKey, question, chunks, subjectId, wordLimit: detectWordLimit(question, subjectId) });
+  const outlinePlan = await planAnswerOutline({ apiKey, question, chunks, subjectId, wordLimit: detectWordLimit(question, subjectId), direct });
   const plannedHeadings = outlinePlan?.headings || null;
   const pointPlan = outlinePlan?.plan || null;
 
   onStatus?.("writing mains answer");
-  const userPrompt = buildRagPrompt({ question, chunks, subjectId, outline: plannedHeadings, plan: pointPlan });
+  const userPrompt = direct
+    ? buildDirectPrompt({ question, subjectId, outline: plannedHeadings, plan: pointPlan })
+    : buildRagPrompt({ question, chunks, subjectId, outline: plannedHeadings, plan: pointPlan });
   const urls = buildGeminiUrls(":streamGenerateContent?alt=sse");
   const maxOutputTokens = targetTokens > 0 ? Math.min(targetTokens, 65536) : 8192;
   const answerWordLimit = detectWordLimit(question, subjectId);
@@ -1814,7 +1967,9 @@ export async function proxyGeminiCall(apiKey, options) {
 
   const requestBody = JSON.stringify({
     systemInstruction: {
-      parts: [{ text: "You are an expert UPSC Mains answer-writer. Obey the instructions in the user message exactly: the question-derived answer structure, the SOURCE-LOCK evidence rules, and the word budget. Use the standard UPSC frame - Introduction → numbered question-specific dimensions → Conclusion - but choose every dimension from the question itself: features/characteristics demands are organised by the features themselves, causes/effects by cause and effect themes, comparisons as parallel points with one heading per side or axis, comment/evaluate/examine/to-what-extent by the dimensions the assessment needs. The number, names, order and nature of those dimensions change with every question; there is no preset list and no fixed count, and never a generic \"Body\" or \"Content\" heading. The retrieved chunks are the factual boundary: organize, synthesize, and write in your own words only — never add facts absent from the chunks." }],
+      parts: [{ text: direct
+        ? "You are an expert UPSC Mains answer-writer. Obey the instructions in the user message exactly: the question-derived answer structure, the no-fabrication accuracy rules, and the word budget. You are given no source material and must answer from your own knowledge, so never invent a statistic, a date, an Article or Schedule number, a committee, a scheme, or a quotation — omit any specific you are not certain of. Use the standard UPSC frame - Introduction → numbered question-specific dimensions → Conclusion - and choose every dimension from the question itself: features/characteristics demands are organised by the features themselves, causes/effects by cause and effect themes, comparisons as parallel points with one heading per side or axis, comment/evaluate/examine/to-what-extent by the dimensions the assessment needs. The number, names, order and nature of those dimensions change with every question; there is no preset list and no fixed count, and never a generic \"Body\" or \"Content\" heading."
+        : "You are an expert UPSC Mains answer-writer. Obey the instructions in the user message exactly: the question-derived answer structure, the SOURCE-LOCK evidence rules, and the word budget. Use the standard UPSC frame - Introduction → numbered question-specific dimensions → Conclusion - but choose every dimension from the question itself: features/characteristics demands are organised by the features themselves, causes/effects by cause and effect themes, comparisons as parallel points with one heading per side or axis, comment/evaluate/examine/to-what-extent by the dimensions the assessment needs. The number, names, order and nature of those dimensions change with every question; there is no preset list and no fixed count, and never a generic \"Body\" or \"Content\" heading. The retrieved chunks are the factual boundary: organize, synthesize, and write in your own words only — never add facts absent from the chunks." }],
     },
     safetySettings: [
       { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
@@ -2157,7 +2312,28 @@ export async function proxyGeminiCall(apiKey, options) {
   const cleaned = restoreExactDiagrams(boldenBulletLeadIns(cleanModelOutput(fullText), pointPlan), chunks);
 
   // Programmatic source-lock check against the exact chunks we sent.
-  const grounding = verifyGrounding(cleaned, chunks, {
+  //
+  // Direct mode has no chunks, so there is nothing to check the answer against.
+  // Running the verifier with an empty corpus would score every sentence as
+  // unsupported and strip the whole answer, so it is skipped outright and the
+  // no-fabrication prompt rules are the only accuracy discipline in force.
+  const grounding = direct
+    ? {
+        // Shaped like a real verifier result so every downstream consumer (the
+        // logging block, the grounding summary, and `grounding.answer`, which
+        // becomes the final text) keeps working unchanged. "skipped" records why
+        // there is nothing here, since zero findings in direct mode means the
+        // check never ran, not that the answer passed it.
+        answer: cleaned,
+        removed: [],
+        flagged: [],
+        relational: [],
+        total: 0,
+        supportAvg: null,
+        grounded: false,
+        skipped: "direct_mode",
+      }
+    : verifyGrounding(cleaned, chunks, {
     enforceLowSupport: process.env.GEMINI_GROUNDING_ENFORCE_LOW_SUPPORT === "true",
     // Strict source-lock tiers for Layer 2. Default off: this layer's measured
     // precision is ~50%, so enforcing it unconditionally would delete legitimate

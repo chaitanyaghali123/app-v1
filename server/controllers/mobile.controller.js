@@ -1510,7 +1510,24 @@ export function correctSubjectTypo(question, subject) {
   return corrected === original ? null : corrected;
 }
 
-async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_MAX_CHUNKS, maxContextChars = DEFAULT_MAX_CONTEXT_CHARS, targetTokens: requestedTargetTokens = 0, deviceId }) {
+// Direct mode is the default: answers come from the model's own knowledge and no
+// corpus is consulted. Set DIRECT_MODE=false to fall back to the grounded RAG
+// path, which retrieves chunks, judges their relevance, verifies the evidence
+// scope and runs the programmatic grounding check.
+//
+// A request may override the default with { "direct": false } (grounded, with
+// sources and scope enforcement) or { "direct": true }. That makes the two paths
+// comparable question-for-question without a redeploy, which is the only honest
+// way to choose between them.
+//
+//   DIRECT_MODE=false npm start        -> grounded RAG answers by default
+//   (unset, or "true")                 -> direct answers by default
+function isDirectMode(override) {
+  if (override === true || override === false) return override;
+  return (process.env.DIRECT_MODE || "true").toLowerCase() !== "false";
+}
+
+async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_MAX_CHUNKS, maxContextChars = DEFAULT_MAX_CONTEXT_CHARS, targetTokens: requestedTargetTokens = 0, deviceId, direct }) {
   if (!question || typeof question !== "string") {
     const err = new Error("question is required");
     err.status = 400;
@@ -1560,6 +1577,44 @@ async function prepareMobileRagContext({ question, subject, maxChunks = DEFAULT_
   const folderPatterns = subject ? (SUBJECT_FOLDER_MAP[subject] || [subject]) : null;
   const resolvedQuestion = correctSubjectTypo(question, subject) || question;
   const broadCoverage = isBroadCoverageQuestion(resolvedQuestion, subject);
+
+  // Direct mode answers from the model's own knowledge and runs no retrieval at
+  // all. It returns here, after the API key has been resolved and before any
+  // vector search, budgeting, parent-context expansion, relevance judging or
+  // scope checking, so none of that cost is paid. The key resolution above is
+  // deliberately not duplicated - BYOK and the abuse policy still apply.
+  if (isDirectMode(direct)) {
+    const wordLimit = detectWordLimit(resolvedQuestion, subject);
+    const targetTokens = requestedTargetTokens > 0 && !isEssay ? requestedTargetTokens : isEssay ? 2600 : 4600;
+    const cappedTargetTokens = wordLimit
+      ? Math.min(targetTokens, Math.round(wordLimit * 2.6))
+      : targetTokens;
+    console.log(
+      `[direct] skipping retrieval: mode=on subject=${subject || "-"} wordLimit=${wordLimit || "-"} targetTokens=${cappedTargetTokens}`
+    );
+    return {
+      direct: true,
+      userApiKey,
+      deviceId,
+      question,
+      subject,
+      isEssay,
+      requestedMaxChunks,
+      resolvedQuestion,
+      mode: "direct",
+      retrievalMode: "none",
+      sourceFile: null,
+      sourceChunkCount: 0,
+      sufficient: true,
+      sourceIssue: null,
+      budgetedChunks: [],
+      scoredContext: withNormalizedChunkScores([]),
+      targetTokens,
+      cappedTargetTokens,
+      wordLimit,
+      prepStartedAt,
+    };
+  }
 
   let vectorChunks;
   try {
@@ -1946,7 +2001,7 @@ export async function getMobileAnswer(req, res) {
 
   try {
     const prepareStartedAt = Date.now();
-    const ctx = await prepareMobileRagContext(req.body || {});
+    const ctx = await prepareMobileRagContext({ ...(req.body || {}), direct: req.body?.direct });
     prepareMs = Date.now() - prepareStartedAt;
     contextChars = ctx.budgetedChunks.reduce((sum, c) => sum + (c.text?.length || 0), 0);
 
@@ -1982,7 +2037,7 @@ export async function getMobileAnswer(req, res) {
       retrievalMode: ctx.retrievalMode,
       sourceFile: ctx.sourceFile,
       sourceChunkCount: ctx.sourceChunkCount,
-      strictRag: true,
+      strictRag: !ctx.direct,
       sourceSufficient: ctx.sufficient,
       sourceIssue: ctx.sourceIssue,
       chunkCount: ctx.budgetedChunks.length,
@@ -1990,18 +2045,21 @@ export async function getMobileAnswer(req, res) {
       chunks: ctx.budgetedChunks,
       targetTokens: ctx.targetTokens,
       wordLimit: ctx.wordLimit,
+      direct: Boolean(ctx.direct),
     };
     res.write(`data: ${JSON.stringify(contextEvent)}\n\n`);
     if (typeof res.flush === "function") res.flush();
 
-    if (ctx.budgetedChunks.length === 0) {
+    // Direct mode carries no chunks by design, so the two grounded-path guards
+    // below - no chunks, and insufficient evidence - do not apply to it.
+    if (ctx.budgetedChunks.length === 0 && !ctx.direct) {
       res.write(
         `data: ${JSON.stringify({ type: "done", answer: "", tokenCount: 0, sentenceScores: [], chunkScores: ctx.scoredContext.chunkScores, generationReason: "no_chunks" })}\n\n`
       );
       return res.end();
     }
 
-    if (!ctx.sufficient) {
+    if (!ctx.sufficient && !ctx.direct) {
       const answer = ctx.sourceIssue || "The retrieved source chunks do not contain enough information to answer this question.";
       res.write(
         `data: ${JSON.stringify({ type: "done", answer, tokenCount: 0, sentenceScores: [], chunkScores: ctx.scoredContext.chunkScores, generationReason: "strict_rag_insufficient" })}\n\n`
@@ -2011,7 +2069,10 @@ export async function getMobileAnswer(req, res) {
 
     const result = await proxyGeminiCall(ctx.userApiKey, {
       question: ctx.resolvedQuestion,
-      chunks: ctx.budgetedChunks.map((c) => ({
+      direct: Boolean(ctx.direct),
+      chunks: ctx.direct
+        ? []
+        : ctx.budgetedChunks.map((c) => ({
         text: c.text,
         facet: typeof c.metadata?.rag_facet === "string" ? c.metadata.rag_facet : "supporting-evidence",
         source: typeof c.metadata?.source_file === "string" ? c.metadata.source_file : c.metadata?.source || "",
