@@ -893,34 +893,8 @@ function enforceWordLimit(answer, wordLimit) {
 // does that here, so the prompt carries the discipline instead: name only what
 // is well established, omit what is uncertain, and never manufacture a figure,
 // an article number, a committee or a date.
-function buildDirectPrompt({ question, subjectId, proseOnly }) {
+function buildDirectPrompt({ question, subjectId }) {
   const wordLimit = detectWordLimit(question, subjectId);
-
-  const proseOnlyBlock = proseOnly
-    ? `
-== WRITE IN PROSE FOR THIS ANSWER ==
-Do NOT use bullet points anywhere in this answer. Under each heading, write flowing connected paragraphs.
-`
-    : "";
-
-  const perDimensionWords = wordLimit === 1300 ? "150-200" : "95-130";
-
-  const structureBlock = `
-== PLAN YOUR OWN DIMENSIONS FIRST, THEN WRITE TO THEM ==
-Before writing a single sentence, work out the dimensions the question demands, then answer under exactly those headings.
-1. Take the question apart into its object, its command verb, and its scope. Enumerate the distinct parts of that scope, in the order the question asks for them.
-2. Open the answer with 2-3 sentences of Introduction that give real context and a direct answer to the directive verb.
-3. Give each dimension its own \`## **N. <dimension>**\` heading, numbered 1., 2., 3. in order, using a short feature noun phrase that names that part of the scope.
-4. Under each dimension, use whichever form the content needs:
-   - parallel points, a set of related aspects, or an enumerative demand: a short framing clause in the question's own words saying what the dimension consists of and ending in a colon, then ONE bullet per point opening with a bolded lead-in naming it, then the explanation for that point inside the same bullet;
-   - a continuous argument, a cause-effect chain, a comparison, or a critical evaluation: flowing connected paragraphs, with no bullets.
-   Every dimension keeps its own heading either way.
-5. Close with \`## **Conclusion**\`: 2-3 sentences of synthesis or verdict, never a summary of what was just said.
-- Under a dimension, never go straight from the heading to bullets with no framing clause, and never open a dimension with a bare paragraph when it is a set of parallel points.
-- EACH BULLET CARRIES THE WEIGHT, NOT THE LABEL. A bullet of 12 words drops the answer under the word floor. Give the mechanism, the specific detail, and a concrete named example inside each bullet.
-- Give the numbered dimensions ${perDimensionWords} words each, minus the Introduction and Conclusion, and count as you go. A dimension is not finished when you have stated it: it is finished when you have explained WHY it matters, given the concrete detail for it, and drawn out its significance to the question. Two thin sentences under a heading is the single most common way to fall short of the floor.
-- These headings divide a ${wordLimit || 600}-word answer. A short set of dimensions is never a reason to write a short answer.
-`;
 
   const wordLimitInstruction = wordLimit
     ? `
@@ -962,7 +936,6 @@ You have no source material here. Everything factual comes from your own knowled
 - PRESERVE SCOPE AND DIRECTION of whatever you do state: keep a claim's stated time period and population, and never reverse a stated causeÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢effect relationship.
 - ATTRIBUTION: figures and studies illustrate or corroborate, they never "prove" causation. Avoid absolutes unless you are certain.
 - EXAMPLES: for "with examples", lead with 3-5 specific, named, concrete examples. Draw on the actual subject of the question, not its background.
-${structureBlock}${proseOnlyBlock}
 == RENDERING ==
 - \`## **Introduction**\`, then \`## **1. <dimension>**\` ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ then \`## **Conclusion**\`.
 - Bold key terms and facts as on-paper underlining would (e.g. **regional planning**, **Planning Commission**).
@@ -1948,10 +1921,10 @@ export async function generateAnswer({ apiKey, question, chunks, subjectId, opti
     throw new Error("No evidence chunks provided to generateAnswer");
   }
 
-  const buildRequestBody = (opts = {}) =>
+  const buildRequestBody = () =>
     ({
       contents: [
-        { role: "user", parts: [{ text: buildDirectPrompt({ question, subjectId, proseOnly: opts.proseOnly }) }] },
+        { role: "user", parts: [{ text: buildDirectPrompt({ question, subjectId }) }] },
       ],
       systemInstruction: {
         parts: [{ text: DIRECT_ANSWER_SYSTEM_INSTRUCTION }],
@@ -1969,11 +1942,11 @@ export async function generateAnswer({ apiKey, question, chunks, subjectId, opti
       }),
     });
 
-  const callGemini = async (opts = {}) => {
+  const callGemini = async () => {
     const response = await requestGemini(
       cleanKey,
       buildGeminiUrls(":generateContent"),
-      { method: "POST", body: JSON.stringify(buildRequestBody(opts)) },
+      { method: "POST", body: JSON.stringify(buildRequestBody()) },
       {
         operation: "generate_answer",
         timeoutMs: options.timeoutMs || GEMINI_REQUEST_TIMEOUT_MS,
