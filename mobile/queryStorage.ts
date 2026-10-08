@@ -13,7 +13,6 @@ export type QueryRecord = {
   question: string;
   answer: string;
   tokenCount: number;
-  chunkCount: number;
   timestamp: number;
 };
 

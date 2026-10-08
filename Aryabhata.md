@@ -3,7 +3,7 @@
 
 Aryabhata is a comprehensive UPSC (Union Public Service Commission) preparation platform designed for civil services aspirants. The application provides a complete study experience combining AI-powered tutoring, gamified progress tracking, and detailed analytics.
 
-It supports the full UPSC cycle: Prelims, Mains, Optional subjects, Interview preparation, and Current Affairs. The platform emphasizes a “Prelims-first” approach while offering personalized explanations, adaptive content delivery, progress tracking (badges, streaks, XP), and AI-powered insights.
+It supports the full UPSC cycle: Mains, Optional subjects, Interview preparation, and Current Affairs. The platform offers personalized explanations, adaptive content delivery, progress tracking (badges, streaks, XP), and AI-powered insights.
 
 With a responsive design, Aryabhata works seamlessly across web and mobile platforms.
 
@@ -40,7 +40,7 @@ RESTful API design with Node.js (Express.js + TypeScript):
 PostgreSQL with Drizzle ORM (type-safe migrations and queries):
 
 - **User Management**: Profiles with multiple auth providers, streak tracking, XP, and roles
-- **Content Hierarchy**: Subjects → Topics → Questions for Prelims, Mains, Optional, Interview
+- **Content Hierarchy**: Subjects → Topics → Questions for Mains, Optional, Interview
 - **Progress Tracking**: User completion %, last activity, and position tracking
 - **Gamification**: Badges, streak counters, XP system
 - **Analytics**: Quiz attempts, daily stats, performance insights

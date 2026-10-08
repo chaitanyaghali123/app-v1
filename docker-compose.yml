@@ -38,8 +38,6 @@ services:
       - FRONTEND_URL=http://localhost:4173
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - FASTAPI_URL=http://aryabhata-ingestor:7860
-      - VECTOR_API=http://aryabhata-ingestor:7860
       - GEMINI_KEY_VAULT_PROVIDER=${GEMINI_KEY_VAULT_PROVIDER:-local-envelope}
       - GEMINI_KMS_KEY_ID=${GEMINI_KMS_KEY_ID:-}
     depends_on:
@@ -57,76 +55,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  ingestor:
-    build:
-      context: ./vector_server
-      dockerfile: Dockerfile
-    container_name: aryabhata-ingestor
-    working_dir: /app
-    command: uvicorn ingest_hybrid_api:app --host 0.0.0.0 --port 7860
-    ports:
-      - "7860:7860"
-    volumes:
-      - ./vector_server:/app
-      - ./server/uploads:/app/uploads
-      - ./diagram-assets:/app/diagram-assets
-      - hf_cache:/root/.cache/huggingface
-      
-    env_file:
-      - ./vector_server/.env
-    environment:
-      - EMBED_PROVIDER=gemini
-
-
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - sambit-net
-
-  ingest-job:
-    build:
-      context: ./vector_server
-      dockerfile: Dockerfile
-    working_dir: /app
-    command: python ingest_hybrid.py --folder /app/data
-    volumes:
-      - ./vector_server:/app
-      - ./diagram-assets:/app/diagram-assets
-    env_file:
-      - ./vector_server/.env
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-    profiles:
-      - ingest
-    networks:
-      - sambit-net
-
-  celery-worker:
-    image: app-v1-ingestor
-    container_name: aryabhata-celery
-    working_dir: /app
-    command: celery -A celery_app worker -l info -c 4
-    volumes:
-      - ./vector_server:/app
-      - ./server/uploads:/app/uploads
-      - ./diagram-assets:/app/diagram-assets
-    env_file:
-      - ./vector_server/.env
-    environment:
-      - PYTHONPATH=/app
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - sambit-net
 
   postgres:
     image: pgvector/pgvector:0.8.6-pg15
@@ -200,7 +128,6 @@ volumes:
   postgres:
   pgadmin:
   redis_data:
-  hf_cache:
 
 networks:
   sambit-net:

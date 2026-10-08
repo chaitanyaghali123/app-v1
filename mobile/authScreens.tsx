@@ -27,10 +27,10 @@ import {
 } from "./authApi";
 
 const COLORS = {
-  bg: "#f8f9ff",
+  bg: "#FFFFFF",
   card: "#ffffff",
   border: "#e5e7eb",
-  inputBg: "#f9fafb",
+  inputBg: "#F7F7F8",
   primary: "#4f46e5",
   text: "#111827",
   muted: "#6b7280",

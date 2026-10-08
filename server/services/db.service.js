@@ -59,23 +59,6 @@ export async function ensureMessagesTable() {
   `);
 }
 
-export async function ensureUpscChunkMediaColumns() {
-  await pool.query(`
-    ALTER TABLE IF EXISTS upsc_chunks
-    ADD COLUMN IF NOT EXISTS page_number INTEGER;
-  `);
-
-  // Parent-context expansion looks up a chunk's neighbours by (source_file,
-  // chunk_index). Without this index that lookup seq-scans every partition, which
-  // measured 44ms on a warm cache and grows with corpus size. CREATE INDEX IF NOT
-  // EXISTS on the partitioned parent propagates to all partitions, so this runs
-  // once at boot and is a no-op on restart.
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_upsc_chunks_source_index
-    ON upsc_chunks (source_file, chunk_index);
-  `);
-}
-
 // =====================================================
 // 🆕 CHAT OPERATIONS
 // =====================================================

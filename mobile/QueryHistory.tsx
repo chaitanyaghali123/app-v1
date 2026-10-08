@@ -32,7 +32,7 @@ function formatDate(ts: number): string {
 }
 
 function answerPreview(answer: string, maxLen = 120): string {
-  const cleaned = answer.replace(/\*\*/g, "").replace(/\n+/g, " ").trim();
+  const cleaned = answer.replace(/\*/g, "").replace(/\n+/g, " ").trim();
   if (cleaned.length <= maxLen) return cleaned;
   return cleaned.slice(0, maxLen).replace(/\s+\S*$/, "") + "...";
 }
@@ -110,7 +110,7 @@ export default function QueryHistory({
                 </Text>
                 <View style={styles.queryMeta}>
                   <Text style={styles.queryMetaText}>
-                    {record.tokenCount} tokens · {record.chunkCount} chunks
+                    {record.tokenCount} tokens
                   </Text>
                 </View>
               </Pressable>

@@ -4,215 +4,39 @@ import { enforceGeminiAbusePolicy, recordGeminiFailureForAbuse } from "../servic
 import { anonymizeIdentifier, logGeminiEvent, recordGeminiMetric } from "../services/gemini-monitoring.service.js";
 import { correctSubjectTypo } from "./gsMapping.js";
 
-const DEFAULT_TARGET_TOKENS = 4600;
-const ESSAY_TARGET_TOKENS = 2600;
-const DOMAIN_QUERY_EXPANSIONS = [
-  {
-    pattern: /\btrade\s+unions?\b/i,
-    query:
-      "industrial relations collective bargaining workers participation labour welfare industrial disputes social security",
-  },
-  {
-    pattern: /\b(bitcoin|crypto(?:currency|currencies)?)\b/i,
-    query:
-      "Satoshi 2009 decentralized virtual currency blockchain RBI Supreme Court taxation volatility mining regulation illegal trade terror finance",
-  },
-  {
-    pattern: /\bmetallic\s+money\b/i,
-    query:
-      "commodity money coins intrinsic value full bodied coins token coins Indian currency history",
-  },
-];
-const QUESTION_SCAFFOLDING = new Set([
-  "discuss", "elucidate", "explain", "examine", "analyse", "analyze", "assess",
-  "elaborate", "describe", "outline", "trace", "comment", "evaluate", "bring",
-  "role", "roles", "impact", "impacts", "influence", "significance", "salient",
-  "features", "feature", "aspects", "dimension", "dimensions", "nature",
-  "meaning", "importance", "relevance", "relation", "relationship", "shaping",
-  "shaped", "shape", "modern", "contemporary", "given", "briefly", "detail",
-  "detailed", "manner", "way", "ways", "context", "perspective", "notable",
-  "various", "overall", "systematically", "critically", "suitable", "possible",
+// Length policy: the model decides how long an answer should be underneath a
+// paper-specific ceiling. GS papers and optional subjects have ONLY a maximum
+// (2000 words, no minimum); Essay enforces a hard band of at least 1000 words
+// and at most 1400. Subjects outside these tables keep the runaway guard.
+const DIRECT_MAX_TARGET_TOKENS = Number(
+  process.env.GEMINI_DIRECT_MAX_TARGET_TOKENS ||
+    process.env.GEMINI_MAX_TARGET_TOKENS ||
+    8192
+);
+// English runs at roughly 1.3 tokens per word, and markdown headings, bold
+// runs and bullets add overhead on top of the prose itself. 1.7 sizes the
+// token ceiling so a compliant max-word answer is never cut off prematurely.
+const WORDS_TO_TOKENS = 1.7;
+
+const MAX_OR_BAND_BY_SUBJECT = new Map([
+  ["essay", { min: 1000, max: 1400 }],
 ]);
-const REGION_MEMBERS = {
-  "south asia": ["india", "pakistan", "bangladesh", "nepal", "bhutan", "sri lanka", "afghanistan", "maldives"],
-  "south-east asia": ["india", "myanmar", "thailand", "vietnam", "indonesia", "malaysia", "philippines", "singapore", "cambodia", "laos"],
-  "southeast asia": ["india", "myanmar", "thailand", "vietnam", "indonesia", "malaysia", "philippines", "singapore", "cambodia", "laos"],
-  "east asia": ["china", "japan", "korea", "mongolia", "taiwan"],
-  "central asia": ["kazakhstan", "uzbekistan", "turkmenistan", "kyrgyzstan", "tajikistan"],
-  "west asia": ["saudi arabia", "iran", "iraq", "israel", "turkey", "uae", "qatar", "oman", "yemen", "syria"],
-  "south america": ["brazil", "argentina", "chile", "peru", "colombia", "venezuela"],
-  "european union": ["france", "germany", "italy", "spain", "netherlands", "belgium", "poland", "sweden"],
-};
+const GS_MAX_WORDS = { max: 2000 };
+const OPTIONAL_MAX_WORDS = { max: 2000 };
+const GS_SUBJECT_IDS = new Set(["gs1", "gs2", "gs3", "gs4"]);
 
-const NAMED_COUNTRIES = [
-  "india", "pakistan", "bangladesh", "nepal", "bhutan", "sri lanka", "afghanistan", "maldives",
-  "china", "japan", "myanmar", "thailand", "vietnam", "indonesia", "africa", "brazil", "russia",
-  "france", "germany", "britain", "america", "australia", "canada", "korea", "turkey", "egypt",
-  "nepal", "america", "iran", "iraq", "israel", "greece", "rome", "bharat",
-];
-function detectWordLimit(question, subject) {
-  const ids = (Array.isArray(subject) ? subject : [subject])
-    .map((s) => String(s || "").trim().toLowerCase())
-    .filter(Boolean);
-  const idSet = new Set(ids);
-  if (idSet.has("essay")) return 1300;
-  return 600;
-}
-function collapseOutsideCodeFences(text) {
-  const segments = String(text || "").split("```");
-  return segments
-    .map((seg, idx) => {
-      if (idx % 2 === 1) return seg;
-      return collapseOutsideDiagrams(seg);
-    })
-    .join("```");
+// Returns the word range for a paper ({max} for a ceiling-only paper, {min,
+// max} for a hard band), or null when the app enforces no range and the model
+// judges length within the token backstop.
+function getWordRange(subject) {
+  const id = String(subject || "").trim().toLowerCase();
+  if (!id) return null;
+  if (MAX_OR_BAND_BY_SUBJECT.has(id)) return MAX_OR_BAND_BY_SUBJECT.get(id);
+  if (GS_SUBJECT_IDS.has(id)) return GS_MAX_WORDS;
+  if (id.endsWith("-optional")) return OPTIONAL_MAX_WORDS;
+  return null;
 }
 
-function sanitizeLatexArtifacts(text) {
-  return String(text || "")
-    .replace(/\\\$/g, "$")
-    .replace(/\$\$\s*([\s\S]*?)\s*\$\$/g, "$1")
-    .replace(/\\\[([\s\S]*?)\\\]/g, "$1")
-    .replace(/\\\(([\s\S]*?)\\\)/g, "$1")
-    .replace(/\\text\{([^{}]*)\}/g, "$1")
-    .replace(/\\langle/g, "<")
-    .replace(/\\rangle/g, ">")
-    .replace(/\\longrightarrow/g, "\u2192")
-    .replace(/\\rightarrow/g, "\u2192")
-    .replace(/\\Rightarrow/g, "\u21D2")
-    .replace(/\\times/g, "\u00D7")
-    .replace(/\\leq/g, "\u2264")
-    .replace(/\\geq/g, "\u2265")
-    .replace(/\\approx/g, "\u2248")
-    .replace(/\\neq/g, "\u2260")
-    .replace(/\\cdots/g, "\u2026")
-    .replace(/\\ldots/g, "\u2026")
-    .replace(/\\bullet/g, "\u2022")
-    .replace(/\\%/g, "%")
-    .replace(/\\&/g, "&")
-    .replace(/\\([a-zA-Z]+)/g, "$1")
-    .replace(/\{\s*|\s*\}/g, " ");
-}
-
-function collapseOutsideDiagrams(seg) {
-  seg = sanitizeLatexArtifacts(seg)
-    .replace(/([^\n#])(#{2,6}\s+)/g, "$1\n\n$2")
-    .replace(/([^\n*])(\*\s+)/g, "$1\n$2")
-    .replace(/(?<![#\d*\n])(?<![#*\d][ \t])(\d{1,2}\.\s+)/g, "\n$1");
-  const lines = seg.split("\n");
-  const isRegion = new Array(lines.length).fill(false);
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes("┌")) {
-      let end = i;
-      for (let j = i; j < lines.length; j++) {
-        if (lines[j].includes("└") || lines[j].includes("┘")) end = j;
-      }
-      for (let k = i; k <= end; k++) isRegion[k] = true;
-      i = end;
-    }
-  }
-  return lines
-    .map((ln, i) => (isRegion[i] ? ln : ln.replace(/[ \t]+/g, " ").trim()))
-    .join("\n");
-}
-
-function alignDiagramIndentation(text) {
-  const lines = String(text || "").split("\n");
-  const out = [];
-  let block = [];
-  const flush = () => {
-    if (block.length === 0) return;
-    for (let i = 0; i < block.length; i++) {
-      if (block[i].trimStart().startsWith("┌")) {
-        const indents = [];
-        for (let j = i + 1; j < block.length; j++) {
-          const m = block[j].match(/^\s*[│└┘┐┌┬▼▲]/);
-          if (m) indents.push(block[j].match(/^\s*/)[0].length);
-        }
-        if (indents.length > 0) {
-          const sorted = [...indents].sort((a, b) => a - b);
-          const target = sorted[Math.floor(sorted.length / 2)];
-          const current = block[i].match(/^\s*/)[0].length;
-          if (current !== target) {
-            block[i] = " ".repeat(target) + block[i].trimStart();
-          }
-        }
-        break;
-      }
-    }
-    out.push(...block);
-    block = [];
-  };
-  for (const ln of lines) {
-    if (/^```/.test(ln.trim())) {
-      flush();
-      out.push(ln);
-    } else {
-      block.push(ln);
-    }
-  }
-  flush();
-  return out.join("\n");
-}
-
-function fenceDiagrams(text) {
-  const lines = String(text || "").split("\n");
-  const out = [];
-  let inFence = false;
-  let i = 0;
-  while (i < lines.length) {
-    const ln = lines[i];
-    if (/^```/.test(ln.trim())) {
-      inFence = !inFence;
-      out.push(ln);
-      i++;
-      continue;
-    }
-    if (!inFence && ln.includes("┌")) {
-      let end = i;
-      for (let j = i; j < lines.length; j++) {
-        if (lines[j].includes("└") || lines[j].includes("┘")) end = j;
-      }
-      out.push("```text", ...lines.slice(i, end + 1), "```", "");
-      i = end + 1;
-      continue;
-    }
-    out.push(ln);
-    i++;
-  }
-  return out.join("\n");
-}
-
-function normalizeFenceBlocks(text) {
-  const tokens = String(text || "").split(/(```[a-zA-Z][a-zA-Z0-9_-]*|```)/);
-  let out = "";
-  let prevWasFence = false;
-  for (const t of tokens) {
-    if (/^```/.test(t)) {
-      if (out.length > 0 && !out.endsWith("\n")) out += "\n";
-      out += t;
-      prevWasFence = true;
-    } else if (t !== "") {
-      if (prevWasFence && !t.startsWith("\n")) out += "\n";
-      out += t;
-      prevWasFence = false;
-    }
-  }
-  const lines = out.split("\n");
-  const result = [];
-  for (const ln of lines) {
-    if (/^```/.test(ln)) {
-      if (result.length > 0 && result[result.length - 1] !== "") result.push("");
-      result.push(ln);
-    } else if (ln !== "") {
-      if (result.length > 0 && result[result.length - 1] === "```") result.push("");
-      result.push(ln);
-    } else {
-      result.push(ln);
-    }
-  }
-  return result.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-}
 async function prepareMobileAnswerContext({ question, subject, targetTokens: requestedTargetTokens = 0, deviceId }) {
   if (!question || typeof question !== "string") {
     const err = new Error("question is required");
@@ -233,20 +57,20 @@ async function prepareMobileAnswerContext({ question, subject, targetTokens: req
     }
   }
 
-  const isEssay = String(subject || "").trim().toLowerCase() === "essay";
   const resolvedQuestion = correctSubjectTypo(question, subject) || question;
-  const wordLimit = detectWordLimit(resolvedQuestion, subject);
-  const targetTokens = requestedTargetTokens > 0 && !isEssay
-    ? requestedTargetTokens
-    : isEssay
-      ? ESSAY_TARGET_TOKENS
-      : DEFAULT_TARGET_TOKENS;
-  const cappedTargetTokens = wordLimit
-    ? Math.min(targetTokens, Math.round(wordLimit * 2.6))
-    : targetTokens;
+  const wordRange = getWordRange(subject);
+  // The token budget is sized off the paper's max so a compliant answer is never
+  // cut off; the range object itself is passed to the prompt (max-only for GS/
+  // optional, a hard band for essay).
+  const targetTokens = wordRange?.max
+    ? Math.ceil(wordRange.max * WORDS_TO_TOKENS)
+    : requestedTargetTokens > 0
+      ? Math.min(requestedTargetTokens, DIRECT_MAX_TARGET_TOKENS)
+      : DIRECT_MAX_TARGET_TOKENS;
+  const cappedTargetTokens = Math.min(targetTokens, DIRECT_MAX_TARGET_TOKENS);
 
   console.log(
-    `[direct] device=${deviceId ? `${deviceId.slice(0, 8)}...` : "NONE"} keyResolved=${Boolean(userApiKey)} subject=${subject || "-"} wordLimit=${wordLimit || "-"} targetTokens=${cappedTargetTokens} prepMs=${Date.now() - prepStartedAt}`
+    `[direct] device=${deviceId ? `${deviceId.slice(0, 8)}...` : "NONE"} keyResolved=${Boolean(userApiKey)} subject=${subject || "-"} wordRange=${wordRange ? (wordRange.min ? `${wordRange.min}-${wordRange.max}` : `max ${wordRange.max}`) : "-"} targetTokens=${cappedTargetTokens} prepMs=${Date.now() - prepStartedAt}`
   );
 
   return {
@@ -254,9 +78,8 @@ async function prepareMobileAnswerContext({ question, subject, targetTokens: req
     deviceId,
     question,
     subject,
-    isEssay,
     resolvedQuestion,
-    wordLimit,
+    wordRange,
     targetTokens,
     cappedTargetTokens,
     prepStartedAt,
@@ -338,7 +161,7 @@ export async function getMobileAnswer(req, res) {
       question: ctx.question,
       subject: ctx.subject,
       targetTokens: ctx.targetTokens,
-      wordLimit: ctx.wordLimit,
+      wordLimit: ctx.wordRange ? ctx.wordRange.max : null,
       direct: true,
       retrievalMode: "none",
       chunkCount: 0,
@@ -357,6 +180,7 @@ export async function getMobileAnswer(req, res) {
       question: ctx.resolvedQuestion,
       subjectId: ctx.subject,
       targetTokens: ctx.cappedTargetTokens,
+      wordRange: ctx.wordRange,
       onToken: (token) => {
         res.write(`data: ${JSON.stringify({ type: "token", text: token })}\n\n`);
         if (typeof res.flush === "function") res.flush();

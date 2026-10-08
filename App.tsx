@@ -757,7 +757,7 @@ export default function App() {
                   pressed && { opacity: 0.7 },
                 ]}
               >
-                <Text style={[styles.pyqToggleText, { color: subjectColor(activeSubject.id) }]}>
+                <Text style={[styles.pyqToggleText, { color: "#111827" }]}>
                   {showPyqs ? "Hide" : "Show"} Previous Year Questions
                 </Text>
                 <Text style={styles.pyqToggleArrow}>{showPyqs ? "v" : ">"}</Text>
@@ -939,7 +939,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#f3f4f6",
   },
   backText: {
-    color: "#4f46e5",
+    color: "#111827",
     fontSize: 14,
     fontWeight: "700",
   },
@@ -961,7 +961,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   historyBtnLabel: {
-    color: "#92400e",
+    color: "#111827",
     fontSize: 11,
     fontWeight: "700",
   },
@@ -981,7 +981,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   subjectTagName: {
-    color: "#4338ca",
+    color: "#111827",
     fontSize: 14,
     fontWeight: "700",
   },
@@ -1252,6 +1252,7 @@ const styles = StyleSheet.create({
   pyqToggleText: {
     fontSize: 14,
     fontWeight: "700",
+    color: "#111827",
   },
   pyqToggleArrow: {
     color: "#9ca3af",
