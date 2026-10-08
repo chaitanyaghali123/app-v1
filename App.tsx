@@ -52,7 +52,7 @@ import { restoreSession, type AuthUser } from "./mobile/authApi";
 import { saveQuery, getQueries, clearQueries } from "./mobile/queryStorage";
 import type { QueryRecord } from "./mobile/queryStorage";
 
-const DEFAULT_BACKEND_URL = Platform.OS === "web" ? window.location.origin : "http://192.168.29.61:3000";
+const DEFAULT_BACKEND_URL = Platform.OS === "web" ? "http://localhost:3000" : "http://192.168.29.61:3000";
 const SECURE_STORE_KEY = "upsc_gemini_api_key";
 const STORED_KEY_MARKER = "stored";
 

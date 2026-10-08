@@ -2,6 +2,7 @@
 node_modules
 .model-cache/
 dist
+.expo/
 
 # OS-specific files
 .DS_Store
