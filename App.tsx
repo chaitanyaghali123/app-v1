@@ -1,7 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -13,6 +12,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { ChatIcon } from "./mobile/icons";
 import * as SecureStore from "expo-secure-store";
 
 const isWeb = Platform.OS === "web";
@@ -42,7 +42,7 @@ async function hasStoredKeyMarker(): Promise<boolean> {
   return true;
 }
 
-import { answerUpscQuestionFromChunks } from "./mobile/upscRagAnswer";
+import { answerUpscQuestion } from "./mobile/upscAnswer";
 import { storeApiKeyOnBackend } from "./mobile/gemini";
 import Dashboard from "./mobile/Dashboard";
 import MarkdownAnswer from "./mobile/MarkdownAnswer";
@@ -56,60 +56,22 @@ const DEFAULT_BACKEND_URL = Platform.OS === "web" ? window.location.origin : "ht
 const SECURE_STORE_KEY = "upsc_gemini_api_key";
 const STORED_KEY_MARKER = "stored";
 
-type ChunkPreview = {
-  text?: string;
-  content?: string;
-  score?: number;
-  vector_score?: number;
-  rerank_score?: number;
-  relevanceScore?: number;
-  metadata?: Record<string, unknown>;
-};
-
 type Subject = {
   id: string;
   name: string;
   icon: string;
 };
 
-function ActionButton({
-  label,
-  onPress,
-  disabled = false,
-  variant = "primary",
-}: {
-  label: string;
-  onPress: () => void;
-  disabled?: boolean;
-  variant?: "primary" | "secondary" | "ghost";
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      disabled={disabled}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.btn,
-        variant === "primary" && styles.btnPrimary,
-        variant === "secondary" && styles.btnSecondary,
-        variant === "ghost" && styles.btnGhost,
-        disabled && styles.btnDisabled,
-        pressed && !disabled && styles.btnPressed,
-      ]}
-    >
-      <Text
-        style={[
-          styles.btnText,
-          variant === "primary" && styles.btnTextPrimary,
-          variant === "secondary" && styles.btnTextSecondary,
-          variant === "ghost" && styles.btnTextGhost,
-        ]}
-      >
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
+type SpeechRecognitionLike = {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  onresult: ((event: { results: Array<Array<{ transcript: string }>> }) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
 
 const MOJIBAKE_REPLACEMENTS: Array<[string, string]> = [
   ["â€”", "—"],
@@ -219,21 +181,46 @@ function subjectColor(id: string): string {
   return SUBJECT_COLORS[id] ?? SUBJECT_COLORS.optional ?? "#6366f1";
 }
 
+type AppRoute = "dashboard" | "qa" | "history" | "optional-picker" | "profile";
+
+const ROUTES = new Set<string>(["dashboard", "qa", "history", "optional-picker", "profile"]);
+
+// The app has no router, so a page refresh resets state to the dashboard. To
+// survive a reload this snapshot keeps the last route (and the QA context) so
+// refreshing the Q&A page lands back on Q&A with the same subject/question.
+function loadUiSnapshot(): { route: AppRoute; subject: Subject | null; question: string } {
+  if (!isWeb) return { route: "dashboard", subject: null, question: "" };
+  try {
+    const raw = localStorage.getItem("upsc_ui_snapshot");
+    if (!raw) return { route: "dashboard", subject: null, question: "" };
+    const parsed = JSON.parse(raw);
+    let route: AppRoute = ROUTES.has(parsed.route)
+      ? (parsed.route as AppRoute)
+      : "dashboard";
+    const subject: Subject | null = parsed.subject || null;
+    if ((route === "qa" || route === "history") && !subject) route = "dashboard";
+    return {
+      route,
+      subject,
+      question: typeof parsed.question === "string" ? parsed.question : "",
+    };
+  } catch {
+    return { route: "dashboard", subject: null, question: "" };
+  }
+}
+
 export default function App() {
-  const [route, setRoute] = useState<"dashboard" | "qa" | "history" | "optional-picker" | "profile">("dashboard");
+  const [route, setRoute] = useState<AppRoute>(() => loadUiSnapshot().route);
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
   const [sessionUser, setSessionUser] = useState<AuthUser | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [apiKey, setApiKey] = useState("");
   const [hasSavedApiKey, setHasSavedApiKey] = useState(false);
-  const [activeSubject, setActiveSubject] = useState<Subject | null>(null);
+  const [activeSubject, setActiveSubject] = useState<Subject | null>(() => loadUiSnapshot().subject);
   const [queries, setQueries] = useState<QueryRecord[]>([]);
-  const [question, setQuestion] = useState("");
+  const [question, setQuestion] = useState(() => loadUiSnapshot().question);
   const [status, setStatus] = useState("");
   const [answer, setAnswer] = useState("");
-  const [chunks, setChunks] = useState<ChunkPreview[]>([]);
-  const [chunkScores, setChunkScores] = useState<number[]>([]);
-  const [chunkCount, setChunkCount] = useState(0);
   const [generating, setGenerating] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState<number | null>(null);
   const [tokenCount, setTokenCount] = useState(0);
@@ -246,6 +233,9 @@ export default function App() {
     return false;
   });
   const [hasAsked, setHasAsked] = useState(false);
+  const [askedQuestion, setAskedQuestion] = useState("");
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   const toggleDebug = useCallback(() => {
     setDebugMode((prev) => {
@@ -253,6 +243,77 @@ export default function App() {
       if (isWeb) localStorage.setItem("upsc_debug", String(next));
       return next;
     });
+  }, []);
+
+  useEffect(() => {
+    if (!isWeb) return;
+    try {
+      localStorage.setItem(
+        "upsc_ui_snapshot",
+        JSON.stringify({ route, subject: activeSubject, question })
+      );
+    } catch {
+      // storage may be unavailable (private mode, quota) — the refresh restore
+      // just silently degrades to the dashboard in that case.
+    }
+  }, [route, activeSubject, question]);
+
+  // Tap-to-start / tap-to-stop dictation via the browser's Web Speech API. The
+  // transcript is dropped into the question input for editing — nothing is
+  // auto-sent.
+  const toggleVoiceInput = useCallback(() => {
+    if (!isWeb) {
+      setStatus("Voice input isn't available in this build yet. Type your question instead.");
+      return;
+    }
+    const w = window as unknown as {
+      SpeechRecognition?: new () => SpeechRecognitionLike;
+      webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+    };
+    const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
+    if (!SR) {
+      setStatus("Voice input isn't supported in this browser. Try Chrome or Edge.");
+      return;
+    }
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      return;
+    }
+    try {
+      const rec = new SR();
+      rec.lang = "en-IN";
+      rec.interimResults = true;
+      rec.continuous = true;
+      rec.onresult = (event) => {
+        if (recognitionRef.current !== rec) return;
+        let text = "";
+        for (let i = 0; i < event.results.length; i++) {
+          text += event.results[i][0]?.transcript ?? "";
+        }
+        setQuestion(text);
+      };
+      rec.onend = () => {
+        const wasActive = recognitionRef.current === rec;
+        recognitionRef.current = null;
+        setListening(false);
+        if (wasActive) setStatus("");
+      };
+      rec.onerror = rec.onend;
+      recognitionRef.current = rec;
+      rec.start();
+      setListening(true);
+      setStatus("Listening... tap the mic when you're done.");
+    } catch {
+      recognitionRef.current = null;
+      setListening(false);
+      setStatus("Couldn't start voice input.");
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      recognitionRef.current?.stop();
+    };
   }, []);
 
   const cleanBackendUrl = backendUrl.trim().replace(/\/+$/, "");
@@ -340,9 +401,8 @@ export default function App() {
   const handleSelectSubject = useCallback((subject: Subject) => {
     setActiveSubject(subject);
     setQuestion("");
+    setAskedQuestion("");
     setAnswer("");
-    setChunks([]);
-    setChunkScores([]);
     setHasAsked(false);
     setShowPyqs(false);
     if (subject.id === "optional") {
@@ -355,9 +415,8 @@ export default function App() {
   const handleSelectOptional = useCallback((subject: Subject) => {
     setActiveSubject(subject);
     setQuestion("");
+    setAskedQuestion("");
     setAnswer("");
-    setChunks([]);
-    setChunkScores([]);
     setHasAsked(false);
     setShowPyqs(false);
     setRoute("qa");
@@ -367,9 +426,8 @@ export default function App() {
     setRoute("dashboard");
     setActiveSubject(null);
     setHasAsked(false);
+    setAskedQuestion("");
     setAnswer("");
-    setChunks([]);
-    setChunkScores([]);
   }, []);
 
   const handleHistoryPress = useCallback(() => {
@@ -379,12 +437,10 @@ export default function App() {
   }, [activeSubject]);
 
   const handleSelectQuery = useCallback((record: QueryRecord) => {
-    setQuestion(record.question);
+    setAskedQuestion(record.question);
+    setQuestion("");
     setAnswer(formatAnswer(record.answer));
-    setChunks([]);
-    setChunkScores([]);
     setTokenCount(record.tokenCount);
-    setChunkCount(record.chunkCount);
     setHasAsked(true);
     setRoute("qa");
   }, []);
@@ -395,11 +451,9 @@ export default function App() {
 
   const handleNewQueryFromHistory = useCallback(() => {
     setQuestion("");
+    setAskedQuestion("");
     setAnswer("");
-    setChunks([]);
-    setChunkScores([]);
     setTokenCount(0);
-    setChunkCount(0);
     setHasAsked(false);
     setRoute("qa");
   }, []);
@@ -417,23 +471,27 @@ export default function App() {
     const cleanQuestion = question.trim();
     const startedAt = Date.now();
 
+    // Commit the question as a message and clear the composer (ChatGPT-style).
+    // Any live dictation stops first so a late transcript can't overwrite the
+    // input after it has been cleared.
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+      setListening(false);
+    }
+    setAskedQuestion(cleanQuestion);
+    setQuestion("");
     setAnswer("");
-    setChunks([]);
-    setChunkScores([]);
-    setChunkCount(0);
     setElapsedSeconds(null);
     setGenerating(true);
     setHasAsked(true);
-    setStatus("Fetching source material...");
+    setStatus("Preparing your answer...");
 
     try {
-      const result = await answerUpscQuestionFromChunks({
+      const result = await answerUpscQuestion({
         backendUrl: cleanBackendUrl,
         question: cleanQuestion,
         subject: activeSubject.id,
-        maxChunks: 4,
-        maxContextChars: 10000,
-        targetTokens: 1400,
         onStatus: setStatus,
         onToken: (token) => {
           setAnswer(repairMojibake(token));
@@ -442,9 +500,6 @@ export default function App() {
 
       const cleanAnswer = formatAnswer(result.answer);
       setAnswer(cleanAnswer);
-      setChunks(result.chunks);
-      setChunkScores(result.chunkScores ?? []);
-      setChunkCount(result.chunkCount);
       setTokenCount(result.tokenCount ?? 0);
       setElapsedSeconds((Date.now() - startedAt) / 1000);
       setStatus("");
@@ -456,15 +511,16 @@ export default function App() {
           question: cleanQuestion,
           answer: cleanAnswer,
           tokenCount: result.tokenCount ?? 0,
-          chunkCount: result.chunkCount,
           timestamp: startedAt,
         });
       }
     } catch (error) {
+      // Nothing was produced: put the question back in the composer so it can
+      // be edited and retried, and drop the message bubble.
+      setAskedQuestion("");
+      setQuestion(cleanQuestion);
+      setHasAsked(false);
       setAnswer("");
-      setChunks([]);
-      setChunkScores([]);
-      setChunkCount(0);
       setElapsedSeconds(null);
       setStatus(error instanceof Error ? error.message : "Generation failed.");
     } finally {
@@ -475,7 +531,7 @@ export default function App() {
   if (sessionLoading) {
     return (
       <SafeAreaView style={styles.safeArea}>
-        <StatusBar barStyle="dark-content" backgroundColor="#f8f9ff" />
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
         <View style={styles.sessionSplash}>
           <ActivityIndicator color="#4f46e5" />
         </View>
@@ -486,7 +542,7 @@ export default function App() {
   if (!sessionUser) {
     return (
       <SafeAreaView style={styles.safeArea}>
-        <StatusBar barStyle="dark-content" backgroundColor="#f8f9ff" />
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
         <AuthFlow backendUrl={cleanBackendUrl} onAuthenticated={setSessionUser} />
       </SafeAreaView>
     );
@@ -495,7 +551,7 @@ export default function App() {
   if (route === "profile") {
     return (
       <SafeAreaView style={styles.safeArea}>
-        <StatusBar barStyle="dark-content" backgroundColor="#f8f9ff" />
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
         <ScrollView contentContainerStyle={styles.scroll}>
           <View style={styles.topBar}>
             <Pressable
@@ -523,7 +579,7 @@ export default function App() {
   if (route === "dashboard") {
     return (
       <SafeAreaView style={styles.safeArea}>
-        <StatusBar barStyle="dark-content" backgroundColor="#f8f9ff" />
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
         <View style={styles.dashboardTopRow}>
           <Pressable
             accessibilityRole="button"
@@ -537,7 +593,6 @@ export default function App() {
           </Pressable>
         </View>
         <Dashboard
-          backendUrl={cleanBackendUrl}
           onSelectSubject={handleSelectSubject}
           apiKey={apiKey}
           hasApiKey={hasSavedApiKey}
@@ -556,7 +611,7 @@ export default function App() {
   if (route === "history" && activeSubject) {
     return (
       <SafeAreaView style={styles.safeArea}>
-        <StatusBar barStyle="dark-content" backgroundColor="#f8f9ff" />
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
         <QueryHistory
           subjectName={activeSubject.name}
           subjectIcon={activeSubject.icon}
@@ -573,7 +628,7 @@ export default function App() {
   if (route === "optional-picker") {
     return (
       <SafeAreaView style={styles.safeArea}>
-        <StatusBar barStyle="dark-content" backgroundColor="#f8f9ff" />
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
         <ScrollView contentContainerStyle={styles.scroll}>
           <View style={styles.topBar}>
             <Pressable
@@ -628,13 +683,13 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor="#f8f9ff" />
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
       <KeyboardAvoidingView
         behavior={Platform.select({ ios: "padding", android: undefined })}
         style={styles.flex}
       >
         <ScrollView
-          contentContainerStyle={styles.scroll}
+          contentContainerStyle={[styles.scroll, styles.qaScroll]}
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.topBar}>
@@ -675,7 +730,6 @@ export default function App() {
 
           {debugMode && (
           <View style={styles.debugRow}>
-            <Text style={styles.debugItem}>Chunks: {chunkCount}</Text>
             <Text style={styles.debugItem}>Tokens: {tokenCount}</Text>
             <Text style={styles.debugItem}>Time: {elapsedSeconds === null ? "--" : `${elapsedSeconds.toFixed(1)}s`}</Text>
           </View>
@@ -692,22 +746,24 @@ export default function App() {
             </View>
           ) : null}
 
-          {activeSubject && (GS_SUBJECTS[activeSubject.id] || isOptionalSubject(activeSubject.id)) ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={handleTogglePyqs}
-              style={({ pressed }) => [
-                styles.pyqToggleBtn,
-                { borderColor: subjectColor(activeSubject.id) + "40" },
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <Text style={[styles.pyqToggleText, { color: subjectColor(activeSubject.id) }]}>
-                {showPyqs ? "Hide" : "Show"} Previous Year Questions
-              </Text>
-              <Text style={styles.pyqToggleArrow}>{showPyqs ? "v" : ">"}</Text>
-            </Pressable>
-          ) : null}
+          {activeSubject && (GS_SUBJECTS[activeSubject.id] || isOptionalSubject(activeSubject.id)) && (
+            <View style={styles.pyqTop}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={handleTogglePyqs}
+                style={({ pressed }) => [
+                  styles.pyqToggleBtn,
+                  { borderColor: subjectColor(activeSubject.id) + "40" },
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Text style={[styles.pyqToggleText, { color: subjectColor(activeSubject.id) }]}>
+                  {showPyqs ? "Hide" : "Show"} Previous Year Questions
+                </Text>
+                <Text style={styles.pyqToggleArrow}>{showPyqs ? "v" : ">"}</Text>
+              </Pressable>
+            </View>
+          )}
 
           {showPyqs && pyqs.length > 0 ? (
             <View style={styles.pyqCard}>
@@ -735,27 +791,11 @@ export default function App() {
             </View>
           ) : null}
 
-          <View style={styles.card}>
-            <Text style={styles.cardLabel}>Question</Text>
-            <TextInput
-              editable={!generating}
-              multiline
-              onChangeText={setQuestion}
-              placeholder={`Ask a ${activeSubject?.name ?? ""} question...`}
-              style={[styles.input, styles.questionInput]}
-              textAlignVertical="top"
-              value={question}
-              placeholderTextColor="#9ca3af"
-            />
-
-            <View style={styles.askRow}>
-              <ActionButton
-                disabled={!canAsk}
-                label={generating ? "Generating..." : "Ask Question"}
-                onPress={askQuestion}
-              />
+          {hasAsked && askedQuestion.trim() ? (
+            <View style={styles.userBubble}>
+              <Text style={styles.userBubbleText}>{askedQuestion}</Text>
             </View>
-          </View>
+          ) : null}
 
           <View style={styles.statusRow}>
             {generating && <ActivityIndicator color="#4f46e5" />}
@@ -768,29 +808,63 @@ export default function App() {
             </View>
           )}
 
-          {(() => {
-            const diagramUrls = chunks
-              .map((c) => c.metadata?.diagram_url)
-              .filter((u): u is string => typeof u === "string" && u.length > 0);
-            const uniqueUrls = [...new Set(diagramUrls)];
-            if (uniqueUrls.length === 0) return null;
-            return (
-              <View style={styles.diagramSection}>
-                <Text style={styles.diagramSectionTitle}>Diagrams from Source</Text>
-                {uniqueUrls.map((url, i) => (
-                  <Image
-                    key={i}
-                    source={{ uri: url }}
-                    style={styles.diagramFull}
-                    resizeMode="contain"
-                  />
-                ))}
-              </View>
-            );
-          })()}
-
           <View style={{ height: 40 }} />
         </ScrollView>
+
+        <View style={styles.inputArea}>
+          {listening ? (
+            <View style={styles.listeningRow}>
+              <View style={styles.listeningDot} />
+              <Text style={styles.listeningText}>Listening — tap the mic when you're done</Text>
+            </View>
+          ) : null}
+          <View style={styles.chatInputRow}>
+            <TextInput
+              editable={!generating}
+              multiline
+              onChangeText={setQuestion}
+              placeholder={listening ? "Listening..." : "Ask your UPSC question..."}
+              placeholderTextColor="#9ca3af"
+              style={styles.chatInput}
+              textAlignVertical="top"
+              value={question}
+            />
+            <Pressable
+              accessibilityLabel="Voice input"
+              accessibilityRole="button"
+              disabled={generating}
+              onPress={toggleVoiceInput}
+              style={({ pressed }) => [
+                styles.inputIconBtn,
+                listening && styles.inputIconBtnListening,
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <ChatIcon
+                color={listening ? "#ef4444" : "#4b5563"}
+                name="microphone"
+                size={22}
+              />
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Ask question"
+              accessibilityRole="button"
+              disabled={!canAsk}
+              onPress={askQuestion}
+              style={({ pressed }) => [
+                styles.sendBtn,
+                !canAsk && styles.sendBtnDisabled,
+                pressed && canAsk && { opacity: 0.85 },
+              ]}
+            >
+              {generating ? (
+                <ActivityIndicator color="#ffffff" size="small" />
+              ) : (
+                <ChatIcon color="#ffffff" name="arrow-up" size={20} />
+              )}
+            </Pressable>
+          </View>
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -799,7 +873,7 @@ export default function App() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#f8f9ff",
+    backgroundColor: "#FFFFFF",
   },
   flex: {
     flex: 1,
@@ -836,6 +910,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 8,
     paddingBottom: 36,
+    width: "100%",
+    maxWidth: 850,
+    alignSelf: "center",
+  },
+  // Extra bottom room on the Q&A screen so the fixed input bar never covers
+  // the last lines of a long answer (~90px input + breathing space).
+  qaScroll: {
+    paddingBottom: 110,
   },
   // Top Bar
   topBar: {
@@ -903,115 +985,97 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
   },
-  // Card
-  card: {
-    backgroundColor: "#ffffff",
-    borderRadius: 16,
-    padding: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    elevation: 2,
-    borderWidth: 1,
-    borderColor: "#f3f4f6",
-  },
-  cardLabel: {
-    color: "#374151",
-    fontSize: 13,
-    fontWeight: "700",
-    marginBottom: 8,
+  // User message bubble (the asked question, shown above the answer)
+  userBubble: {
+    alignSelf: "flex-end",
+    maxWidth: "86%",
+    backgroundColor: "#F7F7F8",
+    borderRadius: 20,
+    borderBottomRightRadius: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     marginTop: 4,
+    marginBottom: 4,
   },
-  input: {
-    backgroundColor: "#f9fafb",
-    borderColor: "#e5e7eb",
-    borderRadius: 10,
-    borderWidth: 1,
+  userBubbleText: {
     color: "#111827",
     fontSize: 15,
-    minHeight: 46,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    lineHeight: 22,
   },
-  questionInput: {
-    minHeight: 100,
+  // Bottom-fixed composer: white bar, centered chat input, mic + send inside
+  inputArea: {
+    backgroundColor: "#FFFFFF",
+    borderTopWidth: 1,
+    borderTopColor: "#f3f4f6",
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 16,
   },
-  apiKeySection: {
-    gap: 8,
-  },
-  apiKeySaved: {
+  listeningRow: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#f0fdf4",
-    borderColor: "#bbf7d0",
-    borderRadius: 10,
-    borderWidth: 1,
-    minHeight: 46,
-    paddingHorizontal: 14,
+    alignSelf: "center",
     gap: 8,
+    paddingTop: 2,
+    paddingBottom: 8,
   },
-  apiKeySavedPressed: {
-    opacity: 0.8,
+  listeningDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#ef4444",
   },
-  apiKeySavedDot: {
-    color: "#22c55e",
-    fontSize: 10,
-  },
-  apiKeySavedText: {
-    color: "#166534",
-    fontSize: 14,
-    fontWeight: "600",
-    flex: 1,
-  },
-  apiKeyChangeText: {
-    color: "#4f46e5",
-    fontSize: 13,
+  listeningText: {
+    color: "#6b7280",
+    fontSize: 12,
     fontWeight: "600",
   },
-  askRow: {
-    marginTop: 16,
-  },
-  // Buttons
-  btn: {
+  chatInputRow: {
+    width: "100%",
+    maxWidth: 800,
+    alignSelf: "center",
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 10,
-    minHeight: 48,
-    paddingHorizontal: 16,
-  },
-  btnPrimary: {
-    backgroundColor: "#4f46e5",
-  },
-  btnSecondary: {
-    backgroundColor: "#ffffff",
+    gap: 8,
+    minHeight: 56,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 28,
+    backgroundColor: "#F7F7F8",
     borderWidth: 1,
     borderColor: "#e5e7eb",
   },
-  btnGhost: {
-    backgroundColor: "transparent",
-    minHeight: 36,
-    alignSelf: "flex-start",
-  },
-  btnDisabled: {
-    opacity: 0.5,
-  },
-  btnPressed: {
-    opacity: 0.85,
-  },
-  btnText: {
+  chatInput: {
+    flex: 1,
+    minWidth: 0,
     fontSize: 15,
-    fontWeight: "700",
+    color: "#111827",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    maxHeight: 110,
+    backgroundColor: "transparent",
   },
-  btnTextPrimary: {
-    color: "#ffffff",
+  inputIconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "transparent",
   },
-  btnTextSecondary: {
-    color: "#374151",
+  inputIconBtnListening: {
+    backgroundColor: "#fee2e2",
   },
-  btnTextGhost: {
-    color: "#4f46e5",
-    fontSize: 13,
+  sendBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#4f46e5",
+  },
+  sendBtnDisabled: {
+    opacity: 0.5,
   },
   // Status
   statusRow: {
@@ -1074,39 +1138,6 @@ const styles = StyleSheet.create({
     marginTop: 16,
     borderWidth: 1,
     borderColor: "#f3f4f6",
-  },
-  answerTitle: {
-    color: "#111827",
-    fontSize: 16,
-    fontWeight: "800",
-    marginBottom: 12,
-  },
-  answerText: {
-    color: "#374151",
-    fontSize: 15,
-    lineHeight: 24,
-    marginBottom: 8,
-  },
-  diagramSection: {
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-    padding: 12,
-    marginTop: 12,
-  },
-  diagramSectionTitle: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#4f46e5",
-    marginBottom: 8,
-  },
-  diagramFull: {
-    width: "100%",
-    height: 300,
-    borderRadius: 8,
-    marginBottom: 10,
-    backgroundColor: "#f9fafb",
   },
   subjectInfoCard: {
     backgroundColor: "#ffffff",
@@ -1203,6 +1234,10 @@ const styles = StyleSheet.create({
     padding: 10,
     marginBottom: 12,
   },
+  pyqTop: {
+    alignSelf: "flex-end",
+    marginBottom: 12,
+  },
   pyqToggleBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -1210,9 +1245,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#ffffff",
     borderRadius: 12,
     borderWidth: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginBottom: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    minHeight: 40,
   },
   pyqToggleText: {
     fontSize: 14,

@@ -111,6 +111,65 @@ function parseBlocks(text: string): Block[] {
   return blocks;
 }
 
+function renderInline(content: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const s = String(content || "");
+  let i = 0;
+  let key = 0;
+  let plain = "";
+  const flush = () => {
+    if (plain) {
+      nodes.push(<Text key={key++}>{plain}</Text>);
+      plain = "";
+    }
+  };
+
+  while (i < s.length) {
+    if (s.startsWith("**", i)) {
+      const end = s.indexOf("**", i + 2);
+      if (end !== -1) {
+        flush();
+        nodes.push(
+          <Text key={key++} style={styles.bold}>
+            {s.slice(i + 2, end)}
+          </Text>
+        );
+        i = end + 2;
+        continue;
+      }
+    }
+
+    if (s[i] === "*" && s[i + 1] !== "*") {
+      const after = s[i + 1];
+      // Emphasis only opens before a non-space, non-asterisk character. A `* `
+      // at the start of a line is a bullet, which the block parser already
+      // strips, so a preceding space is allowed here.
+      if (after && after !== " " && after !== "*") {
+        const end = s.indexOf("*", i + 1);
+        if (end !== -1) {
+          const inner = s.slice(i + 1, end);
+          if (inner && inner.trim() && s[end + 1] !== "*") {
+            flush();
+            nodes.push(
+              <Text key={key++} style={styles.italic}>
+                {inner}
+              </Text>
+            );
+            i = end + 1;
+            continue;
+          }
+        }
+      }
+    }
+
+    plain += s[i];
+    i += 1;
+  }
+
+  flush();
+  return nodes;
+}
+
 function InlineText({
   content,
   style,
@@ -118,20 +177,7 @@ function InlineText({
   content: string;
   style?: object;
 }) {
-  const parts = String(content || "").split(/\*\*(.+?)\*\*/g);
-  return (
-    <Text style={style}>
-      {parts.map((part, i) =>
-        i % 2 === 1 ? (
-          <Text key={i} style={styles.bold}>
-            {part}
-          </Text>
-        ) : part ? (
-          <Text key={i}>{part}</Text>
-        ) : null
-      )}
-    </Text>
-  );
+  return <Text style={style}>{renderInline(content)}</Text>;
 }
 
 export default function MarkdownAnswer({ text }: { text: string }) {
@@ -150,9 +196,7 @@ export default function MarkdownAnswer({ text }: { text: string }) {
           case "heading": {
             const style = block.level <= 2 ? styles.h2 : styles.h3;
             return (
-              <Text key={i} style={style}>
-                {block.content.replace(/\*\*/g, "")}
-              </Text>
+              <InlineText key={i} content={block.content} style={style} />
             );
           }
           case "hr":
@@ -182,9 +226,11 @@ export default function MarkdownAnswer({ text }: { text: string }) {
               <View key={i} style={styles.table}>
                 <View style={[styles.tableRow, styles.tableHeadRow]}>
                   {block.header.map((cell, c) => (
-                    <Text key={c} style={[styles.tableCell, styles.tableHead]}>
-                      {cell.replace(/\*\*/g, "")}
-                    </Text>
+                    <InlineText
+                      key={c}
+                      content={cell}
+                      style={[styles.tableCell, styles.tableHead]}
+                    />
                   ))}
                 </View>
                 {block.rows.map((row, r) => (
@@ -193,16 +239,24 @@ export default function MarkdownAnswer({ text }: { text: string }) {
                     style={[styles.tableRow, r % 2 ? styles.tableStripe : null]}
                   >
                     {row.map((cell, c) => (
-                      <Text key={c} style={styles.tableCell}>
-                        {cell}
-                      </Text>
+                      <InlineText
+                        key={c}
+                        content={cell}
+                        style={styles.tableCell}
+                      />
                     ))}
                   </View>
                 ))}
               </View>
             );
           default:
-            return <InlineText key={i} content={block.content} style={styles.body} />;
+            return (
+              <InlineText
+                key={i}
+                content={block.content}
+                style={[styles.body, styles.paragraph]}
+              />
+            );
         }
       })}
     </View>
@@ -215,28 +269,34 @@ const styles = StyleSheet.create({
   },
   h2: {
     color: "#111827",
-    fontSize: 18,
-    lineHeight: 26,
+    fontSize: 20,
+    lineHeight: 28,
     fontWeight: "800",
     marginTop: 14,
     marginBottom: 6,
   },
   h3: {
     color: "#111827",
-    fontSize: 16,
-    lineHeight: 24,
+    fontSize: 18,
+    lineHeight: 26,
     fontWeight: "700",
     marginTop: 10,
     marginBottom: 4,
   },
   body: {
-    color: "#374151",
-    fontSize: 15,
-    lineHeight: 24,
+    color: "#111827",
+    fontSize: 16,
+    lineHeight: 26,
     flexShrink: 1,
+  },
+  paragraph: {
+    marginBottom: 12,
   },
   bold: {
     fontWeight: "700",
+  },
+  italic: {
+    fontStyle: "italic",
   },
   row: {
     flexDirection: "row",
@@ -269,9 +329,9 @@ const styles = StyleSheet.create({
   },
   tableCell: {
     flex: 1,
-    color: "#374151",
-    fontSize: 13,
-    lineHeight: 19,
+    color: "#111827",
+    fontSize: 14,
+    lineHeight: 20,
     paddingHorizontal: 8,
     paddingVertical: 7,
   },
@@ -280,9 +340,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   marker: {
-    color: "#374151",
-    fontSize: 15,
-    lineHeight: 24,
+    color: "#111827",
+    fontSize: 16,
+    lineHeight: 26,
     marginRight: 6,
     fontWeight: "700",
   },
@@ -296,8 +356,8 @@ const styles = StyleSheet.create({
   },
   codeText: {
     fontFamily: "monospace",
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 14,
+    lineHeight: 20,
     color: "#111827",
   },
   hr: {
