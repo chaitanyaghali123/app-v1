@@ -30,7 +30,7 @@ export async function fetchLangSearchContext(userQuery) {
         includeDomains: [
           "pib.gov.in",
           "prsindia.org",
-          "indiankanoon.org",
+          "indiankanoon.org", "indiacode.nic.in",
           "egazette.gov.in",
         ],
         contents: {
