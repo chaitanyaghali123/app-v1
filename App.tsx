@@ -528,6 +528,28 @@ export default function App() {
     }
   }, [cleanBackendUrl, canAsk, activeSubject, question]);
 
+  // Enter sends the question on web; Shift+Enter keeps the newline.
+  const composerRef = useRef<React.ElementRef<typeof TextInput>>(null);
+  const askRef = useRef(askQuestion);
+  askRef.current = askQuestion;
+
+  useEffect(() => {
+    if (!isWeb) return;
+    const node = composerRef.current as unknown as {
+      addEventListener?: (type: string, fn: (e: KeyboardEvent) => void) => void;
+      removeEventListener?: (type: string, fn: (e: KeyboardEvent) => void) => void;
+    } | null;
+    if (!node || typeof node.addEventListener !== "function") return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        askRef.current();
+      }
+    };
+    node.addEventListener("keydown", onKeyDown);
+    return () => node.removeEventListener?.("keydown", onKeyDown);
+  }, []);
+
   if (sessionLoading) {
     return (
       <SafeAreaView style={styles.safeArea}>
@@ -715,6 +737,22 @@ export default function App() {
               <Text style={styles.subjectTagName}>{activeSubject?.name}</Text>
             </Pressable>
             <View style={styles.topBarSpacer} />
+            {activeSubject && (GS_SUBJECTS[activeSubject.id] || isOptionalSubject(activeSubject.id)) && (
+              <Pressable
+                accessibilityRole="button"
+                onPress={handleTogglePyqs}
+                style={({ pressed }) => [
+                  styles.pyqToggleBtn,
+                  { borderColor: subjectColor(activeSubject.id) + "40" },
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Text style={styles.pyqToggleText}>
+                  {showPyqs ? "Hide" : "Show"} Previous Year Questions
+                </Text>
+                <Text style={styles.pyqToggleArrow}>{showPyqs ? "v" : ">"}</Text>
+              </Pressable>
+            )}
             <Pressable
               accessibilityRole="button"
               onPress={handleHistoryPress}
@@ -745,25 +783,6 @@ export default function App() {
               </Text>
             </View>
           ) : null}
-
-          {activeSubject && (GS_SUBJECTS[activeSubject.id] || isOptionalSubject(activeSubject.id)) && (
-            <View style={styles.pyqTop}>
-              <Pressable
-                accessibilityRole="button"
-                onPress={handleTogglePyqs}
-                style={({ pressed }) => [
-                  styles.pyqToggleBtn,
-                  { borderColor: subjectColor(activeSubject.id) + "40" },
-                  pressed && { opacity: 0.7 },
-                ]}
-              >
-                <Text style={[styles.pyqToggleText, { color: "#111827" }]}>
-                  {showPyqs ? "Hide" : "Show"} Previous Year Questions
-                </Text>
-                <Text style={styles.pyqToggleArrow}>{showPyqs ? "v" : ">"}</Text>
-              </Pressable>
-            </View>
-          )}
 
           {showPyqs && pyqs.length > 0 ? (
             <View style={styles.pyqCard}>
@@ -825,6 +844,7 @@ export default function App() {
               onChangeText={setQuestion}
               placeholder={listening ? "Listening..." : "Ask your UPSC question..."}
               placeholderTextColor="#9ca3af"
+              ref={composerRef}
               style={styles.chatInput}
               textAlignVertical="top"
               value={question}
@@ -1234,10 +1254,6 @@ const styles = StyleSheet.create({
     padding: 10,
     marginBottom: 12,
   },
-  pyqTop: {
-    alignSelf: "flex-end",
-    marginBottom: 12,
-  },
   pyqToggleBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -1248,6 +1264,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 12,
     minHeight: 40,
+    flexShrink: 1,
   },
   pyqToggleText: {
     fontSize: 14,
