@@ -121,7 +121,6 @@ services:
 
 
 
-  # worker removed (phone-only chat uses on-device LLM)
 
 volumes:
 

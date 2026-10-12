@@ -22,8 +22,6 @@ if (!fs.existsSync(diagramAssetsDir)) {
 }
 
 // Routes
-// import llmRoutes from "./routes/llm.route.js"; // disabled: phone does on-device LLM generation
-
 import revisionRoutes from "./routes/revision.route.js";
 import authRoutes from "./routes/auth.route.js";
 import mobileRoutes from "./routes/mobile.route.js";
@@ -94,11 +92,7 @@ app.use(express.static(path.resolve("dist")));
 
 // Health Check
 app.get("/health", (_req, res) => {
-  res.json({
-    status: "ok",
-    llm_connected: process.env.LLAMA_API_URL || "not configured",
-    model: process.env.LLAMA_MODEL || "not configured",
-  });
+  res.json({ status: "ok" });
 });
 
 // Routes
@@ -144,9 +138,6 @@ async function initialize() {
     const PORT = Number(process.env.PORT || 3000);
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 Server running on port ${PORT}`);
-      console.log(
-        `🔗 LLM: llama-server (${process.env.LLAMA_MODEL || "not configured"})`
-      );
     });
   } catch (err) {
     console.error("❌ Failed to initialize:", err.message);

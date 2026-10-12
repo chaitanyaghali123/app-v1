@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 
 type Block =
   | { type: "fence"; content: string }
@@ -189,9 +189,15 @@ export default function MarkdownAnswer({ text }: { text: string }) {
         switch (block.type) {
           case "fence":
             return (
-              <View key={i} style={styles.codeBlock}>
+              <ScrollView
+                key={i}
+                horizontal
+                style={styles.codeBlock}
+                contentContainerStyle={styles.codeBlockInner}
+                showsHorizontalScrollIndicator={true}
+              >
                 <Text style={styles.codeText}>{block.content}</Text>
-              </View>
+              </ScrollView>
             );
           case "heading": {
             const style = block.level <= 2 ? styles.h2 : styles.h3;
@@ -349,15 +355,17 @@ const styles = StyleSheet.create({
   codeBlock: {
     backgroundColor: "#f3f4f6",
     borderRadius: 8,
-    padding: 10,
     marginTop: 8,
     marginBottom: 8,
     overflow: "hidden",
   },
+  codeBlockInner: {
+    padding: 10,
+  },
   codeText: {
     fontFamily: "monospace",
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 19,
     color: "#111827",
   },
   hr: {

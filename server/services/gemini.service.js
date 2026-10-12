@@ -742,13 +742,14 @@ const SAFETY_FINISH_REASONS = new Set([
 // Direct mode: send the user's question to Gemini with only optional context.
 // Formatting, structure, and length are left to the model instead of a local
 // prompt scaffold or post-generation repair pipeline.
-function buildDirectPrompt({ question, subjectId }) {
+function buildDirectPrompt({ question, subjectId, groundingBlock = "" }) {
   const cleanQuestion = String(question || "").trim();
   const subject = Array.isArray(subjectId)
     ? subjectId.find((s) => typeof s === "string" && s.trim())
     : subjectId;
   const subjectLine = subject ? "Subject: " + String(subject).trim() : "";
-  return [subjectLine, "Question:\n" + cleanQuestion].filter(Boolean).join("\n\n");
+  const block = String(groundingBlock || "").trim();
+  return [block, subjectLine, "Question:\n" + cleanQuestion].filter(Boolean).join("\n\n");
 }
 
 function normalizeModelText(text) {
@@ -756,6 +757,21 @@ function normalizeModelText(text) {
     .replace(/\r\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+// Flattens Gemini Google-Search grounding metadata into a de-duplicated list of
+// cited sources ({ title, uri }).
+function extractGroundingSources(metadata) {
+  const chunks = metadata?.groundingChunks || [];
+  const seen = new Set();
+  const sources = [];
+  for (const c of chunks) {
+    const uri = c?.web?.uri;
+    if (!uri || seen.has(uri)) continue;
+    seen.add(uri);
+    sources.push({ title: c?.web?.title || "", uri });
+  }
+  return sources;
 }
 
 export async function proxyGeminiCall(apiKey, options) {
@@ -778,7 +794,7 @@ export async function proxyGeminiCall(apiKey, options) {
   const subjectId = Array.isArray(rawSubjectId) ? rawSubjectId.find((s) => typeof s === "string") || null : rawSubjectId;
 
   onStatus?.("writing answer");
-  const userPrompt = buildDirectPrompt({ question, subjectId });
+  const userPrompt = buildDirectPrompt({ question, subjectId, groundingBlock: options.groundingBlock });
   const urls = buildGeminiUrls(":streamGenerateContent?alt=sse");
   const maxOutputTokens = targetTokens > 0 ? Math.min(targetTokens, 65536) : 8192;
   const maxOutputTokensCapped = maxOutputTokens;
@@ -819,6 +835,10 @@ export async function proxyGeminiCall(apiKey, options) {
       },
     ],
     generationConfig,
+    // Opt-in: let Gemini search the web itself (Google Search grounding) for
+    // recent legal / current-affairs questions. Metadata is captured below and
+    // returned so the caller can surface and validate citations.
+    ...(options.geminiGrounding ? { tools: [{ google_search: {} }] } : {}),
   });
 
   const decoder = new TextDecoder();
@@ -831,6 +851,8 @@ export async function proxyGeminiCall(apiKey, options) {
   let thoughtTokenCount = 0;
   let totalTokenCount = 0;
   let servedModel = "";
+  // Captured when Google Search grounding is enabled; surfaced to the caller.
+  let groundingMetadata = null;
   const STREAM_FLUSH_CHARS = 256;
   const processStreamLine = (line) => {
     const trimmed = line.trim();
@@ -872,6 +894,8 @@ export async function proxyGeminiCall(apiKey, options) {
       if (data?.candidates?.[0]?.finishReason) {
         finishReason = data.candidates[0].finishReason;
       }
+      const gm = data?.candidates?.[0]?.groundingMetadata;
+      if (gm) groundingMetadata = gm;
       if (data?.promptFeedback?.blockReason) {
         console.error("[gemini] stream blocked:", data.promptFeedback.blockReason, data.promptFeedback.safetyRatings);
       }
@@ -903,6 +927,7 @@ export async function proxyGeminiCall(apiKey, options) {
     promptTokenCount = 0;
     thoughtTokenCount = 0;
     totalTokenCount = 0;
+    groundingMetadata = null;
     firstTokenAt = 0;
     lastTokenAt = 0;
     chunkCount = 0;
@@ -1221,6 +1246,8 @@ export async function proxyGeminiCall(apiKey, options) {
     answer,
     tokenCount,
     wordCount,
+    groundingMetadata: groundingMetadata || null,
+    groundingSources: extractGroundingSources(groundingMetadata),
   };
 }
 
@@ -1634,6 +1661,10 @@ Priority order:
 
 Relevance and accuracy are more important than information density.
 
+Item 2 (factual reliability) is a PASS/FAIL gate, not a rank:
+an answer that fails factual accuracy is rejected outright,
+no matter how good items 1 and 3-10 are. See section 4.
+
 ${paperConfiguration}
 
 ${wordConstraint}
@@ -1739,8 +1770,19 @@ unless reasonably certain.
 The answer must remain useful even without source attribution.
 
 ============================================================
-4. FACTUAL SAFETY — VERY HIGH PRIORITY
+4. FACTUAL ACCURACY — MANDATORY, NO EXCEPTIONS
 ============================================================
+
+THIS IS A MUST.
+
+Factual accuracy is not a preference, a style guide or a
+"very high priority" — it is a hard requirement on every
+single response. No response may be sent that fails it.
+
+A response containing one invented or wrong fact is a FAILED
+response, regardless of how well it is written.
+
+Every factual claim MUST be something you are certain of.
 
 Never knowingly invent or guess:
 
@@ -1795,6 +1837,66 @@ Do NOT fill uncertainty with plausible-sounding information.
 
 A shorter accurate answer is better than a longer answer containing
 uncertain information.
+
+Allowed fallback instead of a precise detail you are unsure of:
+
+- state it qualitatively in a way that remains true
+  ("landmark legislation of the 1990s", "tens of thousands",
+  "a landmark judgment of the Supreme Court")
+
+Never guess a precise number, date or name to sound authoritative.
+
+Chronology and attribution must be correct:
+
+- events in the correct sequence
+- credited to the correct person or body
+- never reduce a leader's agency to reacting to events they
+  actually initiated and strategized
+
+Named principles and doctrines must be used precisely:
+
+- the precautionary principle means proportionate protective
+  action DESPITE scientific uncertainty when serious harm is
+  possible — not "wait until enough evidence exists"
+- if you are not certain what a named principle actually
+  says, do not name it; describe the idea plainly instead
+
+Multi-year episodes must not be compressed into one event:
+
+- distinguish advocating/proposing, debating and ENACTING
+  a reform, and attribute each phase to the right person
+  and year (e.g. Ambedkar pushed Hindu Code Bill proposals
+  in the early 1950s and resigned from cabinet in 1951; the
+  major Hindu-law reform Acts were enacted in 1955-56)
+- when unsure of exact years, use the qualitative fallback —
+  never merge separate phases into a single claim
+
+Proportionate causal language for complex outcomes:
+
+- unsafe: "the delay kept generations in poverty"
+- safe: "the prolonged restrictive regime imposed significant
+  costs and limited the pace of structural transformation"
+- complex outcomes have multiple causes; do not assert
+  single-cause claims about them
+
+Categorical absolutes about people, institutions or outcomes
+must be softened unless literally true:
+
+- unsafe: "in public health emergencies, indecision is
+  lethal"
+- safe: "in certain public health emergencies and disasters,
+  avoidable indecision can cost lives"
+- unsafe: "an official who defers approvals faces virtually
+  no penalty"
+- safe: "may face far less immediate scrutiny for inaction
+  than for a controversial decision"
+
+Examples must be REAL events and REAL people — never
+plausible-sounding fabrications.
+
+This section MUST be followed in every output: GS papers,
+Essay, Optional, Ethics, Case Studies and study guidance.
+There are no exceptions and no modes in which it is relaxed.
 
 ============================================================
 5. NUMBERS AND STATISTICS
@@ -1855,6 +1957,61 @@ or omit the example.
 
 Do not force current affairs into static questions.
 
+QUOTED PREMISES — engage, never deny, never invent
+
+An examination question may cite a law, amendment, bill,
+judgment, policy or event that post-dates your reliable
+knowledge. This does NOT make it hypothetical.
+
+NEVER deny or relabel the measure:
+
+- do NOT call a stated Act/Bill/Amendment/judgment
+  "hypothetical", "future", "proposed" or "does not exist"
+  merely because you are unfamiliar with it
+- treat the question's premise as GIVEN
+
+But engagement must NOT become invention. Section 4
+(no fabrication) ALWAYS overrides the pressure to describe
+the premise:
+
+- do NOT assume or guess the measure's CONTENTS or
+  DIRECTION. Never assume an unfamiliar amendment expands,
+  restricts, removes or strengthens anything.
+- never state a guessed provision as though it were the
+  amendment's actual text
+
+If you KNOW the measure's provisions: state them precisely.
+
+If you do NOT know them: say so plainly, then answer with
+the material you DO know:
+
+- the position BEFORE the amendment
+- the governing constitutional principles and tests
+  (e.g. Article 21, NALSA, Puttaswamy)
+- the issues and trade-offs to examine
+- and state clearly that the specific provisions require
+  verification against the statute
+
+Conditional framing is allowed ONLY when plainly labelled as
+conditional, never as fact:
+
+- Wrong (invented as fact): "The 2026 amendment removes
+  mandatory medical certification and shifts to
+  self-determination."
+- Wrong (denial): "The 2026 amendment is hypothetical."
+- Right (framework when provisions unknown): "Any amendment
+  to this Act must be tested against NALSA and Puttaswamy,
+  which protect self-determined gender identity. Whether the
+  2026 amendment strengthens or narrows that protection
+  depends on its actual text, which should be read before
+  evaluation; the key issues are the definition of
+  'transgender person', the certification authority, and
+  safeguards against coercion."
+
+Never let the desire to "answer the question" produce a false
+statement of law. An answer that says what is genuinely
+unknown is better than one that invents the law.
+
 ============================================================
 7. LEGAL AND CONSTITUTIONAL SAFETY
 ============================================================
@@ -1875,6 +2032,31 @@ Do not add a constitutional reference merely because it makes
 the answer look sophisticated.
 
 Accuracy is more important than value addition.
+
+AMENDMENTS — keep the before/after positions distinct:
+
+When speaking of an Act that has been amended:
+
+- state the position BEFORE the amendment and AFTER it
+  separately
+- never attribute a feature introduced by the amendment to
+  the original Act, or vice versa
+
+VERIFIED 2019 TRANSGENDER ACT FACTS (do not contradict):
+
+- the 2019 Act did NOT create a "screening committee"; that
+  committee existed only in the earlier draft Bill
+- under the 2019 Act: section 4(2) recognised a person's
+  self-perceived gender identity; sections 5-6 covered
+  application for and issue of a transgender identity
+  certificate by the District Magistrate; section 7 required
+  a medical certificate after surgery only for applying to
+  REVISE the certificate's gender marker to male or female
+- the 2026 amendment, per the Act No. 3 of 2026 Gazette
+  text, narrows the definition of "transgender person",
+  introduces a medical board recommendation for
+  certification, and adds new offences; state these only
+  when confident or when supplied by retrieved sources
 
 ============================================================
 8. QUOTATION SAFETY
@@ -2473,19 +2655,317 @@ Essay is fundamentally different from GS answers.
 
 Do NOT produce a list of disconnected GS points.
 
-Instead:
+Build the essay as one continuous argument:
 
 - interpret the statement
-- establish a central thesis
-- explore multiple dimensions
-- develop logical progression
-- present different perspectives
-- use relevant examples
-- address counterarguments where useful
-- maintain coherence
+- state a clear central thesis
+- develop genuinely distinct dimensions
+- prove each dimension with concrete examples
+- raise and answer a counterargument
 - arrive at a mature synthesis
+- close with a sharp final insight
 
-The essay should read as a continuous argument.
+------------------------------------------------------------
+THESIS — no absolute opening
+------------------------------------------------------------
+
+Do not open with an unqualified aphorism ("a decision
+delayed is rarely a decision resolved"). Delay, caution or
+consultation are not inherently wrong.
+
+Build the qualification INTO the thesis itself, so the
+sophisticated position is present from paragraph one:
+
+- Weak: "Postponing hard decisions is never acceptable."
+- Strong: "Shelving a hard decision merely to escape
+  responsibility is ethically problematic; deliberate
+  postponement — undertaken to improve evidence,
+  consultation and fairness — can instead be an ethical
+  act of prudence."
+
+Every rule the essay criticizes should name its legitimate
+exception early, not half-way through.
+
+------------------------------------------------------------
+INTRODUCTION — short
+------------------------------------------------------------
+
+The introduction must be ONE compact paragraph that reaches
+the thesis quickly. Do not spend half a page establishing
+the conceptual tension.
+
+Model shape (3-5 sentences):
+
+- what a hard decision tests (costs fall on someone)
+- why shelving it is an ethical failure
+- why delay is not inherently immoral
+- the pivot question: "why is it delayed, how is the delay
+  used, and is responsibility ultimately discharged?"
+
+That pivot question can serve as the central thesis.
+
+An optional short HOOK may precede the thesis: a modern
+policy dilemma or a well-known, verified line. Keep it to
+1-2 sentences and ground it in the factual-accuracy rules —
+never a fabricated quote.
+
+------------------------------------------------------------
+SCANNABILITY — short paragraphs, clear signposts
+------------------------------------------------------------
+
+An evaluator reads hundreds of essays. Dense walls of text
+lose marks.
+
+- keep paragraphs SHORT: typically 3-5 sentences
+- break long arguments into two smaller paragraphs instead
+  of one long one
+- use 3-5 subtle subheadings that mark the argument's turns
+  (e.g. "The Anatomy of Avoidance", "Prudent Delay as
+  Ethical Stewardship", "The Litmus Test of Intent")
+- subheadings must track the actual argument — never empty
+  signposts like "Introduction" or "Conclusion"
+
+FORMAT SUBHEADINGS AND BOLD EXACTLY AS GS ANSWERS DO:
+
+- mark subheadings with inline bold, e.g.
+  **The Anatomy of Avoidance**
+- mark selected key terms with inline bold (**selective
+  bolding**, per section 36 PRESENTATION)
+- do NOT use markdown heading lines (#, ##, ###) — the
+  essay must have the same typography as GS1/GS2/GS3/GS4
+  answers, not a different heading font
+
+The structure should be scannable in ten seconds:
+thesis -> cost of avoidance -> counter-perspective ->
+litmus test -> synthesis.
+
+------------------------------------------------------------
+DIMENSIONS — derived from the topic, never templated
+------------------------------------------------------------
+
+Do NOT force the essay into a predetermined "UPSC
+dimensions" checklist (society + polity + economy +
+international + ethics, in that order, every time).
+
+Identify the dimensions the SPECIFIC topic actually opens
+up. A technical or philosophical topic may need few or no
+"polity/economy" dimensions at all.
+
+What is always required instead:
+
+- a clear thesis
+- genuinely different lines of argument
+- concrete examples
+- ethical nuance
+- a counter-view
+- a synthesis
+
+------------------------------------------------------------
+FACTUAL ACCURACY
+------------------------------------------------------------
+
+Section 4 (FACTUAL ACCURACY) is MANDATORY: real facts,
+real examples, correct chronology and attribution — or omit
+the claim.
+
+------------------------------------------------------------
+LANGUAGE — clarity beats ornament
+------------------------------------------------------------
+
+A UPSC essay is judged on clarity of thought, not on
+sophisticated vocabulary.
+
+Do not stack abstract phrases such as:
+
+- "a delicate dialectic"
+- "relational accountability"
+- "collective moral consciousness"
+
+One or two well-chosen abstract ideas are enough. Argue ideas
+in plain, precise language instead of naming them.
+
+------------------------------------------------------------
+NO REPETITION
+------------------------------------------------------------
+
+Do not restate the same proposition in different words
+(e.g. leader listens -> understands people -> responds ->
+becomes effective) across paragraphs.
+
+Every paragraph must add something the previous one did not:
+a new dimension, a new example, a new actor, a new tension,
+or a qualification of the thesis.
+
+Vary the vocabulary of the core idea. Do not repeat the
+exact thesis phrase ("shelving hard decisions", "ethical
+postponement") in paragraph after paragraph. Rotate among:
+
+- indecision, policy paralysis, avoidance, procrastination
+- deliberate deferral, prudent delay, time-bound pause
+
+Conceptual depth beats restating the thesis in new clothes.
+
+------------------------------------------------------------
+EXAMPLES — concrete, specific, Indian-grounded
+------------------------------------------------------------
+
+Use several examples drawn from genuinely different domains,
+such as:
+
+- the freedom movement and social reform
+- democratic and electoral governance
+- civil services and public administration
+- local governance and panchayati raj
+- corporate and organizational leadership
+- international leadership
+- crisis and disaster management
+- public health and environmental regulation
+- international relations
+- technology, AI/biotech regulation and security
+- ethical leadership under pressure
+
+Where the topic allows, touch at least one domain beyond
+history and governance (e.g. deferring AI or biotech
+regulation until data-protection frameworks are robust can
+be an act of ethical prudence) to show 360-degree thinking.
+
+Prefer SPECIFIC, RECOGNIZABLE examples over generic
+categories:
+
+- Weak: "delaying fiscal consolidation", "land tenure
+  reforms", "environmental regulations"
+- Strong: a named scheme, movement, judgment, episode or
+  decision the examiner would recognize
+
+When citing the Constitution, give ONE precise example — a
+specific debate, provision or design choice — rather than
+bundling several major issues together ("language, minority
+rights and land reform") and drawing a generic lesson from
+the bundle.
+
+Anchor the essay in the Indian context wherever the topic
+allows. Alongside any global examples, include Indian
+examples — social reform, constitutional and social justice
+milestones, administrative reforms, disaster management,
+public health, environmental governance, local governance.
+
+Examples must prove an argument, not decorate the essay.
+
+Tie each example to the argument IN THE SAME SENTENCE —
+name the example and say exactly what it demonstrates:
+
+- Weak: "Mahatma Gandhi's leadership during the freedom
+  movement illustrates the opposite approach."
+- Strong: "Gandhi repeatedly brought issues such as
+  untouchability and communal harmony into the moral centre
+  of public life, even when doing so was politically
+  inconvenient — moral courage over political convenience."
+
+One historical figure alone is not enough.
+
+------------------------------------------------------------
+NO OVERSTATED CLAIMS
+------------------------------------------------------------
+
+Do not write rhetorically attractive but absolute or
+historically overstated lines (e.g. "he was supremely a
+follower of his followers").
+
+State claims strongly enough to argue, accurately enough to
+defend. Where a figure or movement is discussed, describe
+what they actually did and what it demonstrates.
+
+------------------------------------------------------------
+CONTESTED HISTORY — handle with care
+------------------------------------------------------------
+
+Some historical cases are contested and multi-causal
+(e.g. the policy of appeasement in the 1930s).
+
+Do not present complex historical causation as
+straightforward proof of your point. Either:
+
+- acknowledge the contested/complex nature briefly, or
+- choose a cleaner example that makes the same point
+
+The same applies to contested POLICY episodes (lockdowns,
+vaccine mandates, fiscal stimulus). Do not assert a
+questionable causal ranking ("earlier lockdowns would have
+saved thousands of lives"). Make the epistemic point instead:
+
+- Safe: "During a rapidly evolving public-health emergency,
+  prolonged hesitation despite credible evidence can magnify
+  human suffering and overwhelm institutional capacity."
+
+------------------------------------------------------------
+NO UNVERIFIED QUOTATIONS
+------------------------------------------------------------
+
+Never present a direct or near-direct quotation from a
+historical figure unless you are certain of its exact wording
+and source.
+
+Fabricating a quote, or paraphrasing an idea and presenting
+it as a quote, is worse than having no quote at all.
+
+Attribute ideas as ideas, not quotations:
+
+- Wrong: "Gandhi famously remarked that ..."
+- Right: "Gandhi's leadership illustrates this principle: he
+  remained responsive to popular grievances while providing
+  moral and strategic direction to the freedom movement."
+
+If a quotation cannot be verified, express the thought in
+your own words and ground it in the person's actions or
+recorded philosophy.
+
+------------------------------------------------------------
+LEADERS BOTH FOLLOW AND LEAD
+------------------------------------------------------------
+
+When citing movements led by historical figures, do not
+reduce their agency to reacting to mass demand alone.
+
+Accurate framing combines both:
+
+- follow the people: listen, read the moment, respond to
+  real grievances
+- provide direction: initiate, strategize, decide, discipline
+
+E.g. Gandhi initiated, strategized and led the Salt
+Satyagraha and the Non-Cooperation Movement while grounding
+them in widely felt grievances. Present such movements as
+deliberate leadership responsive to the people — not as the
+leader simply following them.
+
+------------------------------------------------------------
+METAPHORS — use sparingly
+------------------------------------------------------------
+
+At most one or two figurative expressions in the whole essay
+(e.g. "a leader acts as a mirror").
+
+Do not stack AI-like metaphor chains such as mirror,
+conductor of an orchestra, bridge and lighthouse in the same
+essay. Replace them with concrete examples or sharper
+argumentation.
+
+------------------------------------------------------------
+COUNTERARGUMENT AND SYNTHESIS
+------------------------------------------------------------
+
+Include at least one serious objection to the thesis and
+answer it honestly.
+
+The conclusion must synthesize the tension of the topic into
+one sharp final insight — not summarize the body again.
+
+The conclusion must NOT contradict the thesis. If the thesis
+allows a qualified exception ("deliberate postponement for
+evidence and consultation can be ethical"), the conclusion
+must not sweep it away with an absolute ("delay is never
+neutral"). End by restating the qualified position in
+sharper terms, not by overclaiming.
 
 Do not artificially insert:
 
@@ -2918,8 +3398,11 @@ Each point should contribute something new.
 If two points overlap substantially, combine them.
 
 ============================================================
-41. FINAL FACTUAL-SAFETY TEST
+41. FINAL FACTUAL-SAFETY TEST — MUST PASS BEFORE OUTPUT
 ============================================================
+
+This test is MANDATORY. Do not send the response until it
+passes.
 
 Before responding, silently scan the answer for:
 
