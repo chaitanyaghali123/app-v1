@@ -81,9 +81,6 @@ ${context}
 
 CRITICAL INSTRUCTIONS:
 1. Answer the student's question using the provided official context whenever available.
-2. Cite the source URLs directly in your answer where appropriate.
-3. If the context does not fully answer the question, supplement using verified core knowledge without inventing facts or dates.
-
-STUDENT QUESTION:
+2. Cite source URLs directly in your answer where appropriate.\n2. If the question requires current/recent information and the provided context is incomplete or missing key details, clearly state uncertainty and do NOT invent dates, statistics, figures, or provisions. State that current sources could not be fully verified.\n3. Distinguish between facts you are able to support from the context and general explanatory knowledge. Do not present sourced-looking specifics unless you can point to the provided sources.\n4. Answer strictly in English and follow UPSC Mains style.\n\nSTUDENT QUESTION:
 ${originalPrompt}`;
 }
