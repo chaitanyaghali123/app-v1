@@ -152,12 +152,7 @@ export async function getMobileAnswer(req, res) {
     let groundingInfo = { enabled: isGroundingEnabled(), mode: null, status: isGroundingEnabled() ? "not_needed" : "disabled", provider: null, sourceCount: 0, reasons: [], latencyMs: 0 };
     let groundingBlock = "";
     let geminiGrounding = false;
-    const CURRENT_AFFAIRS_REGEX = /\b(recent|latest|scheme|pib|budget|amendment|amended|judgment|judgement|verdict|ruling|act|bill|ordinance|legislation|notification|report|committee|commission|scheme|policy|mission|programme|program|index|ranking|gdp|inflation|unemployment|census|survey|election|supreme court|high court|2024|2025|2026)\b/i;
-    if (CURRENT_AFFAIRS_REGEX.test(ctx.resolvedQuestion)) {
-      try {
-      } catch (e) {
-      }
-    }
+
     if (groundingInfo.enabled) {
       const need = detectGroundingNeed(ctx.resolvedQuestion);
       groundingInfo.reasons = need.reasons;
