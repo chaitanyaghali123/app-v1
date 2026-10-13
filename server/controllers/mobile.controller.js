@@ -2,7 +2,7 @@ import { getGeminiKeyRecord, markGeminiKeyFailure, markGeminiKeyValidated } from
 import { decryptGeminiApiKeyRecord, fingerprintGeminiApiKey, proxyGeminiCall, toPublicGeminiError } from "../services/gemini.service.js";
 import { enforceGeminiAbusePolicy, recordGeminiFailureForAbuse } from "../services/gemini-abuse.service.js";
 import { anonymizeIdentifier, logGeminiEvent, recordGeminiMetric } from "../services/gemini-monitoring.service.js";
-import { detectGroundingNeed, retrieveLegalGrounding, buildGroundingBlock, isGroundingEnabled, selectGroundingMode, buildGeminiGroundingBlock } from "../services/legalGrounding.service.js";
+import { retrieveLegalGrounding, buildGroundingBlock, isGroundingEnabled, selectGroundingMode, buildGeminiGroundingBlock } from "../services/legalGrounding.service.js";
 import { correctSubjectTypo } from "./gsMapping.js";
 
 // Length policy: the model decides how long an answer should be underneath a
@@ -154,29 +154,25 @@ export async function getMobileAnswer(req, res) {
     let geminiGrounding = false;
 
     if (groundingInfo.enabled) {
-      const need = detectGroundingNeed(ctx.resolvedQuestion);
-      groundingInfo.reasons = need.reasons;
-      if (need.needed) {
+
         const mode = selectGroundingMode();
         if (mode === "gemini") {
           // Gemini searches during generation; capture + return citations.
           geminiGrounding = true;
           groundingBlock = buildGeminiGroundingBlock();
-          groundingInfo = { enabled: true, mode: "gemini", status: "gemini_search", provider: "gemini", sourceCount: 0, reasons: need.reasons, latencyMs: 0 };
-          console.log(`[mobile-answer] grounding mode=gemini reasons=${need.reasons.join("; ")}`);
+          groundingInfo = { enabled: true, mode: "gemini", status: "gemini_search", provider: "gemini", sourceCount: 0, reasons: [], latencyMs: 0 };
+          console.log(`[mobile-answer] grounding mode=gemini reasons=${[].join("; ")}`);
         } else if (mode === "search_api") {
           const result = await retrieveLegalGrounding(ctx.resolvedQuestion);
           groundingBlock = buildGroundingBlock(result);
-          groundingInfo = { enabled: true, mode: "search_api", status: result.status, provider: result.provider, sourceCount: result.excerpts.length, reasons: need.reasons, latencyMs: result.latencyMs || 0 };
-          console.log(`[mobile-answer] grounding mode=search_api status=${result.status} provider=${result.provider} sources=${result.excerpts.length} reasons=${need.reasons.join("; ")}`);
+          groundingInfo = { enabled: true, mode: "search_api", status: result.status, provider: result.provider, sourceCount: result.excerpts.length, reasons: [], latencyMs: result.latencyMs || 0 };
+          console.log(`[mobile-answer] grounding mode=search_api status=${result.status} provider=${result.provider} sources=${result.excerpts.length} reasons=${[].join("; ")}`);
         } else {
           // Enabled but no usable provider → require explicit uncertainty.
           groundingBlock = buildGroundingBlock({ status: "no_provider" });
-          groundingInfo = { enabled: true, mode: null, status: "no_provider", provider: null, sourceCount: 0, reasons: need.reasons, latencyMs: 0 };
+          groundingInfo = { enabled: true, mode: null, status: "no_provider", provider: null, sourceCount: 0, reasons: [], latencyMs: 0 };
           console.log(`[mobile-answer] grounding enabled but no provider configured`);
-        }
-      }
-    }
+
 
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
