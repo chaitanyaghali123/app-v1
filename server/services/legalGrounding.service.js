@@ -378,9 +378,7 @@ export function buildGeminiGroundingBlock() {
 GOOGLE SEARCH GROUNDING ENABLED
 ============================================================
 
-This is a recent legal / current-affairs question. You have Google
-Search available for this answer. Use it to check the actual, current
-position before writing.
+You have Google Search available as a tool for this UPSC Mains answer.
 
 SOURCE PRIORITY (highest first):
 1. Primary legal text — Gazette of India (egazette.gov.in) and
