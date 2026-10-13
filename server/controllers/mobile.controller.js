@@ -155,7 +155,7 @@ export async function getMobileAnswer(req, res) {
 
     if (groundingInfo.enabled) {
 
-        const mode = selectGroundingMode();
+      const mode = selectGroundingMode();
         if (mode === "gemini") {
           // Gemini searches during generation; capture + return citations.
           geminiGrounding = true;
