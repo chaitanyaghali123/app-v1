@@ -25,7 +25,7 @@ export async function fetchLangSearchContext(userQuery) {
       },
       body: JSON.stringify({
         query: userQuery,
-        count: 2,
+        count: 4,
         freshness: "oneMonth",
         includeDomains: [
           "pib.gov.in",
@@ -34,7 +34,7 @@ export async function fetchLangSearchContext(userQuery) {
           "egazette.gov.in",
         ],
         contents: {
-          text: { maxCharacters: 600 },
+          text: { maxCharacters: 800 },
         },
       }),
     });
