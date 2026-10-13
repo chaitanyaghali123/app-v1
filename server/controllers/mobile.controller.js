@@ -3,7 +3,6 @@ import { decryptGeminiApiKeyRecord, fingerprintGeminiApiKey, proxyGeminiCall, to
 import { enforceGeminiAbusePolicy, recordGeminiFailureForAbuse } from "../services/gemini-abuse.service.js";
 import { anonymizeIdentifier, logGeminiEvent, recordGeminiMetric } from "../services/gemini-monitoring.service.js";
 import { detectGroundingNeed, retrieveLegalGrounding, buildGroundingBlock, isGroundingEnabled, selectGroundingMode, buildGeminiGroundingBlock } from "../services/legalGrounding.service.js";
-import { fetchLangSearchContext, buildLangSearchPrompt } from "../services/langsearch.service.js";
 import { correctSubjectTypo } from "./gsMapping.js";
 
 // Length policy: the model decides how long an answer should be underneath a
@@ -154,14 +153,9 @@ export async function getMobileAnswer(req, res) {
     let groundingBlock = "";
     let geminiGrounding = false;
     const CURRENT_AFFAIRS_REGEX = /\b(recent|latest|scheme|pib|budget|amendment|amended|judgment|judgement|verdict|ruling|act|bill|ordinance|legislation|notification|report|committee|commission|scheme|policy|mission|programme|program|index|ranking|gdp|inflation|unemployment|census|survey|election|supreme court|high court|2024|2025|2026)\b/i;
-    let langsearchContext = "";
     if (CURRENT_AFFAIRS_REGEX.test(ctx.resolvedQuestion)) {
       try {
-        langsearchContext = await fetchLangSearchContext(ctx.resolvedQuestion);
-        if (langsearchContext) console.log(`[mobile-answer] langsearch: context chars=${langsearchContext.length}`);
       } catch (e) {
-        console.warn("[mobile-answer] langsearch fetch failed, fallback:", e.message);
-        langsearchContext = "";
       }
     }
     if (groundingInfo.enabled) {
@@ -221,9 +215,8 @@ export async function getMobileAnswer(req, res) {
     res.write(`data: ${JSON.stringify(contextEvent)}\n\n`);
     if (typeof res.flush === "function") res.flush();
 
-    const questionForGemini = buildLangSearchPrompt(ctx.resolvedQuestion, langsearchContext);
     const result = await proxyGeminiCall(ctx.userApiKey, {
-      question: questionForGemini,
+      question: ctx.resolvedQuestion,
       subjectId: ctx.subject,
       targetTokens: ctx.cappedTargetTokens,
       wordRange: ctx.wordRange,
