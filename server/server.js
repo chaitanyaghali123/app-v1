@@ -28,7 +28,6 @@ import mobileRoutes from "./routes/mobile.route.js";
 import geminiRoutes from "./routes/gemini.route.js";
 import adminRoutes from "./routes/admin.route.js";
 import pyqRoutes from "./routes/pyq.routes.js";
-import currentAffairsRoutes from "./routes/currentAffairs.routes.js";
 
 // DB
 import {
@@ -39,7 +38,6 @@ import {
   ensureApiLogsTable,
   ensureGeminiKeysTable,
   ensurePyqsTable,
-  ensureCurrentAffairsTable,
 } from "./services/db.service.js";
 
 import multer from "multer";
@@ -102,7 +100,6 @@ app.use("/api/mobile", mobileRoutes);
 app.use("/api", geminiRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/pyqs", pyqRoutes);
-app.use("/api/current-affairs", currentAffairsRoutes);
 
 // Global error handler (Multer errors, validation errors, etc.)
 app.use((err, _req, res, _next) => {
@@ -130,7 +127,6 @@ async function initialize() {
       ensureApiLogsTable(),
       ensureGeminiKeysTable(),
       ensurePyqsTable(),
-      ensureCurrentAffairsTable(),
     ]);
 
     console.log("✅ Database initialized");
