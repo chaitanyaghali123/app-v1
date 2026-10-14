@@ -146,45 +146,7 @@ export async function getMobileAnswer(req, res) {
       targetTokens: ctx.cappedTargetTokens,
     });
 
-    // Selective legal/current-affairs grounding (opt-in). Only qualifying
-    // questions trigger retrieval; the block tells the model to use verified
-    // excerpts and to declare uncertainty when retrieval fails.
-    let groundingInfo = { enabled: isGroundingEnabled(), mode: null, status: isGroundingEnabled() ? "not_needed" : "disabled", provider: null, sourceCount: 0, reasons: [], latencyMs: 0 };
-    let groundingBlock = "";
-    let geminiGrounding = false;
 
-    if (groundingInfo.enabled) {
-
-      const mode = selectGroundingMode();
-        if (mode === "gemini") {
-          // Gemini searches during generation; capture + return citations.
-          geminiGrounding = true;
-          groundingBlock = buildGeminiGroundingBlock();
-          groundingInfo = { enabled: true, mode: "gemini", status: "gemini_search", provider: "gemini", sourceCount: 0, reasons: [], latencyMs: 0 };
-          console.log(`[mobile-answer] grounding mode=gemini reasons=${[].join("; ")}`);
-        } else if (mode === "search_api") {
-          const result = await retrieveLegalGrounding(ctx.resolvedQuestion);
-          groundingBlock = buildGroundingBlock(result);
-          groundingInfo = { enabled: true, mode: "search_api", status: result.status, provider: result.provider, sourceCount: result.excerpts.length, reasons: [], latencyMs: result.latencyMs || 0 };
-          console.log(`[mobile-answer] grounding mode=search_api status=${result.status} provider=${result.provider} sources=${result.excerpts.length} reasons=${[].join("; ")}`);
-        } else {
-          // Enabled but no usable provider → require explicit uncertainty.
-          groundingBlock = buildGroundingBlock({ status: "no_provider" });
-          groundingInfo = { enabled: true, mode: null, status: "no_provider", provider: null, sourceCount: 0, reasons: [], latencyMs: 0 };
-          console.log(`[mobile-answer] grounding enabled but no provider configured`);
-
-
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      "Connection": "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
-    if (req.socket) req.socket.setNoDelay(true);
-
-    // The client renders whatever it receives here, so the shape is kept stable
-    // even though retrieval no longer exists: an always-empty sources list is
-    // less disruptive than a removed field.
     const contextEvent = {
       type: "context",
       question: ctx.question,
@@ -201,7 +163,6 @@ export async function getMobileAnswer(req, res) {
       sourceSufficient: true,
       sourceIssue: null,
       strictRag: false,
-      grounding: groundingInfo,
     };
     res.write(`data: ${JSON.stringify(contextEvent)}\n\n`);
     if (typeof res.flush === "function") res.flush();
@@ -211,8 +172,6 @@ export async function getMobileAnswer(req, res) {
       subjectId: ctx.subject,
       targetTokens: ctx.cappedTargetTokens,
       wordRange: ctx.wordRange,
-      groundingBlock,
-      geminiGrounding,
       onToken: (token) => {
         res.write(`data: ${JSON.stringify({ type: "token", text: token })}\n\n`);
         if (typeof res.flush === "function") res.flush();
@@ -249,9 +208,7 @@ export async function getMobileAnswer(req, res) {
         truncated: Boolean(result.truncated),
         timedOut: Boolean(result.timedOut),
         finishReason: result.finishReason || null,
-        grounding: groundingInfo,
-        groundingSources: result.groundingSources || [],
-        sentenceScores: null,
+            sentenceScores: null,
         chunkScores: null,
       })}\n\n`
     );

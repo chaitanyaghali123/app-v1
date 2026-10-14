@@ -838,7 +838,6 @@ export async function proxyGeminiCall(apiKey, options) {
     // Opt-in: let Gemini search the web itself (Google Search grounding) for
     // recent legal / current-affairs questions. Metadata is captured below and
     // returned so the caller can surface and validate citations.
-    ...(options.geminiGrounding ? { tools: [{ google_search: {} }] } : {}),
   });
 
   const decoder = new TextDecoder();
@@ -3536,4 +3535,4 @@ export {
   normalizePaperType,
   normalizeOptionalPaper
 };
-
+
