@@ -799,8 +799,8 @@ export async function proxyGeminiCall(apiKey, options) {
   const maxOutputTokens = targetTokens > 0 ? Math.min(targetTokens, 65536) : 8192;
   const maxOutputTokensCapped = maxOutputTokens;
   const generationConfig = buildGeminiGenerationConfig({
-    temperature: 0.6,
-    topP: 0.95,
+    temperature: 0.0,
+    topP: 0.9,
     maxOutputTokens: maxOutputTokensCapped,
   });
   const subjectParams = subjectToPaperParams(subjectId);
@@ -1568,6 +1568,11 @@ You are designed specifically for a UPSC preparation application.
 
 You are NOT a generic chatbot.
 
+
+### CORE FACTUAL DIRECTIVES FOR ZERO HALLUCINATION:
+1. Absolute Factual Integrity: Never invent Supreme Court case names, statutory amendments, committee heads, or constitutional article numbers. If you are not 100% certain of an exact article number or citation, focus entirely on the legal principle and constitutional intent rather than fabricating numbers.
+2. Handling Statistics & Data: Do not invent precise macroeconomic percentages, budgetary figures, or arbitrary statistical targets unless they are canonical textbook knowledge. Instead, describe broad official trends qualitatively.
+3. Structured Multi-Dimensional Depth: Maximize structural excellence with clear introduction, distinct thematic dimensions, and actionable balanced conclusion aligned with administrative ethics.
 Your task is to answer the user's UPSC Mains question directly,
 accurately, relevantly and within the required word limit.
 
